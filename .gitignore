@@ -1,0 +1,57 @@
+# Python
+Code/Python/.venv/
+__pycache__/
+*.pyc
+
+# Python envs
+.venv/
+Code/Python/.venv/
+
+# PlatformIO
+.pio/
+.pio-venv/
+Code/Firmware/esp-creature-core/.pio/
+Code/Firmware/esp-creature-core/.pio-venv/
+
+# VS Code local settings
+.vscode/
+Code/Firmware/esp-creature-core/.vscode/
+
+# Runtime data
+Code/Python/data/*.db
+Code/Python/data/*.json
+Code/Python/data/*.sqlite
+Code/Python/data/*.sqlite3
+*.db
+*.sqlite
+*.sqlite3
+
+
+# OS files
+.DS_Store
+.vscode/
+
+# Obsidian local app state
+Obsidian/Creature/.obsidian/workspace.json
+Obsidian/Creature/.obsidian/workspace-mobile.json
+
+# Optional: Obsidian plugins/themes can be reinstalled
+Obsidian/Creature/.obsidian/plugins/
+Obsidian/Creature/.obsidian/themes/**/.history/
+**/.history/
+
+Code/Python/dashboard/public/
+Code/Python/data/
+
+# Archives
+Archive/
+
+# Local/private project notes
+instructions.md
+tmux_creature.md
+AGENTS.md
+
+
+# Deployment secrets
+Code/Python/dashboard/sync_to_vps.env
+sync_to_vps.env

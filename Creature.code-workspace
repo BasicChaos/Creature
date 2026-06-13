@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "esp-creature-core",
+			"path": "Code/Firmware/esp-creature-core"
+		}
+	],
+	"settings": {
+		"monokaiPro.fileIconsMonochrome": false
+	}
+}

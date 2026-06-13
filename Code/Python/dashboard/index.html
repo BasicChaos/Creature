@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Creature v05.4 — live</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --line: #232a33;
+      --text: #d6dde6;
+      --muted: #7d8794;
+      --accent: #5ec8f8;
+      /* role colors */
+      --sound: #5ec8f8;
+      --light: #f0a35e;
+      --emitter: #5ee08a;
+      --free: #8b95ff;
+      --fatigue: #f0625e;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 20px;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 16px;
+      margin: 0;
+      font-weight: 600;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+
+    .dot.live {
+      background: var(--emitter);
+      box-shadow: 0 0 8px var(--emitter);
+    }
+
+    .dot.stale {
+      background: var(--fatigue);
+    }
+
+    .status-text {
+      color: var(--muted);
+    }
+
+    .spacer {
+      flex: 1;
+    }
+
+    .readout {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .readout .stat {
+      text-align: right;
+    }
+
+    .readout .label {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      display: block;
+    }
+
+    .readout .val {
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 1.1;
+    }
+
+    .viewer {
+      display: grid;
+      grid-template-columns: minmax(620px, 2fr) minmax(280px, 1fr);
+      gap: 14px;
+      padding: 16px 20px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+      min-width: 0;
+    }
+
+    .stage {
+      min-width: 320px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .side {
+      min-width: 260px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .hardware-panel {
+      padding: 10px;
+    }
+
+    .hardware-photo {
+      display: block;
+      width: 100%;
+      height: auto;
+      object-position: center;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: #0b0e13;
+    }
+
+    .cell-list-panel {
+      grid-column: 1 / -1;
+    }
+
+    .bottom-panels {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    @media (max-width: 980px) {
+      .viewer {
+        grid-template-columns: 1fr;
+        padding: 12px;
+      }
+
+      .stage,
+      .side {
+        min-width: 0;
+      }
+
+      .cell-list-panel {
+        grid-column: auto;
+      }
+
+      .bottom-panels {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel h2 {
+      font-size: 12px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 10px;
+      font-weight: 600;
+    }
+
+    #field {
+      width: 100%;
+      max-width: 100%;
+      max-height: 620px;
+      height: auto;
+      display: block;
+    }
+
+    #field circle,
+    #field line {
+      transition: r .8s linear, fill-opacity .8s linear,
+        stroke-width .8s linear, stroke-opacity .8s linear;
+    }
+
+    .cell {
+      cursor: pointer;
+    }
+
+    .clabel {
+      fill: #f5f8fc;
+      stroke: #0b0e13;
+      stroke-width: 0.5px;
+      paint-order: stroke;
+      font: 700 7px -apple-system, system-ui, sans-serif;
+      pointer-events: none;
+    }
+
+    .hwlabel {
+      font: 700 9px -apple-system, system-ui, sans-serif;
+      letter-spacing: .05em;
+    }
+
+    .hwsub {
+      fill: var(--muted);
+      font: 400 8px -apple-system, system-ui, sans-serif;
+    }
+
+    /* inspector */
+    .insp-name {
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .insp-role {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .insp-row {
+      margin-top: 10px;
+    }
+
+    .insp-row .label {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .insp-row .label b {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .bar-track {
+      background: var(--line);
+      border-radius: 5px;
+      height: 8px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 5px;
+      transition: width .4s ease;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .pinned-note {
+      color: var(--accent);
+      font-size: 11px;
+      margin-top: 8px;
+    }
+
+    /* legend */
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 7px;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .legend-item .muted {
+      color: var(--muted);
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      flex: none;
+    }
+
+    .legend-sub {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.6;
+      margin-top: 6px;
+    }
+
+    .cell-table-wrap {
+      overflow-x: auto;
+    }
+
+    .cell-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .cell-table th,
+    .cell-table td {
+      padding: 6px 7px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .cell-table th:first-child,
+    .cell-table td:first-child,
+    .cell-table th:nth-child(2),
+    .cell-table td:nth-child(2),
+    .cell-table th:nth-child(3),
+    .cell-table td:nth-child(3) {
+      text-align: left;
+    }
+
+    .cell-table th {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-weight: 600;
+    }
+
+    .cell-table tr {
+      cursor: pointer;
+    }
+
+    .cell-table tbody tr:hover {
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .cell-table tbody tr.selected {
+      background: rgba(94, 200, 248, 0.08);
+    }
+
+    .cell-name {
+      font-weight: 700;
+    }
+
+    .cell-role-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: 1px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <span id="dot" class="dot"></span>
+    <h1 id="creatureTitle">Creature v05.4</h1>
+    <span id="status" class="status-text">connecting…</span>
+    <span class="spacer"></span>
+    <div class="readout">
+      <div class="stat"><span class="label">Sound</span><span id="rSound" class="val"
+          style="color:var(--sound)">--</span></div>
+      <div class="stat"><span class="label">Light</span><span id="rLight" class="val"
+          style="color:var(--light)">--</span></div>
+      <div class="stat"><span class="label">Energy</span><span id="rEnergy" class="val">--</span></div>
+      <div class="stat"><span class="label">Memory</span><span id="rMemory" class="val">--</span></div>
+      <div class="stat"><span class="label">C29 emit</span><span id="rEmit" class="val"
+          style="color:var(--emitter)">--</span></div>
+      <div class="stat"><span class="label">LED</span><span id="rLed" class="val">--</span></div>
+      <div class="stat"><span class="label">States</span><span id="rStates" class="val">--</span></div>
+      <div class="stat"><span class="label">Links live</span><span id="rLinks" class="val">--</span></div>
+      <div class="stat"><span class="label">Tick</span><span id="rTick" class="val">--</span></div>
+    </div>
+  </header>
+
+  <div class="viewer">
+    <div class="panel stage">
+      <h2>Live field — 111 cells</h2>
+      <svg id="field" viewBox="0 0 760 660" xmlns="http://www.w3.org/2000/svg" aria-label="Creature cell field"></svg>
+    </div>
+
+    <div class="side">
+      <div class="panel hardware-panel">
+        <img class="hardware-photo" src="creature-v05-2.jpg" alt="Creature hardware on breadboard" />
+      </div>
+
+      <div class="panel">
+        <h2>Cell inspector</h2>
+        <div id="inspector">
+          <div class="hint">Hover a cell or table row to inspect it. Click to pin.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Metabolism</h2>
+        <div class="meta" id="metabolism">--</div>
+      </div>
+    </div>
+
+    <div class="panel cell-list-panel">
+      <h2>All cells</h2>
+      <div class="cell-table-wrap">
+        <table class="cell-table" aria-label="All cell data">
+          <thead>
+            <tr>
+              <th>Cell</th>
+              <th>Type</th>
+              <th>Hardware</th>
+              <th>Act</th>
+              <th>Energy</th>
+              <th>Fatigue</th>
+              <th>Press</th>
+              <th>Rel</th>
+              <th>Rip</th>
+              <th>State</th>
+              <th>Tick</th>
+              <th>Homeo</th>
+            </tr>
+          </thead>
+          <tbody id="cellTableBody">
+            <tr>
+              <td colspan="12" class="hint">Waiting for field data…</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="bottom-panels">
+      <div class="panel">
+        <h2>Legend</h2>
+        <div class="legend-item"><span class="swatch" style="background:var(--sound)"></span> Sound anchor <span
+            class="muted">· C5 · INMP441</span></div>
+        <div class="legend-item"><span class="swatch" style="background:var(--light)"></span> Light anchor <span
+            class="muted">· C33 · BH1750</span></div>
+        <div class="legend-item"><span class="swatch" style="background:var(--emitter)"></span> Emitter anchor <span
+            class="muted">· C29 · NeoPixel · centered</span></div>
+        <div class="legend-item"><span class="swatch" style="background:var(--free)"></span> Free cell <span
+            class="muted">· C34-C111 added as new tissue</span></div>
+        <div class="legend-sub">
+          Fill brightness = activation and energy · white ring = ripple · outer ring = structural relevance · glow =
+          pressure · <span style="color:var(--fatigue)">red ring</span> = fatigue.<br>
+          Active cells are solid, resting cells are dim, dormant and deep-sleep cells are faint.
+          Connections are local; thicker/brighter lines have more pathway history.
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>System health</h2>
+        <div class="meta" id="health">--</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---- config ----
+    const API = "";
+    const POLL_MS = 1000;          // poll cadence (the collector writes a new snapshot every 1 s tick)
+    const STALE_AFTER_S = 8;       // mark stale if the snapshot is older than this
+    const STATIC_MODE = window.location.hostname.includes("basicchaos.com");
+    function dataUrl(staticPath, apiPath) {
+      const bust = "ts=" + Date.now();
+      return STATIC_MODE ? `${staticPath}?${bust}` : `${apiPath}${apiPath.includes("?") ? "&" : "?"}${bust}`;
+    }
+
+    // ---- geometry ----
+    // Mirrors the v05.3 layout in Code/Python/mind/cell_field.py: 111 cells.
+    // IDs are stable history; the anchor IDs are swapped into their body
+    // positions after reading-order coordinates are assigned.
+    const CELL_COUNT = 111;
+    const SOUND_ANCHOR = 5, EMITTER_ANCHOR = 29, LIGHT_ANCHOR = 33;
+    const ROW_SPECS = [
+      [7, 3],
+      [9, 2],
+      [11, 1],
+      [11, 1],
+      [11, 1],
+      [13, 0],
+      [11, 1],
+      [11, 1],
+      [11, 1],
+      [9, 2],
+      [7, 3],
+    ];
+    const COORDS = (() => {
+      const coords = {};
+      let n = 1;
+      ROW_SPECS.forEach(([length, colStart], row) => {
+        for (let i = 0; i < length; i++) { coords[n] = { row, col: colStart + i }; n++; }
+      });
+      function swapCellTo(cellId, row, col) {
+        const occupant = Number(Object.keys(coords).find(k => coords[k].row === row && coords[k].col === col));
+        const old = coords[cellId];
+        coords[cellId] = coords[occupant];
+        coords[occupant] = old;
+      }
+      swapCellTo(SOUND_ANCHOR, 5, 0);
+      swapCellTo(EMITTER_ANCHOR, 5, 6);
+      swapCellTo(LIGHT_ANCHOR, 5, 12);
+      return coords;
+    })();
+    const CANVAS_W = 760, CANVAS_H = 660;
+    const GRID_COLS = 13, GRID_ROWS = 11;
+    const MARGIN = 58;
+    const SPACING = Math.min((CANVAS_W - 2 * MARGIN) / (GRID_COLS - 1), (CANVAS_H - 2 * MARGIN) / (GRID_ROWS - 1));
+    const BASE_R = 9;
+    const W_MAX = 2.0;             // weight ceiling (for scaling line thickness)
+    const NS = "http://www.w3.org/2000/svg";
+
+    // Hex (not var()) because SVG presentation attributes set via setAttribute
+    // do not resolve CSS custom properties in all browsers.
+    const C = {
+      sound: "#5ec8f8", light: "#f0a35e", emitter: "#5ee08a", free: "#8b95ff",
+      fatigue: "#f0625e", line: "#232a33", accent: "#5ec8f8", rel: "#cfd8e3",
+      linkGhost: "#4b5563",
+    };
+    const ROLE = {
+      sound: { color: C.sound, label: "Sound anchor", hw: "INMP441" },
+      light: { color: C.light, label: "Light anchor", hw: "BH1750" },
+      emitter: { color: C.emitter, label: "Emitter anchor", hw: "NeoPixel" },
+      free: { color: C.free, label: "Free cell", hw: null },
+    };
+
+    function roleOf(c) {
+      if (c.type === "anchor_sensor") return c.hardware_id === "light" ? "light" : "sound";
+      if (c.type === "anchor_emitter") return "emitter";
+      return "free";
+    }
+    function pos(n) {
+      const { row, col } = COORDS[n];
+      return { x: MARGIN + col * SPACING, y: MARGIN + row * SPACING, row, col };
+    }
+    function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+    function el(tag, attrs) {
+      const e = document.createElementNS(NS, tag);
+      for (const k in attrs) e.setAttribute(k, attrs[k]);
+      return e;
+    }
+    function fmt(v, d = 2) { return (v === null || v === undefined) ? "--" : Number(v).toFixed(d); }
+
+    // ---- build the static SVG scene once ----
+    const svg = document.getElementById("field");
+    const defs = el("defs", {});
+    defs.innerHTML = '<filter id="halo" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="7" /></filter>';
+    svg.appendChild(defs);
+
+    const gGuide = el("g", {});      // faint body-plan ring
+    const gHalo = el("g", {});       // pressure glows (back)
+    const gLinks = el("g", {});      // connection weights
+    const gCells = el("g", {});      // cell bodies
+    const gTags = el("g", {});       // hardware anchor tags (front)
+    svg.append(gGuide, gHalo, gLinks, gCells, gTags);
+
+    // faint outline of the grid bounds — no ring guide for a 2D field
+    gGuide.appendChild(el("rect", {
+      x: MARGIN - BASE_R - 6, y: MARGIN - BASE_R - 6,
+      width: (GRID_COLS - 1) * SPACING + 2 * (BASE_R + 6),
+      height: (GRID_ROWS - 1) * SPACING + 2 * (BASE_R + 6),
+      rx: 14, fill: "none", stroke: C.line, "stroke-width": 1,
+      "stroke-dasharray": "2 6", "stroke-opacity": 0.6
+    }));
+
+    // Connections are local-only now (see cell_field.py CONNECTION_RADIUS), so
+    // the topology is sparse and worth drawing exactly as the field reports it
+    // rather than pre-building every possible pair. The set of pairs is fixed
+    // for the life of the field (pruning zeroes a weight, it does not remove
+    // the link), so we build the line elements once, the first time data
+    // arrives, then just restyle them every tick.
+    const linkByKey = {};
+    let linksBuilt = false;
+    function ensureLinks(connections) {
+      if (linksBuilt || !connections || !connections.length) return;
+      connections.forEach(cn => {
+        const a = pos(cn.a), b = pos(cn.b);
+        const ln = el("line", {
+          x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+          stroke: C.rel, "stroke-width": 0.6, "stroke-opacity": 0.05, "stroke-linecap": "round"
+        });
+        gLinks.appendChild(ln);
+        linkByKey[cn.a + "-" + cn.b] = ln;
+      });
+      linksBuilt = true;
+    }
+
+    // cells
+    const cellEls = {};
+    for (let n = 1; n <= CELL_COUNT; n++) {
+      const p = pos(n);
+      const halo = el("circle", { cx: p.x, cy: p.y, r: BASE_R, fill: "#fff", "fill-opacity": 0, filter: "url(#halo)" });
+      gHalo.appendChild(halo);
+
+      const g = el("g", { class: "cell", tabindex: 0 });
+      const rel = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 5, fill: "none", stroke: C.rel, "stroke-width": 1, "stroke-opacity": 0.1 });
+      const ripple = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 2, fill: "none", stroke: "#ffffff", "stroke-width": 1, "stroke-opacity": 0 });
+      const fatigue = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 10, fill: "none", stroke: C.fatigue, "stroke-width": 1.5, "stroke-opacity": 0 });
+      const body = el("circle", { cx: p.x, cy: p.y, r: BASE_R, fill: C.free, "fill-opacity": 0.16, stroke: C.free, "stroke-width": 1.6, "stroke-opacity": 0.85 });
+      const label = el("text", { x: p.x, y: p.y + 4, "text-anchor": "middle", class: "clabel" });
+      label.textContent = "C" + n;
+      g.append(rel, ripple, fatigue, body, label);
+      gCells.appendChild(g);
+      cellEls[n] = { halo, rel, ripple, fatigue, body, label, p };
+
+      g.addEventListener("mouseenter", () => setHover(n));
+      g.addEventListener("mouseleave", () => setHover(null));
+      g.addEventListener("focus", () => setHover(n));
+      g.addEventListener("click", () => { pinned = (pinned === n) ? null : n; renderInspector(); });
+    }
+
+    // hardware anchor tags (static): a short tick and a two-line label placed
+    // below each anchor cell. The grid has no center to radiate tags out from
+    // the way the ring did, so each anchor gets its label in the open space
+    // beneath it - all three anchors sit in rows with clear room below them.
+    [{ n: SOUND_ANCHOR, role: "sound" }, { n: EMITTER_ANCHOR, role: "emitter" }, { n: LIGHT_ANCHOR, role: "light" }]
+      .forEach(({ n, role }) => {
+        const p = pos(n);
+        const tickTop = p.y + BASE_R + 2, tickBottom = p.y + BASE_R + 9;
+        gTags.appendChild(el("line", {
+          x1: p.x, y1: tickTop, x2: p.x, y2: tickBottom,
+          stroke: ROLE[role].color, "stroke-width": 1.4, "stroke-opacity": 0.7, "stroke-dasharray": "3 3"
+        }));
+        const t1 = el("text", { x: p.x, y: p.y + BASE_R + 21, "text-anchor": "middle", class: "hwlabel", fill: ROLE[role].color });
+        t1.textContent = role.toUpperCase();
+        const t2 = el("text", { x: p.x, y: p.y + BASE_R + 33, "text-anchor": "middle", class: "hwsub" });
+        t2.textContent = ROLE[role].hw;
+        gTags.append(t1, t2);
+      });
+
+    // ---- live state + rendering ----
+    let latest = null, hoverId = null, pinned = null;
+
+    function setHover(n) {
+      if (n === hoverId) return;
+      hoverId = n;
+      renderInspector(); updateTableSelection(); applySelection();
+    }
+
+    function applySelection() {
+      const sel = pinned != null ? pinned : hoverId;
+      for (let n = 1; n <= CELL_COUNT; n++) {
+        const E = cellEls[n];
+        E.body.setAttribute("stroke-width", n === sel ? 3.2 : 1.6);
+      }
+    }
+
+    function render(f) {
+      latest = f;
+      const byN = {};
+      (f.cells || []).forEach(c => byN[c.n] = c);
+
+      // Connections: local-only topology, so every link in the data is one
+      // worth seeing clearly. Weight 0 means pruned - the link is still wired
+      // (it can come back) but currently silent, so we draw it as a thin
+      // dotted "ghost" instead of fading it to nothing. A live link's
+      // thickness and brightness scale with its weight, so a strengthened
+      // pathway visibly stands out from one sitting near its starting value.
+      ensureLinks(f.connections || []);
+      let liveLinks = 0;
+      (f.connections || []).forEach(cn => {
+        const ln = linkByKey[cn.a + "-" + cn.b] || linkByKey[cn.b + "-" + cn.a];
+        if (!ln) return;
+        const w = cn.weight || 0;
+        // v05.4: pruned links rest at a scar floor (~0.02) instead of zero.
+        // Anything at or near the floor renders as a ghost.
+        if (w <= 0.025) {
+          ln.setAttribute("stroke", C.linkGhost);
+          ln.setAttribute("stroke-width", 0.6);
+          ln.setAttribute("stroke-opacity", 0.16);
+          ln.setAttribute("stroke-dasharray", "1 5");
+        } else {
+          if (w > 0.05) liveLinks++;  // match the field's LIVE_LINK_THRESHOLD
+          const wf = clamp01(w / W_MAX);
+          ln.setAttribute("stroke", C.rel);
+          ln.setAttribute("stroke-width", (0.6 + 3.4 * wf).toFixed(2));
+          ln.setAttribute("stroke-opacity", (0.10 + 0.65 * wf).toFixed(3));
+          ln.removeAttribute("stroke-dasharray");
+        }
+      });
+      const linksEl = document.getElementById("rLinks");
+      if (linksEl) {
+        const total = (f.connections || []).length;
+        linksEl.textContent = total ? `${liveLinks}/${total}` : "--";
+      }
+
+      // cells
+      for (let n = 1; n <= CELL_COUNT; n++) {
+        const c = byN[n], E = cellEls[n];
+        if (!c) continue;
+        const col = ROLE[roleOf(c)].color;
+        const a = clamp01(c.activation || 0);
+        const r = BASE_R * Math.sqrt(c.size || 1);
+        const rel = clamp01(c.relevance ?? c.memory ?? 0);
+        const energy = clamp01(c.energy ?? 1);
+        const fatigue = clamp01(c.fatigue || 0);
+        const pres = clamp01((c.pressure || 0) / 2);
+        const rip = clamp01(Math.abs(c.ripple || 0) / 0.75);
+        const stateName = c.state || c.sleep_state || "active";
+        const stateDim = stateName === "deep_sleep" ? 0.22 : (stateName === "dormant" ? 0.38 : (stateName === "resting" ? 0.68 : 1.0));
+        const energyDim = 0.35 + 0.65 * energy;
+        const dim = stateDim * energyDim;
+
+        // sqrt curve: the field runs at low activation (homeostasis ~0.15), so a
+        // perceptual curve keeps dim cells legible and differences readable.
+        E.body.setAttribute("r", r.toFixed(2));
+        E.body.setAttribute("fill", col);
+        E.body.setAttribute("stroke", col);
+        E.body.setAttribute("fill-opacity", ((0.10 + 0.90 * Math.sqrt(a)) * dim).toFixed(3));
+        E.body.setAttribute("stroke-opacity", (0.18 + 0.74 * dim).toFixed(3));
+
+        E.rel.setAttribute("r", (r + 5).toFixed(2));
+        E.rel.setAttribute("stroke-width", (1 + 4 * rel).toFixed(2));
+        E.rel.setAttribute("stroke-opacity", ((0.08 + 0.70 * rel) * (0.5 + 0.5 * stateDim)).toFixed(3));
+
+        E.ripple.setAttribute("r", (r + 2 + 15 * rip).toFixed(2));
+        E.ripple.setAttribute("stroke-width", (0.8 + 2.8 * rip).toFixed(2));
+        E.ripple.setAttribute("stroke-opacity", (0.04 + 0.86 * rip).toFixed(3));
+
+        E.halo.setAttribute("r", (r + 6 + 18 * pres).toFixed(2));
+        E.halo.setAttribute("fill", col);
+        E.halo.setAttribute("fill-opacity", ((0.03 + 0.28 * pres) * dim).toFixed(3));
+
+        E.fatigue.setAttribute("r", (r + 10).toFixed(2));
+        E.fatigue.setAttribute("stroke-width", (1.1 + 2.4 * fatigue).toFixed(2));
+        E.fatigue.setAttribute("stroke-opacity", (fatigue > 0.02 ? 0.18 + 0.70 * fatigue : 0).toFixed(3));
+        E.label.setAttribute("fill-opacity", stateName === "deep_sleep" ? 0.35 : 0.9);
+      }
+
+      applySelection();
+      renderInspector();
+      renderCellTable();
+    }
+
+    function renderReadout(f) {
+      const version = f.field_version || "v05.4";
+      const title = `Creature ${version}`;
+      document.getElementById("creatureTitle").textContent = title;
+      document.title = `${title} — live`;
+      document.getElementById("rSound").textContent = fmt(f.sound_norm, 2);
+      document.getElementById("rLight").textContent = fmt(f.light_norm, 2);
+      const metabolism = f.metabolism || {};
+      document.getElementById("rEnergy").textContent = fmt(metabolism.energy_reserve, 1);
+      document.getElementById("rMemory").textContent = fmt(metabolism.memory_pressure, 2);
+      document.getElementById("rEmit").textContent = fmt(f.emitter_activation, 2);
+      document.getElementById("rLed").textContent = f.sent_brightness ?? "--";
+      const counts = f.state_counts || f.sleep_counts || {};
+      document.getElementById("rStates").textContent =
+        counts.active !== undefined ? `${counts.active}/${counts.resting || 0}/${counts.dormant || 0}/${counts.deep_sleep || 0}` : "--";
+      document.getElementById("rTick").textContent = f.tick ?? "--";
+    }
+
+    function renderMetabolism(f) {
+      const box = document.getElementById("metabolism");
+      if (!box) return;
+      const m = f.metabolism || {};
+      const summary = f.sleep_summary;
+      const lastSleep = summary
+        ? `<br>last sleep: ${summary.reason || "--"} · reviewed ${summary.events_reviewed ?? "--"} · reinforced ${summary.links_reinforced ?? "--"} · pruned ${summary.links_pruned ?? "--"}`
+        : "";
+      box.innerHTML =
+        "mode: " + (m.mode || "--") + "<br>" +
+        "reserve: " + fmt(m.energy_reserve, 2) + " / " + fmt(m.energy_reserve_max, 0) + "<br>" +
+        "cell energy avg: " + fmt(m.energy_avg, 3) +
+        " · fatigue avg: " + fmt(m.fatigue_avg, 3) + "<br>" +
+        "memory pressure: " + fmt(m.memory_pressure, 3) +
+        " · recent events: " + (m.recent_event_count ?? "--") +
+        " · railed gains: " + (m.homeo_gain_railed ?? "--") + "<br>" +
+        "sleep remaining: " + (m.sleep_ticks_remaining ?? "--") +
+        " · reviewed: " + (m.events_reviewed ?? "--") + lastSleep;
+    }
+
+    function bar(label, value, max, color, dec) {
+      const pct = clamp01((value || 0) / max) * 100;
+      return `<div class="insp-row">
+        <div class="label">${label}<b>${fmt(value, dec)}</b></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(1)}%;background:${color}"></div></div>
+      </div>`;
+    }
+
+    // The cell table is built once (the 111 rows and their static role
+    // columns never change), then only its dynamic text cells are updated
+    // each tick. The old version rebuilt the whole table via innerHTML and
+    // re-attached ~330 listeners every poll and on every hover — heavy on
+    // phones, which this dashboard is expected to run on.
+    const tableRows = {};   // n -> { tr, dynamic td references }
+    let tableBuilt = false;
+
+    function buildCellTable(cells) {
+      const body = document.getElementById("cellTableBody");
+      if (!body) return;
+      body.innerHTML = "";
+      cells.slice().sort((a, b) => a.n - b.n).forEach(c => {
+        const role = ROLE[roleOf(c)];
+        const tr = document.createElement("tr");
+        tr.dataset.cell = c.n;
+        tr.innerHTML =
+          `<td><span class="cell-role-dot" style="background:${role.color}"></span><span class="cell-name">${c.name}</span></td>` +
+          `<td>${role.label}</td><td>${c.hardware_id || "—"}</td>` +
+          "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
+        body.appendChild(tr);
+        const tds = tr.querySelectorAll("td");
+        tableRows[c.n] = {
+          tr,
+          act: tds[3], energy: tds[4], fatigue: tds[5], pressure: tds[6],
+          rel: tds[7], ripple: tds[8], state: tds[9], interval: tds[10], gain: tds[11],
+        };
+      });
+
+      // One delegated listener set for the whole table.
+      body.addEventListener("mouseover", e => {
+        const tr = e.target.closest("tr[data-cell]");
+        if (tr) setHover(Number(tr.dataset.cell));
+      });
+      body.addEventListener("mouseleave", () => setHover(null));
+      body.addEventListener("click", e => {
+        const tr = e.target.closest("tr[data-cell]");
+        if (!tr) return;
+        const n = Number(tr.dataset.cell);
+        pinned = (pinned === n) ? null : n;
+        renderInspector(); updateTableSelection(); applySelection();
+      });
+      tableBuilt = true;
+    }
+
+    function updateTableSelection() {
+      if (!tableBuilt) return;
+      const sel = pinned != null ? pinned : hoverId;
+      for (const n in tableRows) {
+        tableRows[n].tr.classList.toggle("selected", Number(n) === sel);
+      }
+    }
+
+    function renderCellTable() {
+      if (!latest || !latest.cells || latest.cells.length === 0) return;
+      if (!tableBuilt) buildCellTable(latest.cells);
+      latest.cells.forEach(c => {
+        const R = tableRows[c.n];
+        if (!R) return;
+        R.act.textContent = fmt(c.activation, 3);
+        R.energy.textContent = fmt(c.energy, 3);
+        R.fatigue.textContent = fmt(c.fatigue, 3);
+        R.pressure.textContent = fmt(c.pressure, 3);
+        R.rel.textContent = fmt(c.relevance ?? c.memory, 3);
+        R.ripple.textContent = fmt(c.ripple, 3);
+        R.state.textContent = c.state || c.sleep_state || "active";
+        R.interval.textContent = c.tick_interval ?? "--";
+        R.gain.textContent = fmt(c.homeo_gain, 2);
+      });
+      updateTableSelection();
+    }
+
+    function renderInspector() {
+      const box = document.getElementById("inspector");
+      const sel = pinned != null ? pinned : hoverId;
+      if (!latest || sel == null) {
+        box.innerHTML = '<div class="hint">Hover a cell or table row to inspect it. Click to pin.</div>';
+        return;
+      }
+      const c = (latest.cells || []).find(x => x.n === sel);
+      if (!c) return;
+      const role = ROLE[roleOf(c)];
+      const hw = c.hardware_id ? c.hardware_id : "none";
+      box.innerHTML = `
+        <div class="insp-name" style="color:${role.color}">${c.name}</div>
+        <div class="insp-role">${role.label} · ${c.type} · hardware: ${hw}</div>
+        ${bar("activation", c.activation, 1, role.color, 3)}
+        ${bar("energy", c.energy, 1, role.color, 3)}
+        ${bar("fatigue", c.fatigue, 1, C.fatigue, 3)}
+        ${bar("relevance", c.relevance ?? c.memory, 1, C.rel, 3)}
+        ${bar("pressure", c.pressure, 2, C.accent, 3)}
+        ${bar("ripple", Math.abs(c.ripple || 0), 0.75, "#ffffff", 3)}
+        <div class="insp-row"><div class="label">state<b>${c.state || c.sleep_state || "active"}</b></div></div>
+        <div class="insp-row"><div class="label">tick interval<b>${c.tick_interval ?? "--"}</b></div></div>
+        <div class="insp-row"><div class="label">size<b>${fmt(c.size, 2)}</b></div></div>
+        <div class="insp-row"><div class="label">homeo gain<b>${fmt(c.homeo_gain, 2)}</b></div></div>
+        ${pinned === sel ? '<div class="pinned-note">pinned — click again to release</div>' : ''}
+      `;
+    }
+
+    function setStatus(f) {
+      const dot = document.getElementById("dot");
+      const status = document.getElementById("status");
+      if (f && f.updated_at) {
+        const age = (Date.now() - new Date(f.updated_at).getTime()) / 1000;
+        if (age < STALE_AFTER_S) {
+          dot.className = "dot live";
+          status.textContent = "live · tick " + (f.tick ?? "--") + " · " + f.updated_at.slice(11, 19);
+        } else {
+          dot.className = "dot stale";
+          status.textContent = "stale · last seen " + f.updated_at.slice(11, 19) + " (" + Math.round(age) + "s ago)";
+        }
+      } else {
+        dot.className = "dot stale";
+        status.textContent = "no data yet — is the collector running?";
+      }
+    }
+
+    async function pullField() {
+      try {
+        const f = await (await fetch(dataUrl("state.json", API + "/api/field"))).json();
+        setStatus(f);
+        // Same tick = nothing changed; keep the staleness check above but
+        // skip the SVG/table render entirely.
+        if (latest && f.tick === latest.tick) return;
+        renderReadout(f);
+        renderMetabolism(f);
+        render(f);
+      } catch (err) {
+        document.getElementById("dot").className = "dot stale";
+        document.getElementById("status").textContent = STATIC_MODE ? "static data unavailable" : "server unreachable";
+      }
+    }
+
+    async function pullHealth() {
+      try {
+        const h = await (await fetch(dataUrl("health.json", API + "/api/health"))).json();
+        document.getElementById("health").innerHTML =
+          "DB: " + (h.db_path || "--") + "<br>" +
+          "field ticks: " + (h.rows_field_tick ?? "--") +
+          " · cell rows: " + (h.rows_cell ?? "--") +
+          " · weight rows: " + (h.rows_weight ?? "--") + "<br>" +
+          "events: " + (h.rows_event ?? "--") +
+          " · sleep summaries: " + (h.rows_sleep ?? "--") + "<br>" +
+          "latest logged tick: " + (h.latest_tick ?? "--");
+      } catch (err) { /* ignore */ }
+    }
+
+    pullField(); pullHealth();
+    setInterval(pullField, POLL_MS);
+    setInterval(pullHealth, 60000);
+  </script>
+</body>
+
+</html>

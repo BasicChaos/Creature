@@ -1,0 +1,530 @@
+#include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
+#include <Wire.h>
+#include <BH1750.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <driver/i2s.h>
+#include <math.h>
+
+#if __has_include("creature_wifi_secrets.h")
+#include "creature_wifi_secrets.h"
+#endif
+
+// ---------------------------------------------------------------------------
+// Creature body node firmware (v.05)
+// Board: ESP32-S3-DevKitC-1-N8R8
+//
+// Bring-up switches: enable one sensor at a time while the wiring is settled.
+//   ENABLE_MIC    1 = read the INMP441 (I2S), stream sound_rms
+//   ENABLE_LIGHT  1 = read the BH1750 (I2C), stream light_lux
+// A sensor set to 0 is skipped completely: no init, no errors, not in output.
+// Turn ENABLE_LIGHT back to 1 once the BH1750 header is soldered.
+//
+// Streams one JSON line per sample over USB serial and, when WiFi is configured,
+// over a small TCP server, for example:
+//   {"time_ms":<ms>,"sound_rms":<float>}
+// The Raspberry Pi collector normalizes raw values to 0-1.
+//
+// A temporary "status" line prints every 2 seconds for bring-up debugging.
+// Still accepts "LED:<0-255>\n" for the onboard NeoPixel over USB or TCP.
+//
+// WiFi is disabled unless CREATURE_WIFI_SSID is defined and non-empty. Keep real
+// credentials out of git by creating include/creature_wifi_secrets.h with:
+//   #define CREATURE_WIFI_SSID "your-network"
+//   #define CREATURE_WIFI_PASSWORD "your-password"
+// ---------------------------------------------------------------------------
+
+#define ENABLE_MIC    1   // both sensors on (friction-pin contact until the iron arrives)
+#define ENABLE_LIGHT  1
+
+#ifndef CREATURE_WIFI_SSID
+#define CREATURE_WIFI_SSID ""
+#endif
+
+#ifndef CREATURE_WIFI_PASSWORD
+#define CREATURE_WIFI_PASSWORD ""
+#endif
+
+#ifndef CREATURE_WIFI_HOSTNAME
+#define CREATURE_WIFI_HOSTNAME "creature-esp"
+#endif
+
+#ifndef CREATURE_WIFI_PORT
+#define CREATURE_WIFI_PORT 7777
+#endif
+
+// ---- Onboard RGB LED (emitter) --------------------------------------------
+#define RGB_PIN     38
+#define NUM_PIXELS  1
+Adafruit_NeoPixel pixel(NUM_PIXELS, RGB_PIN, NEO_GRB + NEO_KHZ800);
+
+// ---- BH1750 ambient light sensor (I2C) ------------------------------------
+#define I2C_SDA_PIN 8
+#define I2C_SCL_PIN 9
+BH1750  lightMeter;
+bool    lightReady = false;
+uint8_t lightAddr  = 0x00;
+int     i2cFoundCount = 0;
+
+// ---- INMP441 microphone (I2S) ---------------------------------------------
+#define I2S_PORT          I2S_NUM_0
+#define I2S_SCK_PIN       5      // bit clock   (SCK / BCLK)
+#define I2S_WS_PIN        6      // word select (WS / LRCL)
+#define I2S_SD_PIN        7      // serial data out from the mic (SD)
+#define I2S_SAMPLE_RATE   16000
+#define I2S_SAMPLE_COUNT  256
+int32_t i2sSamples[I2S_SAMPLE_COUNT];
+float   lastSoundRms = 0.0f;
+long    micCount = 0;
+int32_t micMin = 0;
+int32_t micMax = 0;
+int32_t micFirst[8];           // first raw samples of the last read, for debug
+int     micFirstN = 0;
+
+// ---- Sampling --------------------------------------------------------------
+const unsigned long SAMPLE_INTERVAL_MS = 100;   // 10 Hz output
+unsigned long lastSampleMs = 0;
+
+const unsigned long STATUS_INTERVAL_MS = 2000;  // temporary diagnostics
+unsigned long lastStatusMs = 0;
+
+// ---- Optional WiFi TCP bridge ---------------------------------------------
+WiFiServer wifiServer(CREATURE_WIFI_PORT);
+WiFiClient wifiClient;
+bool wifiEnabled = strlen(CREATURE_WIFI_SSID) > 0;
+bool wifiServerStarted = false;
+bool mdnsStarted = false;
+unsigned long lastWifiAttemptMs = 0;
+const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+
+String serialCommand = "";
+String wifiCommand = "";
+
+// Forward declarations
+void  setRgb(uint8_t red, uint8_t green, uint8_t blue);
+void  scanI2C();
+void  setupLight();
+void  setupI2SMic();
+float readSoundRms();
+void  setupWifi();
+void  serviceWifi();
+void  readSerialCommands();
+void  readWifiCommands();
+void  writeLineToTransports(const String& line);
+void  writeSystemLineToTransports(const String& line);
+
+// ---------------------------------------------------------------------------
+void handleCommand(String command, const char* source)
+{
+  command.trim();
+
+  if (command.startsWith("LED:"))
+  {
+    int brightness = command.substring(4).toInt();
+    brightness = constrain(brightness, 0, 255);
+
+    pixel.setBrightness(brightness);
+    setRgb(0, 0, 255);
+
+    String response = "{\"system\":\"led_command_received\",\"source\":\"";
+    response += source;
+    response += "\",\"brightness\":";
+    response += brightness;
+    response += "}";
+    writeSystemLineToTransports(response);
+  }
+}
+
+void readSerialCommands()
+{
+  while (Serial.available() > 0)
+  {
+    char incomingChar = Serial.read();
+
+    if (incomingChar == '\n')
+    {
+      handleCommand(serialCommand, "serial");
+      serialCommand = "";
+    }
+    else
+    {
+      serialCommand += incomingChar;
+    }
+  }
+}
+
+void readWifiCommands()
+{
+  if (!wifiClient || !wifiClient.connected())
+  {
+    return;
+  }
+
+  while (wifiClient.available() > 0)
+  {
+    char incomingChar = wifiClient.read();
+
+    if (incomingChar == '\n')
+    {
+      handleCommand(wifiCommand, "wifi");
+      wifiCommand = "";
+    }
+    else
+    {
+      wifiCommand += incomingChar;
+    }
+  }
+}
+
+void writeLineToTransports(const String& line)
+{
+  Serial.println(line);
+
+  if (wifiClient && wifiClient.connected())
+  {
+    wifiClient.println(line);
+  }
+}
+
+void writeSystemLineToTransports(const String& line)
+{
+  writeLineToTransports(line);
+}
+
+void setupWifi()
+{
+  if (!wifiEnabled)
+  {
+    Serial.println("{\"system\":\"wifi_disabled\",\"reason\":\"no_ssid\"}");
+    return;
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(CREATURE_WIFI_HOSTNAME);
+  WiFi.begin(CREATURE_WIFI_SSID, CREATURE_WIFI_PASSWORD);
+  lastWifiAttemptMs = millis();
+
+  Serial.print("{\"system\":\"wifi_connecting\",\"ssid\":\"");
+  Serial.print(CREATURE_WIFI_SSID);
+  Serial.println("\"}");
+}
+
+void serviceWifi()
+{
+  if (!wifiEnabled)
+  {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    if (now - lastWifiAttemptMs >= WIFI_RETRY_INTERVAL_MS)
+    {
+      lastWifiAttemptMs = now;
+      wifiServerStarted = false;
+      mdnsStarted = false;
+      WiFi.disconnect();
+      WiFi.begin(CREATURE_WIFI_SSID, CREATURE_WIFI_PASSWORD);
+      Serial.println("{\"system\":\"wifi_reconnecting\"}");
+    }
+    return;
+  }
+
+  if (!wifiServerStarted)
+  {
+    wifiServer.begin();
+    wifiServer.setNoDelay(true);
+    wifiServerStarted = true;
+
+    mdnsStarted = MDNS.begin(CREATURE_WIFI_HOSTNAME);
+    if (mdnsStarted)
+    {
+      MDNS.addService("creature", "tcp", CREATURE_WIFI_PORT);
+    }
+
+    String line = "{\"system\":\"wifi_ready\",\"ip\":\"";
+    line += WiFi.localIP().toString();
+    line += "\",\"hostname\":\"";
+    line += CREATURE_WIFI_HOSTNAME;
+    line += ".local";
+    line += "\",\"port\":";
+    line += CREATURE_WIFI_PORT;
+    line += ",\"mdns\":";
+    line += mdnsStarted ? "true" : "false";
+    line += "}";
+    writeSystemLineToTransports(line);
+  }
+
+  if (!wifiClient || !wifiClient.connected())
+  {
+    WiFiClient newClient = wifiServer.available();
+    if (newClient)
+    {
+      if (wifiClient)
+      {
+        wifiClient.stop();
+      }
+      wifiClient = newClient;
+      wifiClient.setNoDelay(true);
+      writeSystemLineToTransports("{\"system\":\"wifi_client_connected\"}");
+    }
+  }
+}
+
+void setRgb(uint8_t red, uint8_t green, uint8_t blue)
+{
+  pixel.setPixelColor(0, pixel.Color(red, green, blue));
+  pixel.show();
+}
+
+// Print every I2C address that answers, and record how many were found.
+void scanI2C()
+{
+  i2cFoundCount = 0;
+  String line = "{\"system\":\"i2c_scan\",\"found\":[";
+  bool first = true;
+  for (uint8_t addr = 1; addr < 127; addr++)
+  {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0)
+    {
+      if (!first) line += ",";
+      line += "\"0x";
+      line += String(addr, HEX);
+      line += "\"";
+      first = false;
+      i2cFoundCount++;
+    }
+  }
+  line += "]}";
+  writeSystemLineToTransports(line);
+}
+
+// Try the BH1750 at both possible addresses: 0x23 (ADDR low) and 0x5C (high).
+void setupLight()
+{
+  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire))
+  {
+    lightReady = true;
+    lightAddr  = 0x23;
+  }
+  else if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x5C, &Wire))
+  {
+    lightReady = true;
+    lightAddr  = 0x5C;
+  }
+  else
+  {
+    lightReady = false;
+    lightAddr  = 0x00;
+  }
+}
+
+// Configure the I2S peripheral for the INMP441 (receive, mono left channel).
+void setupI2SMic()
+{
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = I2S_SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = I2S_SAMPLE_COUNT,
+    .use_apll = false,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pin_config = {
+    .mck_io_num = I2S_PIN_NO_CHANGE,     // master clock not used by the INMP441
+    .bck_io_num = I2S_SCK_PIN,
+    .ws_io_num = I2S_WS_PIN,
+    .data_out_num = I2S_PIN_NO_CHANGE,   // mic is input only
+    .data_in_num = I2S_SD_PIN
+  };
+
+  i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pin_config);
+  i2s_zero_dma_buffer(I2S_PORT);
+}
+
+// Drain the whole I2S buffer each call so we always measure current audio with
+// no backlog, then return the DC-removed RMS (the AC amplitude of the sound).
+// Also records sample count and min/max for diagnostics.
+float readSoundRms()
+{
+  double  sum   = 0.0;
+  double  sumSq = 0.0;
+  long    count = 0;
+  int32_t mn    = 2147483647;
+  int32_t mx    = -2147483648;
+  micFirstN = 0;
+
+  while (true)
+  {
+    size_t bytesRead = 0;
+    esp_err_t res = i2s_read(I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
+    if (res != ESP_OK || bytesRead == 0)
+    {
+      break;
+    }
+
+    int samples = bytesRead / sizeof(int32_t);
+    for (int i = 0; i < samples; i++)
+    {
+      int32_t s = i2sSamples[i] >> 8;   // signed 24-bit sample
+      if (micFirstN < 8) micFirst[micFirstN++] = s;
+      if (s < mn) mn = s;
+      if (s > mx) mx = s;
+      double v = (double)s;
+      sum   += v;
+      sumSq += v * v;
+      count++;
+    }
+
+    if (bytesRead < sizeof(i2sSamples))
+    {
+      break;
+    }
+  }
+
+  micCount = count;
+  if (count == 0)
+  {
+    micMin = 0;
+    micMax = 0;
+    return lastSoundRms;
+  }
+  micMin = mn;
+  micMax = mx;
+
+  double mean     = sum / count;
+  double variance = (sumSq / count) - (mean * mean);
+  if (variance < 0.0) variance = 0.0;
+
+  lastSoundRms = (float)sqrt(variance);
+  return lastSoundRms;
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  delay(1000);
+
+  pixel.begin();
+  pixel.setBrightness(20);
+  pixel.clear();
+  pixel.show();
+
+  setupWifi();
+
+#if ENABLE_LIGHT
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  scanI2C();
+  setupLight();
+#endif
+
+#if ENABLE_MIC
+  setupI2SMic();
+#endif
+
+  String startLine = "{\"system\":\"creature body node v05 started\"";
+#if ENABLE_LIGHT
+  startLine += ",\"light_ready\":";
+  startLine += lightReady ? "true" : "false";
+  startLine += ",\"light_addr\":\"0x";
+  startLine += String(lightAddr, HEX);
+  startLine += "\"";
+#endif
+  startLine += ",\"mic\":";
+  startLine += ENABLE_MIC ? "true" : "false";
+  startLine += ",\"wifi_enabled\":";
+  startLine += wifiEnabled ? "true" : "false";
+  startLine += "}";
+  writeSystemLineToTransports(startLine);
+}
+
+void loop()
+{
+  unsigned long now = millis();
+  serviceWifi();
+  readSerialCommands();
+  readWifiCommands();
+
+  if (now - lastSampleMs < SAMPLE_INTERVAL_MS)
+  {
+    return;
+  }
+  lastSampleMs = now;
+
+#if ENABLE_LIGHT
+  float lightLux = lightReady ? lightMeter.readLightLevel() : -1.0f;
+  if (lightReady && lightLux < 0.0f)
+  {
+    // Negative means the read failed mid-transfer, almost always a loose
+    // contact. Drop to "not ready" so the status block re-inits when it returns.
+    lightReady = false;
+  }
+#endif
+#if ENABLE_MIC
+  float soundRms = readSoundRms();
+#endif
+
+  String sampleLine = "{\"time_ms\":";
+  sampleLine += now;
+#if ENABLE_LIGHT
+  sampleLine += ",\"light_lux\":";
+  sampleLine += String(lightLux, 1);
+#endif
+#if ENABLE_MIC
+  sampleLine += ",\"sound_rms\":";
+  sampleLine += String(soundRms, 1);
+#endif
+  sampleLine += "}";
+  writeLineToTransports(sampleLine);
+
+  // ---- STATUS (temporary bring-up diagnostics) -----------------------------
+  if (now - lastStatusMs >= STATUS_INTERVAL_MS)
+  {
+    lastStatusMs = now;
+
+#if ENABLE_LIGHT
+    if (!lightReady)
+    {
+      scanI2C();
+      setupLight();
+    }
+#endif
+
+    String statusLine = "{\"system\":\"status\"";
+#if ENABLE_LIGHT
+    statusLine += ",\"light_ready\":";
+    statusLine += lightReady ? "true" : "false";
+    statusLine += ",\"light_addr\":\"0x";
+    statusLine += String(lightAddr, HEX);
+    statusLine += "\",\"i2c_found\":";
+    statusLine += i2cFoundCount;
+#endif
+#if ENABLE_MIC
+    statusLine += ",\"mic_n\":";
+    statusLine += micCount;
+    statusLine += ",\"mic_min\":";
+    statusLine += micMin;
+    statusLine += ",\"mic_max\":";
+    statusLine += micMax;
+    statusLine += ",\"mic_s\":[";
+    for (int i = 0; i < micFirstN; i++)
+    {
+      if (i) statusLine += ",";
+      statusLine += micFirst[i];
+    }
+    statusLine += "]";
+#endif
+    statusLine += "}";
+    writeSystemLineToTransports(statusLine);
+  }
+}
