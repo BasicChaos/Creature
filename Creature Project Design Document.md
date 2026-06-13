@@ -2,6 +2,7 @@ Creature Project Design Document
 
 Version: May 31 2026
 ---
+
 Runtime note: all Creature services (collector, mind, dashboard) run on the Raspberry Pi 3 B+. The Mac is only used for editing and Git. The ESP32 is the body and runs no logic.
 
 Purpose
