@@ -29,7 +29,7 @@ from datetime import datetime
 
 CELL_COUNT = 111
 SNAPSHOT_VERSION = 5
-FIELD_VERSION = "v05.4"
+FIELD_VERSION = "v05.4.1"
 
 # Stable cell roles. IDs are persistent history, not fixed physical positions.
 SOUND_ANCHOR = 5      # INMP441
@@ -125,7 +125,16 @@ CELL_ENERGY_MAX = 1.0
 CELL_ENERGY_FLOOR_TO_FIRE = 0.035
 GLOBAL_ENERGY_INIT = 24.0
 GLOBAL_ENERGY_MAX = 36.0
-GLOBAL_REPLENISH_PER_TICK = 0.32
+# v05.4.1: raised 0.32 -> 0.7. At 0.32 the shared reserve could not cover the
+# aggregate draw of ~20+ cells kept active by sustained input, so once it hit
+# zero it deadlocked there: cells could not refill, yet kept firing on incoming
+# pressure, and the field fell into chronic low-energy sleep (which applies the
+# 1.5x structural-decay penalty and erodes connections). Replaying the real
+# 2026-06-12 overnight log through field_lab confirmed it: at 0.32 the reserve
+# drained to 0 by tick ~3000 and live links collapsed 386 -> 30; at 0.7 the
+# reserve holds near 35, low-energy sleeps drop 45 -> 2, and ~2.5x more links
+# survive. Re-test with tools/field_lab.py if you change this.
+GLOBAL_REPLENISH_PER_TICK = 0.7
 ACTIVE_CELL_REFILL = 0.016
 RESTING_CELL_REFILL = 0.008
 DORMANT_CELL_REFILL = 0.003

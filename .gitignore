@@ -31,13 +31,8 @@ Code/Python/data/*.sqlite3
 .DS_Store
 .vscode/
 
-# Obsidian local app state
-Obsidian/Creature/.obsidian/workspace.json
-Obsidian/Creature/.obsidian/workspace-mobile.json
-
-# Optional: Obsidian plugins/themes can be reinstalled
-Obsidian/Creature/.obsidian/plugins/
-Obsidian/Creature/.obsidian/themes/**/.history/
+# Obsidian vault: kept local, copied in occasionally for reference
+Obsidian/
 **/.history/
 
 Code/Python/dashboard/public/

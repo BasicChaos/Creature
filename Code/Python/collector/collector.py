@@ -74,7 +74,19 @@ LIGHT_MIN_RANGE = 50.0       # lux span below this counts as "no real change"
 SOUND_WINDOW_SECONDS = 20.0
 SOUND_EMA_ALPHA = 0.05
 SOUND_MIN_RANGE = 500.0      # rms span below this counts as quiet
-SOUND_RESPONSE_FLOOR = float(os.environ.get("CREATURE_SOUND_RESPONSE_FLOOR", "0.03"))
+# Noise gate. The rolling normalizer reports "where is this inside the recent
+# range", so in a quiet room it stretches fridge/HVAC hum to fill 0-1 and a
+# silent 3 a.m. read came out near 0.13 linear, which the old floor of 0.03
+# then passed and the curve boosted to ~0.27. The creature "heard" a quiet dark
+# room as moderately loud all night, which kept cells firing, drained the
+# energy reserve, and eroded structure. Raising the floor to 0.20 gates the
+# ambient median to 0 (89% of overnight ticks read silent in replay) while
+# louder transients still pass (evenings still average ~0.06). Gain and
+# exponent are unchanged so real events stay reactive. NOTE: this threshold is
+# on the floating normalized value, tuned to the current room. The durable fix
+# is to also log raw sound_rms so the normalizer can be calibrated against an
+# absolute level; see the design doc's open items.
+SOUND_RESPONSE_FLOOR = float(os.environ.get("CREATURE_SOUND_RESPONSE_FLOOR", "0.20"))
 SOUND_RESPONSE_GAIN = float(os.environ.get("CREATURE_SOUND_RESPONSE_GAIN", "1.25"))
 SOUND_RESPONSE_EXPONENT = float(os.environ.get("CREATURE_SOUND_RESPONSE_EXPONENT", "0.65"))
 
