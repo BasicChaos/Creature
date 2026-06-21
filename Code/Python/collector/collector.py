@@ -1,9 +1,9 @@
 """
-Creature collector (v05.3).
+Creature collector (v06.1, drives the twelve-cell ring).
 
 Reads the ESP stream (one JSON line per sample, ~10 Hz), normalizes
-light and sound to 0-1, and steps the 111-cell field once per second. C29's
-activation drives the onboard LED. The database is observation, not memory:
+light and sound to 0-1, and steps the v06 twelve-cell ring once per second.
+The mean emitter activation drives the onboard LED. The database is observation, not memory:
 high-volume cell detail is sampled, while structure and sleep summaries are
 kept as the longer-lived record.
 
@@ -33,12 +33,12 @@ PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
 
-from mind.cell_field import (
+from mind.cell_field_v06 import (
     build_field,
     save_field,
     load_field,
     CELL_COUNT,
-    EMITTER_ANCHOR,
+    EMITTER_ANCHORS,
     FIELD_VERSION,
 )
 from mind.normalize import RollingNormalizer
@@ -99,6 +99,13 @@ LED_MAX_BRIGHTNESS = int(os.environ.get("CREATURE_LED_MAX_BRIGHTNESS", DEFAULT_L
 # STATE_JSON_PATH lands on tmpfs on the Pi, so the per-tick live snapshot
 # stops writing ~8 GB/day to the SSD. FIELD_STATE_PATH stays durable.
 from common.paths import DB_PATH, DB_DIR, STATE_JSON_PATH, FIELD_STATE_PATH
+
+# v06 keeps its own slow-state file so a v05 field state never cross-loads into
+# the twelve-cell ring. The v05 collector keeps using the original path.
+if FIELD_STATE_PATH.endswith(".json"):
+    FIELD_STATE_PATH = FIELD_STATE_PATH[: -len(".json")] + "_v06.json"
+else:
+    FIELD_STATE_PATH = FIELD_STATE_PATH + ".v06"
 
 
 def clamp(value, low, high):
@@ -497,7 +504,7 @@ def log_tick(cur, logged_at, state, sound_norm, sound_linear, light_norm, sent_b
             c["activation"], c["pressure"], c.get("energy"), c.get("fatigue"),
             c.get("relevance"), c.get("ripple"), c.get("state"),
             c.get("sleep_state"), c.get("tick_interval"),
-            c["size"], c["homeo_gain"],
+            c.get("size"), c.get("homeo_gain"),
         )
         for c in state["cells"]
     ])
@@ -693,7 +700,9 @@ def main():
         )
         light_value = light_norm.normalized()
 
-        state = field.step(sound_value, light_value)
+        # v06 step takes a sense dict; motion and weather are not streaming yet,
+        # so they default to 0.0 inside the field.
+        state = field.step({"sound": sound_value, "light": light_value})
 
         brightness = emitter_to_brightness(field.emitter_activation, LED_MAX_BRIGHTNESS)
         try:
@@ -725,8 +734,14 @@ def main():
                 f"{counts.get('dormant', 0)}/"
                 f"{counts.get('deep_sleep', 0)}"
             )
-            print(f"t{tick}  sound={sound_value:.2f}({sound_linear:.2f})  light={light_value:.2f}  "
-                  f"C{EMITTER_ANCHOR}={state['emitter_activation']:.2f}  "
+            emit_acts = state.get("emitter_activations", {})
+            act_by_n = {c["n"]: c["activation"] for c in state["cells"]}
+            sense_anchors = state.get("sense_anchors", {})
+            snd_anchor = act_by_n.get(sense_anchors.get("sound"), 0.0)
+            lit_anchor = act_by_n.get(sense_anchors.get("light"), 0.0)
+            print(f"t{tick}  in sound={sound_value:.2f}({sound_linear:.2f}) light={light_value:.2f}  "
+                  f"anchors snd={snd_anchor:.2f} lit={lit_anchor:.2f}  "
+                  f"emit={state['emitter_activation']:.2f} {emit_acts}  "
                   f"led={sent_brightness}  E={metabolism.get('energy_reserve', 0):.1f}  "
                   f"M={metabolism.get('memory_pressure', 0):.2f}  states={count_text}")
 
@@ -759,6 +774,12 @@ def main():
             "sleep_summary": state.get("sleep_summary"),
             "cells": state["cells"],
             "connections": state["connections"],
+            "sense_anchors": state.get("sense_anchors"),
+            "emitter_anchors": state.get("emitter_anchors"),
+            "ring": state.get("ring"),
+            "emitter_activations": state.get("emitter_activations"),
+            "reservoir": state.get("reservoir"),
+            "readout": state.get("readout"),
         }
         write_json_atomic(STATE_JSON_PATH, snapshot)
 
