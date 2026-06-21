@@ -393,7 +393,7 @@
 
   <div class="viewer">
     <div class="panel stage">
-      <h2>Live field — 111 cells</h2>
+      <h2 id="fieldHeading">Live field — 111 cells</h2>
       <svg id="field" viewBox="0 0 760 660" xmlns="http://www.w3.org/2000/svg" aria-label="Creature cell field"></svg>
     </div>
 
@@ -445,7 +445,7 @@
     </div>
 
     <div class="bottom-panels">
-      <div class="panel">
+      <div class="panel" id="legendPanel">
         <h2>Legend</h2>
         <div class="legend-item"><span class="swatch" style="background:var(--sound)"></span> Sound anchor <span
             class="muted">· C5 · INMP441</span></div>
@@ -531,16 +531,24 @@
       sound: "#5ec8f8", light: "#f0a35e", emitter: "#5ee08a", free: "#8b95ff",
       fatigue: "#f0625e", line: "#232a33", accent: "#5ec8f8", rel: "#cfd8e3",
       linkGhost: "#4b5563",
+      motion: "#b98bff", weather: "#6ee0c2", loop: "#e0772b", reservoir: "#5fa8e0",
     };
     const ROLE = {
       sound: { color: C.sound, label: "Sound anchor", hw: "INMP441" },
       light: { color: C.light, label: "Light anchor", hw: "BH1750" },
+      motion: { color: C.motion, label: "Motion anchor", hw: "MPU-6050" },
+      weather: { color: C.weather, label: "Weather anchor", hw: "BME280" },
       emitter: { color: C.emitter, label: "Emitter anchor", hw: "NeoPixel" },
       free: { color: C.free, label: "Free cell", hw: null },
     };
 
     function roleOf(c) {
-      if (c.type === "anchor_sensor") return c.hardware_id === "light" ? "light" : "sound";
+      if (c.type === "anchor_sensor") {
+        if (c.hardware_id === "light") return "light";
+        if (c.hardware_id === "motion") return "motion";
+        if (c.hardware_id === "weather") return "weather";
+        return "sound";
+      }
       if (c.type === "anchor_emitter") return "emitter";
       return "free";
     }
@@ -649,7 +657,7 @@
     function setHover(n) {
       if (n === hoverId) return;
       hoverId = n;
-      renderInspector(); updateTableSelection(); applySelection();
+      renderInspector(); updateTableSelection(); (v06Mode ? applySelectionV06 : applySelection)();
     }
 
     function applySelection() {
@@ -911,6 +919,209 @@
       }
     }
 
+    // ---- v06 ring view (twelve-cell ring + reservoir + two emitters) ----
+    // Activates on a v06 snapshot. Geometry follows Creature v06.md and
+    // v06_ring_layout.svg, drawn entirely from the snapshot (ring,
+    // sense_anchors, emitter_anchors, connections, reservoir, readout).
+    let v06Mode = false;
+    const v06 = { built: false, cellEls: {}, resEls: [], linkByKey: {}, readoutLines: [] };
+    const V6 = { CX: 380, CY: 318, R_OUT: 216, R_RES: 104 };
+    const V6_LOOP_CELLS = [1, 7];
+
+    function isV06Snapshot(f) {
+      return (f.field_version || "").indexOf("v06") === 0 || f.cell_count === 12 || Array.isArray(f.ring);
+    }
+    function ringPos(i) {
+      const a = (-90 - i * 30) * Math.PI / 180;
+      return { x: V6.CX + V6.R_OUT * Math.cos(a), y: V6.CY + V6.R_OUT * Math.sin(a) };
+    }
+    function resPos(j) {
+      const a = (-90 - (2 * j + 1) * 30) * Math.PI / 180;
+      return { x: V6.CX + V6.R_RES * Math.cos(a), y: V6.CY + V6.R_RES * Math.sin(a) };
+    }
+    function radialLabelPos(i, out) {
+      const a = (-90 - i * 30) * Math.PI / 180;
+      const r = V6.R_OUT + out;
+      return { x: V6.CX + r * Math.cos(a), y: V6.CY + r * Math.sin(a) };
+    }
+
+    function buildV06(f) {
+      [...svg.childNodes].forEach(n => { if (n.tagName !== "defs") svg.removeChild(n); });
+      const heading = document.getElementById("fieldHeading");
+      if (heading) heading.textContent = "Live field — twelve-cell ring + reservoir";
+
+      const emitters = f.emitter_anchors || [0, 6];
+      const loopCells = V6_LOOP_CELLS;
+
+      const gReadout = el("g", {}), gDrive = el("g", {}), gLinks = el("g", {});
+      const gHalo = el("g", {}), gRes = el("g", {}), gCells = el("g", {}), gTags = el("g", {});
+      svg.append(gReadout, gDrive, gLinks, gHalo, gRes, gCells, gTags);
+
+      const resSize = (f.reservoir && f.reservoir.size) || 6;
+      v06.resEls = [];
+      for (let j = 0; j < resSize; j++) {
+        const p = resPos(j);
+        const body = el("circle", { cx: p.x, cy: p.y, r: 11, fill: C.reservoir, "fill-opacity": 0.15, stroke: C.reservoir, "stroke-width": 1.6, "stroke-opacity": 0.85 });
+        const label = el("text", { x: p.x, y: p.y + 3.5, "text-anchor": "middle", class: "clabel" });
+        label.textContent = "R" + j;
+        gRes.append(body, label);
+        v06.resEls.push({ body });
+        const a = ringPos(2 * j + 1);
+        gDrive.appendChild(el("line", { x1: a.x, y1: a.y, x2: p.x, y2: p.y, stroke: C.reservoir, "stroke-width": 1, "stroke-opacity": 0.32 }));
+      }
+
+      v06.readoutLines = [];
+      emitters.forEach((em, ei) => {
+        const hwKey = ei === 0 ? "emitter_speaker" : "emitter_led";
+        const b = ringPos(em);
+        for (let j = 0; j < resSize; j++) {
+          const a = resPos(j);
+          const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: C.loop, "stroke-width": 1, "stroke-opacity": 0.08, "stroke-dasharray": "5 3" });
+          gReadout.appendChild(ln);
+          v06.readoutLines.push({ ln, hwKey, j });
+        }
+      });
+
+      v06.linkByKey = {};
+      (f.connections || []).forEach(cn => {
+        const a = ringPos(cn.a), b = ringPos(cn.b);
+        const loop = loopCells.indexOf(cn.a) >= 0 || loopCells.indexOf(cn.b) >= 0;
+        const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: C.rel, "stroke-width": 0.8, "stroke-opacity": 0.1, "stroke-linecap": "round" });
+        gLinks.appendChild(ln);
+        v06.linkByKey[cn.a + "-" + cn.b] = { ln, loop };
+      });
+
+      v06.cellEls = {};
+      (f.cells || []).forEach(c => {
+        const i = c.n, p = ringPos(i), role = roleOf(c), col = ROLE[role].color;
+        const baseR = c.type === "anchor_emitter" ? 17 : (c.type === "anchor_sensor" ? 15 : 12);
+        const halo = el("circle", { cx: p.x, cy: p.y, r: baseR, fill: "#fff", "fill-opacity": 0, filter: "url(#halo)" });
+        gHalo.appendChild(halo);
+        const g = el("g", { class: "cell", tabindex: 0 });
+        const rel = el("circle", { cx: p.x, cy: p.y, r: baseR + 5, fill: "none", stroke: C.rel, "stroke-width": 1, "stroke-opacity": 0.1 });
+        const ripple = el("circle", { cx: p.x, cy: p.y, r: baseR + 2, fill: "none", stroke: "#fff", "stroke-width": 1, "stroke-opacity": 0 });
+        const fatigue = el("circle", { cx: p.x, cy: p.y, r: baseR + 9, fill: "none", stroke: C.fatigue, "stroke-width": 1.5, "stroke-opacity": 0 });
+        const body = el("circle", { cx: p.x, cy: p.y, r: baseR, fill: col, "fill-opacity": 0.16, stroke: col, "stroke-width": 1.8, "stroke-opacity": 0.85 });
+        const label = el("text", { x: p.x, y: p.y + 3.5, "text-anchor": "middle", class: "clabel" });
+        label.textContent = "C" + i;
+        g.append(rel, ripple, fatigue, body, label);
+        gCells.appendChild(g);
+        v06.cellEls[i] = { halo, rel, ripple, fatigue, body, label, baseR, col };
+        g.addEventListener("mouseenter", () => setHover(i));
+        g.addEventListener("mouseleave", () => setHover(null));
+        g.addEventListener("focus", () => setHover(i));
+        g.addEventListener("click", () => { pinned = (pinned === i) ? null : i; renderInspector(); });
+
+        if (c.type === "anchor_emitter" || c.type === "anchor_sensor") {
+          const lp = radialLabelPos(i, 30);
+          const t1 = el("text", { x: lp.x, y: lp.y, "text-anchor": "middle", class: "hwlabel", fill: col });
+          t1.textContent = (c.label || "").replace("emitter_", "").toUpperCase();
+          const t2 = el("text", { x: lp.x, y: lp.y + 12, "text-anchor": "middle", class: "hwsub" });
+          t2.textContent = ROLE[role].hw;
+          gTags.append(t1, t2);
+        }
+      });
+
+      setV06Legend();
+      v06.built = true;
+    }
+
+    function renderV06(f) {
+      latest = f;
+      const byN = {};
+      (f.cells || []).forEach(c => byN[c.n] = c);
+
+      let liveLinks = 0;
+      (f.connections || []).forEach(cn => {
+        const rec = v06.linkByKey[cn.a + "-" + cn.b] || v06.linkByKey[cn.b + "-" + cn.a];
+        if (!rec) return;
+        const ln = rec.ln, w = cn.weight || 0;
+        if (w <= 0.025) {
+          ln.setAttribute("stroke", rec.loop ? C.loop : C.linkGhost);
+          ln.setAttribute("stroke-width", rec.loop ? 1.6 : 0.8);
+          ln.setAttribute("stroke-opacity", rec.loop ? 0.4 : 0.16);
+          if (rec.loop) ln.removeAttribute("stroke-dasharray");
+          else ln.setAttribute("stroke-dasharray", "1 5");
+        } else {
+          if (w > 0.05) liveLinks++;
+          const wf = clamp01(w / W_MAX);
+          ln.setAttribute("stroke", rec.loop ? C.loop : C.rel);
+          ln.setAttribute("stroke-width", ((rec.loop ? 1.8 : 0.8) + 3.4 * wf).toFixed(2));
+          ln.setAttribute("stroke-opacity", ((rec.loop ? 0.5 : 0.12) + 0.55 * wf).toFixed(3));
+          ln.removeAttribute("stroke-dasharray");
+        }
+      });
+      const linksEl = document.getElementById("rLinks");
+      if (linksEl) { const total = (f.connections || []).length; linksEl.textContent = total ? `${liveLinks}/${total}` : "--"; }
+
+      Object.keys(v06.cellEls).forEach(k => {
+        const c = byN[Number(k)], E = v06.cellEls[k];
+        if (!c) return;
+        const a = clamp01(c.activation || 0);
+        const rel = clamp01(c.relevance ?? 0);
+        const energy = clamp01(c.energy ?? 1);
+        const fatigue = clamp01(c.fatigue || 0);
+        const pres = clamp01((c.pressure || 0) / 2);
+        const rip = clamp01(Math.abs(c.ripple || 0) / 0.75);
+        const stateName = c.state || "active";
+        const stateDim = stateName === "deep_sleep" ? 0.22 : (stateName === "dormant" ? 0.38 : (stateName === "resting" ? 0.68 : 1.0));
+        const dim = stateDim * (0.35 + 0.65 * energy);
+        const r = E.baseR;
+        E.body.setAttribute("fill-opacity", ((0.12 + 0.88 * Math.sqrt(a)) * dim).toFixed(3));
+        E.body.setAttribute("stroke-opacity", (0.20 + 0.74 * dim).toFixed(3));
+        E.rel.setAttribute("stroke-width", (1 + 4 * rel).toFixed(2));
+        E.rel.setAttribute("stroke-opacity", ((0.08 + 0.70 * rel) * (0.5 + 0.5 * stateDim)).toFixed(3));
+        E.ripple.setAttribute("r", (r + 2 + 15 * rip).toFixed(2));
+        E.ripple.setAttribute("stroke-opacity", (0.04 + 0.86 * rip).toFixed(3));
+        E.halo.setAttribute("r", (r + 6 + 18 * pres).toFixed(2));
+        E.halo.setAttribute("fill", E.col);
+        E.halo.setAttribute("fill-opacity", ((0.03 + 0.28 * pres) * dim).toFixed(3));
+        E.fatigue.setAttribute("stroke-opacity", (fatigue > 0.02 ? 0.18 + 0.70 * fatigue : 0).toFixed(3));
+        E.label.setAttribute("fill-opacity", stateName === "deep_sleep" ? 0.35 : 0.9);
+      });
+
+      const rstate = (f.reservoir && f.reservoir.state) || [];
+      v06.resEls.forEach((R, j) => {
+        const v = clamp01(Math.abs(rstate[j] || 0));
+        R.body.setAttribute("fill-opacity", (0.10 + 0.80 * v).toFixed(3));
+        R.body.setAttribute("stroke-opacity", (0.45 + 0.45 * v).toFixed(3));
+      });
+
+      const readout = f.readout || {};
+      v06.readoutLines.forEach(({ ln, hwKey, j }) => {
+        const ws = readout[hwKey] && readout[hwKey].weights;
+        const wv = ws ? Math.abs(ws[j] || 0) : 0;
+        ln.setAttribute("stroke-opacity", clamp01(0.06 + wv * 1.5).toFixed(3));
+        ln.setAttribute("stroke-width", (0.8 + 2.2 * clamp01(wv * 2)).toFixed(2));
+      });
+
+      applySelectionV06();
+      renderInspector();
+      renderCellTable();
+    }
+
+    function applySelectionV06() {
+      const sel = pinned != null ? pinned : hoverId;
+      Object.keys(v06.cellEls).forEach(k => {
+        const E = v06.cellEls[k];
+        E.body.setAttribute("stroke-width", Number(k) === sel ? 3.4 : (E.baseR >= 17 ? 2.2 : 1.8));
+      });
+    }
+
+    function setV06Legend() {
+      const panel = document.getElementById("legendPanel");
+      if (!panel) return;
+      panel.innerHTML =
+        "<h2>Legend</h2>" +
+        '<div class="legend-item"><span class="swatch" style="background:' + C.emitter + '"></span> Emitter <span class="muted">· speaker C0 · led C6</span></div>' +
+        '<div class="legend-item"><span class="swatch" style="background:' + C.sound + '"></span> Sound <span class="muted">· C2 · INMP441</span></div>' +
+        '<div class="legend-item"><span class="swatch" style="background:' + C.motion + '"></span> Motion <span class="muted">· C4 · MPU-6050</span></div>' +
+        '<div class="legend-item"><span class="swatch" style="background:' + C.light + '"></span> Light <span class="muted">· C8 · BH1750</span></div>' +
+        '<div class="legend-item"><span class="swatch" style="background:' + C.weather + '"></span> Weather <span class="muted">· C10 · BME280</span></div>' +
+        '<div class="legend-item"><span class="swatch" style="background:' + C.reservoir + '"></span> Reservoir <span class="muted">· R0-R5 · fixed weights</span></div>' +
+        '<div class="legend-sub"><span style="color:' + C.loop + '">Orange edges</span> = closed loop · dashed orange = trained readout to emitters · blue = reservoir drive.<br>Fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
+    }
+
     async function pullField() {
       try {
         const f = await (await fetch(dataUrl("state.json", API + "/api/field"))).json();
@@ -920,7 +1131,8 @@
         if (latest && f.tick === latest.tick) return;
         renderReadout(f);
         renderMetabolism(f);
-        render(f);
+        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built) buildV06(f); renderV06(f); }
+        else { v06Mode = false; render(f); }
       } catch (err) {
         document.getElementById("dot").className = "dot stale";
         document.getElementById("status").textContent = STATIC_MODE ? "static data unavailable" : "server unreachable";
