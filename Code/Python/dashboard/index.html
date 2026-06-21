@@ -1025,7 +1025,10 @@
           const t1 = el("text", { x: lp.x, y: lp.y, "text-anchor": "middle", class: "hwlabel", fill: col });
           t1.textContent = (c.label || "").replace("emitter_", "").toUpperCase();
           const t2 = el("text", { x: lp.x, y: lp.y + 12, "text-anchor": "middle", class: "hwsub" });
-          t2.textContent = ROLE[role].hw;
+          let hwName = ROLE[role].hw;
+          if (c.hardware_id === "emitter_speaker") hwName = "MAX98357A";
+          else if (c.hardware_id === "emitter_led") hwName = "SK6812 16px";
+          t2.textContent = hwName;
           gTags.append(t1, t2);
         }
       });
