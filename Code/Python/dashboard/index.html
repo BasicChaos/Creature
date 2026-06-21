@@ -380,9 +380,13 @@
           style="color:var(--sound)">--</span></div>
       <div class="stat"><span class="label">Light</span><span id="rLight" class="val"
           style="color:var(--light)">--</span></div>
+      <div class="stat"><span class="label">Motion</span><span id="rMotion" class="val"
+          style="color:#b98bff">--</span></div>
+      <div class="stat"><span class="label">Weather</span><span id="rWeather" class="val"
+          style="color:#6ee0c2">--</span></div>
       <div class="stat"><span class="label">Energy</span><span id="rEnergy" class="val">--</span></div>
       <div class="stat"><span class="label">Memory</span><span id="rMemory" class="val">--</span></div>
-      <div class="stat"><span class="label">C29 emit</span><span id="rEmit" class="val"
+      <div class="stat"><span class="label">Emit</span><span id="rEmit" class="val"
           style="color:var(--emitter)">--</span></div>
       <div class="stat"><span class="label">LED</span><span id="rLed" class="val">--</span></div>
       <div class="stat"><span class="label">States</span><span id="rStates" class="val">--</span></div>
@@ -762,6 +766,10 @@
       document.title = `${title} — live`;
       document.getElementById("rSound").textContent = fmt(f.sound_norm, 2);
       document.getElementById("rLight").textContent = fmt(f.light_norm, 2);
+      const rMot = document.getElementById("rMotion");
+      if (rMot) rMot.textContent = fmt(f.motion_norm, 2);
+      const rWth = document.getElementById("rWeather");
+      if (rWth) rWth.textContent = fmt(f.weather_norm, 2);
       const metabolism = f.metabolism || {};
       document.getElementById("rEnergy").textContent = fmt(metabolism.energy_reserve, 1);
       document.getElementById("rMemory").textContent = fmt(metabolism.memory_pressure, 2);

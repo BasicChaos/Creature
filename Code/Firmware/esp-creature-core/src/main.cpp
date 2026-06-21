@@ -2,6 +2,8 @@
 #include <Adafruit_NeoPixel.h>
 #include <Wire.h>
 #include <BH1750.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
@@ -37,6 +39,8 @@
 
 #define ENABLE_MIC    1   // both sensors on (friction-pin contact until the iron arrives)
 #define ENABLE_LIGHT  1
+#define ENABLE_MOTION   1   // ICM-20689 IMU (I2C 0x68), stream "motion" scalar
+#define ENABLE_WEATHER  1   // BME280 (I2C 0x76), stream "temp_c" and "pressure_hpa"
 
 #ifndef CREATURE_WIFI_SSID
 #define CREATURE_WIFI_SSID ""
@@ -66,6 +70,21 @@ BH1750  lightMeter;
 bool    lightReady = false;
 uint8_t lightAddr  = 0x00;
 int     i2cFoundCount = 0;
+
+// ---- ICM-20689 / MPU-6050-family IMU (I2C 0x68) ---------------------------
+#define IMU_ADDR          0x68   // AD0 to GND
+#define IMU_REG_WHOAMI    0x75
+#define IMU_REG_PWR_MGMT1 0x6B
+#define IMU_REG_ACCEL     0x3B   // ACCEL_XOUT_H, 6 bytes follow
+bool  imuReady = false;
+float lastMotion = 0.0f;
+
+// ---- BME280 weather sensor (I2C 0x76) -------------------------------------
+#define BME_ADDR 0x76            // SDO to GND; setup falls back to 0x77
+Adafruit_BME280 bme;
+bool  bmeReady = false;
+float lastTempC = 0.0f;
+float lastPressureHpa = 0.0f;
 
 // ---- INMP441 microphone (I2S) ---------------------------------------------
 #define I2S_PORT          I2S_NUM_0
@@ -105,6 +124,10 @@ String wifiCommand = "";
 void  setRgb(uint8_t red, uint8_t green, uint8_t blue);
 void  scanI2C();
 void  setupLight();
+void  setupIMU();
+float readMotion();
+void  setupBME();
+void  readWeather(float& tempC, float& pressureHpa);
 void  setupI2SMic();
 float readSoundRms();
 void  setupWifi();
@@ -322,6 +345,72 @@ void setupLight()
   }
 }
 
+// Read one IMU register over I2C (no library needed).
+uint8_t imuReadReg(uint8_t reg)
+{
+  Wire.beginTransmission(IMU_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+  Wire.requestFrom((int)IMU_ADDR, 1);
+  return Wire.available() ? Wire.read() : 0;
+}
+
+// Wake the IMU and confirm it answers. WHO_AM_I is 0x98 (ICM-20689) or 0x68.
+void setupIMU()
+{
+  uint8_t who = imuReadReg(IMU_REG_WHOAMI);
+  imuReady = (who == 0x98 || who == 0x68 || who == 0x70 || who == 0x71);
+  if (imuReady)
+  {
+    Wire.beginTransmission(IMU_ADDR);
+    Wire.write(IMU_REG_PWR_MGMT1);
+    Wire.write(0x00);              // clear the sleep bit
+    Wire.endTransmission();
+    delay(10);
+  }
+}
+
+// Burst-read accel and return the deviation of |a| from 1g: about zero at rest,
+// rising on movement or a tap. Default full scale is +/-2g => 16384 LSB per g.
+float readMotion()
+{
+  if (!imuReady) return 0.0f;
+  Wire.beginTransmission(IMU_ADDR);
+  Wire.write(IMU_REG_ACCEL);
+  Wire.endTransmission(false);
+  Wire.requestFrom((int)IMU_ADDR, 6);
+  uint8_t b[6];
+  for (int i = 0; i < 6; i++) b[i] = Wire.available() ? Wire.read() : 0;
+  int16_t ax = (int16_t)((b[0] << 8) | b[1]);
+  int16_t ay = (int16_t)((b[2] << 8) | b[3]);
+  int16_t az = (int16_t)((b[4] << 8) | b[5]);
+  float gx = ax / 16384.0f, gy = ay / 16384.0f, gz = az / 16384.0f;
+  float mag = sqrtf(gx * gx + gy * gy + gz * gz);
+  lastMotion = fabsf(mag - 1.0f);
+  return lastMotion;
+}
+
+// Try the BME280 at 0x76, then 0x77.
+void setupBME()
+{
+  bmeReady = bme.begin(BME_ADDR, &Wire) || bme.begin(0x77, &Wire);
+}
+
+// Read temperature (C) and pressure (hPa). Zero when the sensor is absent.
+void readWeather(float& tempC, float& pressureHpa)
+{
+  if (!bmeReady)
+  {
+    tempC = 0.0f;
+    pressureHpa = 0.0f;
+    return;
+  }
+  tempC = bme.readTemperature();
+  pressureHpa = bme.readPressure() / 100.0f;
+  lastTempC = tempC;
+  lastPressureHpa = pressureHpa;
+}
+
 // Configure the I2S peripheral for the INMP441 (receive, mono left channel).
 void setupI2SMic()
 {
@@ -422,23 +511,39 @@ void setup()
 
   setupWifi();
 
-#if ENABLE_LIGHT
+#if (ENABLE_LIGHT || ENABLE_MOTION || ENABLE_WEATHER)
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   scanI2C();
+#endif
+#if ENABLE_LIGHT
   setupLight();
+#endif
+#if ENABLE_MOTION
+  setupIMU();
+#endif
+#if ENABLE_WEATHER
+  setupBME();
 #endif
 
 #if ENABLE_MIC
   setupI2SMic();
 #endif
 
-  String startLine = "{\"system\":\"creature body node v05 started\"";
+  String startLine = "{\"system\":\"creature body node v06 started\"";
 #if ENABLE_LIGHT
   startLine += ",\"light_ready\":";
   startLine += lightReady ? "true" : "false";
   startLine += ",\"light_addr\":\"0x";
   startLine += String(lightAddr, HEX);
   startLine += "\"";
+#endif
+#if ENABLE_MOTION
+  startLine += ",\"imu_ready\":";
+  startLine += imuReady ? "true" : "false";
+#endif
+#if ENABLE_WEATHER
+  startLine += ",\"bme_ready\":";
+  startLine += bmeReady ? "true" : "false";
 #endif
   startLine += ",\"mic\":";
   startLine += ENABLE_MIC ? "true" : "false";
@@ -473,6 +578,13 @@ void loop()
 #if ENABLE_MIC
   float soundRms = readSoundRms();
 #endif
+#if ENABLE_MOTION
+  float motion = readMotion();
+#endif
+#if ENABLE_WEATHER
+  float tempC = 0.0f, pressureHpa = 0.0f;
+  readWeather(tempC, pressureHpa);
+#endif
 
   String sampleLine = "{\"time_ms\":";
   sampleLine += now;
@@ -483,6 +595,16 @@ void loop()
 #if ENABLE_MIC
   sampleLine += ",\"sound_rms\":";
   sampleLine += String(soundRms, 1);
+#endif
+#if ENABLE_MOTION
+  sampleLine += ",\"motion\":";
+  sampleLine += String(motion, 4);
+#endif
+#if ENABLE_WEATHER
+  sampleLine += ",\"temp_c\":";
+  sampleLine += String(tempC, 2);
+  sampleLine += ",\"pressure_hpa\":";
+  sampleLine += String(pressureHpa, 1);
 #endif
   sampleLine += "}";
   writeLineToTransports(sampleLine);

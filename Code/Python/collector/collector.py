@@ -90,6 +90,21 @@ SOUND_RESPONSE_FLOOR = float(os.environ.get("CREATURE_SOUND_RESPONSE_FLOOR", "0.
 SOUND_RESPONSE_GAIN = float(os.environ.get("CREATURE_SOUND_RESPONSE_GAIN", "1.25"))
 SOUND_RESPONSE_EXPONENT = float(os.environ.get("CREATURE_SOUND_RESPONSE_EXPONENT", "0.65"))
 
+# Motion is spiky and event-like, like sound: a rolling normalizer plus a floor
+# to gate the IMU's at-rest jitter, then a response curve for reactivity.
+MOTION_WINDOW_SECONDS = 20.0
+MOTION_EMA_ALPHA = 0.2
+MOTION_MIN_RANGE = 0.05
+MOTION_RESPONSE_FLOOR = float(os.environ.get("CREATURE_MOTION_RESPONSE_FLOOR", "0.15"))
+MOTION_RESPONSE_GAIN = float(os.environ.get("CREATURE_MOTION_RESPONSE_GAIN", "1.20"))
+MOTION_RESPONSE_EXPONENT = float(os.environ.get("CREATURE_MOTION_RESPONSE_EXPONENT", "0.70"))
+
+# Weather is the slow, steady sense. It must stay nonzero (the night floor), so
+# it maps an absolute indoor temperature span to 0-1 rather than a position in a
+# recent range. Pressure is carried for the record; fold it in later if wanted.
+WEATHER_TEMP_MIN = float(os.environ.get("CREATURE_WEATHER_TEMP_MIN", "10.0"))
+WEATHER_TEMP_MAX = float(os.environ.get("CREATURE_WEATHER_TEMP_MAX", "35.0"))
+
 # --- LED ---
 DEFAULT_LED_MAX_BRIGHTNESS = 80
 LED_MAX_BRIGHTNESS = int(os.environ.get("CREATURE_LED_MAX_BRIGHTNESS", DEFAULT_LED_MAX_BRIGHTNESS))
@@ -625,6 +640,9 @@ def main():
 
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
+    motion_norm = RollingNormalizer(MOTION_WINDOW_SECONDS, MOTION_EMA_ALPHA, MOTION_MIN_RANGE)
+    latest_temp_c = 0.0
+    latest_pressure_hpa = 0.0
 
     # Stop cleanly on Ctrl-C (SIGINT) and `systemctl stop` (SIGTERM).
     stop = {"requested": False}
@@ -686,6 +704,12 @@ def main():
         if sample is not None:
             light_norm.add(float(sample["light_lux"]), now)
             sound_norm.add(float(sample["sound_rms"]), now)
+            if "motion" in sample:
+                motion_norm.add(float(sample["motion"]), now)
+            if "temp_c" in sample:
+                latest_temp_c = float(sample["temp_c"])
+            if "pressure_hpa" in sample:
+                latest_pressure_hpa = float(sample["pressure_hpa"])
 
         if now < next_tick:
             continue
@@ -699,10 +723,26 @@ def main():
             SOUND_RESPONSE_EXPONENT,
         )
         light_value = light_norm.normalized()
+        motion_linear = motion_norm.normalized()
+        motion_value = response_curve(
+            motion_linear,
+            MOTION_RESPONSE_FLOOR,
+            MOTION_RESPONSE_GAIN,
+            MOTION_RESPONSE_EXPONENT,
+        )
+        weather_temp_c = latest_temp_c
+        weather_pressure_hpa = latest_pressure_hpa
+        weather_value = clamp(
+            (weather_temp_c - WEATHER_TEMP_MIN) / max(0.1, WEATHER_TEMP_MAX - WEATHER_TEMP_MIN),
+            0.0, 1.0,
+        )
 
-        # v06 step takes a sense dict; motion and weather are not streaming yet,
-        # so they default to 0.0 inside the field.
-        state = field.step({"sound": sound_value, "light": light_value})
+        state = field.step({
+            "sound": sound_value,
+            "light": light_value,
+            "motion": motion_value,
+            "weather": weather_value,
+        })
 
         brightness = emitter_to_brightness(field.emitter_activation, LED_MAX_BRIGHTNESS)
         try:
@@ -734,16 +774,16 @@ def main():
                 f"{counts.get('dormant', 0)}/"
                 f"{counts.get('deep_sleep', 0)}"
             )
-            emit_acts = state.get("emitter_activations", {})
             act_by_n = {c["n"]: c["activation"] for c in state["cells"]}
             sense_anchors = state.get("sense_anchors", {})
             snd_anchor = act_by_n.get(sense_anchors.get("sound"), 0.0)
             lit_anchor = act_by_n.get(sense_anchors.get("light"), 0.0)
-            print(f"t{tick}  in sound={sound_value:.2f}({sound_linear:.2f}) light={light_value:.2f}  "
-                  f"anchors snd={snd_anchor:.2f} lit={lit_anchor:.2f}  "
-                  f"emit={state['emitter_activation']:.2f} {emit_acts}  "
-                  f"led={sent_brightness}  E={metabolism.get('energy_reserve', 0):.1f}  "
-                  f"M={metabolism.get('memory_pressure', 0):.2f}  states={count_text}")
+            mot_anchor = act_by_n.get(sense_anchors.get("motion"), 0.0)
+            wth_anchor = act_by_n.get(sense_anchors.get("weather"), 0.0)
+            print(f"t{tick}  in s={sound_value:.2f} l={light_value:.2f} m={motion_value:.2f} w={weather_value:.2f}  "
+                  f"anchors snd={snd_anchor:.2f} lit={lit_anchor:.2f} mot={mot_anchor:.2f} wth={wth_anchor:.2f}  "
+                  f"emit={state['emitter_activation']:.2f}  led={sent_brightness}  "
+                  f"E={metabolism.get('energy_reserve', 0):.1f} M={metabolism.get('memory_pressure', 0):.2f} states={count_text}")
 
         # Live snapshot for the dashboard.
         snapshot = {
@@ -753,6 +793,10 @@ def main():
             "sound_norm": round(sound_value, 4),
             "sound_linear": round(sound_linear, 4),
             "light_norm": round(light_value, 4),
+            "motion_norm": round(motion_value, 4),
+            "motion_linear": round(motion_linear, 4),
+            "weather_norm": round(weather_value, 4),
+            "weather_raw": {"temp_c": round(weather_temp_c, 2), "pressure_hpa": round(weather_pressure_hpa, 1)},
             "sound_debug": {
                 **sound_norm.debug(),
                 "linear": round(sound_linear, 4),
