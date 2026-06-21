@@ -32,7 +32,7 @@ Code/Python/data/*.sqlite3
 .vscode/
 
 # Obsidian vault: kept local, copied in occasionally for reference
-Obsidian/
+ObsidianCreature/
 **/.history/
 
 Code/Python/dashboard/public/
