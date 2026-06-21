@@ -1,0 +1,178 @@
+<svg width="100%" viewBox="0 0 680 741" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Creature v06 wiring schematic</title><desc>ESP32-S3 pins mapped by net name to BH1750, BME280, IMU, INMP441 mic, MAX98357A amp, SK6812 strip and speaker.</desc>
+<style>.h{font:500 15px ui-sans-serif,system-ui;fill:var(--color-text-primary)}.sub{font:400 11px ui-sans-serif;fill:#666}.note{font:400 11px ui-sans-serif;fill:#666}.ti{font:500 12px ui-sans-serif;fill:#222}.pl{font:400 12px ui-monospace,monospace;fill:#222}.pn{font:500 10px ui-sans-serif;fill:#fff}</style>
+<text x="30" y="34" class="h">Creature v06 — wiring schematic (net-label form)</text>
+<text x="30" y="52" class="sub">Same net name = same wire. Colour groups: red power, dark grey ground, teal I2C, purple I2S, green LED, plum speaker.</text>
+<rect x="30" y="70" rx="6" width="150" height="262" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="30" y="70" rx="6" width="150" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="40" y="84" class="ti">ESP32-S3-N16R8</text>
+<text x="40" y="102" class="pl">IO5</text>
+<rect x="111" y="91" rx="6" width="61" height="15" fill="#534AB7"/>
+<text x="141.5" y="102" class="pn" text-anchor="middle">I2S_SCK</text>
+<text x="40" y="121" class="pl">IO6</text>
+<rect x="118" y="110" rx="6" width="54" height="15" fill="#534AB7"/>
+<text x="145.0" y="121" class="pn" text-anchor="middle">I2S_WS</text>
+<text x="40" y="140" class="pl">IO7</text>
+<rect x="118" y="129" rx="6" width="54" height="15" fill="#534AB7"/>
+<text x="145.0" y="140" class="pn" text-anchor="middle">I2S_SD</text>
+<text x="40" y="159" class="pl">IO15</text>
+<rect x="104" y="148" rx="6" width="68" height="15" fill="#534AB7"/>
+<text x="138.0" y="159" class="pn" text-anchor="middle">I2S_BCLK</text>
+<text x="40" y="178" class="pl">IO16</text>
+<rect x="111" y="167" rx="6" width="61" height="15" fill="#534AB7"/>
+<text x="141.5" y="178" class="pn" text-anchor="middle">I2S_LRC</text>
+<text x="40" y="197" class="pl">IO17</text>
+<rect x="111" y="186" rx="6" width="61" height="15" fill="#534AB7"/>
+<text x="141.5" y="197" class="pn" text-anchor="middle">I2S_DIN</text>
+<text x="40" y="216" class="pl">IO8</text>
+<rect x="139" y="205" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="155.5" y="216" class="pn" text-anchor="middle">SDA</text>
+<text x="40" y="235" class="pl">IO9</text>
+<rect x="139" y="224" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="155.5" y="235" class="pn" text-anchor="middle">SCL</text>
+<text x="40" y="254" class="pl">IO4</text>
+<rect x="104" y="243" rx="6" width="68" height="15" fill="#1D9E75"/>
+<text x="138.0" y="254" class="pn" text-anchor="middle">LED_DATA</text>
+<text x="40" y="273" class="pl">3V3</text>
+<rect x="139" y="262" rx="6" width="33" height="15" fill="#993C1D"/>
+<text x="155.5" y="273" class="pn" text-anchor="middle">3V3</text>
+<text x="40" y="292" class="pl">5V</text>
+<rect x="139" y="281" rx="6" width="33" height="15" fill="#D85A30"/>
+<text x="155.5" y="292" class="pn" text-anchor="middle">+5V</text>
+<text x="40" y="311" class="pl">GND</text>
+<rect x="139" y="300" rx="6" width="33" height="15" fill="#444444"/>
+<text x="155.5" y="311" class="pn" text-anchor="middle">GND</text>
+<rect x="270" y="70" rx="6" width="165" height="129" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="270" y="70" rx="6" width="165" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="280" y="84" class="ti">BH1750  light</text>
+<text x="280" y="102" class="pl">VCC</text>
+<rect x="394" y="91" rx="6" width="33" height="15" fill="#993C1D"/>
+<text x="410.5" y="102" class="pn" text-anchor="middle">3V3</text>
+<text x="280" y="121" class="pl">GND</text>
+<rect x="394" y="110" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="121" class="pn" text-anchor="middle">GND</text>
+<text x="280" y="140" class="pl">SCL</text>
+<rect x="394" y="129" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="410.5" y="140" class="pn" text-anchor="middle">SCL</text>
+<text x="280" y="159" class="pl">SDA</text>
+<rect x="394" y="148" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="410.5" y="159" class="pn" text-anchor="middle">SDA</text>
+<text x="280" y="178" class="pl">ADDR</text>
+<rect x="394" y="167" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="178" class="pn" text-anchor="middle">GND</text>
+<rect x="270" y="211" rx="6" width="165" height="110" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="270" y="211" rx="6" width="165" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="280" y="225" class="ti">BME280  env</text>
+<text x="280" y="243" class="pl">VIN</text>
+<rect x="394" y="232" rx="6" width="33" height="15" fill="#993C1D"/>
+<text x="410.5" y="243" class="pn" text-anchor="middle">3V3</text>
+<text x="280" y="262" class="pl">GND</text>
+<rect x="394" y="251" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="262" class="pn" text-anchor="middle">GND</text>
+<text x="280" y="281" class="pl">SCL</text>
+<rect x="394" y="270" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="410.5" y="281" class="pn" text-anchor="middle">SCL</text>
+<text x="280" y="300" class="pl">SDA</text>
+<rect x="394" y="289" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="410.5" y="300" class="pn" text-anchor="middle">SDA</text>
+<rect x="270" y="333" rx="6" width="165" height="186" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="270" y="333" rx="6" width="165" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="280" y="347" class="ti">IMU  ICM20689</text>
+<text x="280" y="365" class="pl">VCC</text>
+<rect x="394" y="354" rx="6" width="33" height="15" fill="#993C1D"/>
+<text x="410.5" y="365" class="pn" text-anchor="middle">3V3</text>
+<text x="280" y="384" class="pl">GND</text>
+<rect x="394" y="373" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="384" class="pn" text-anchor="middle">GND</text>
+<text x="280" y="403" class="pl">SCL</text>
+<rect x="394" y="392" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="410.5" y="403" class="pn" text-anchor="middle">SCL</text>
+<text x="280" y="422" class="pl">SDA</text>
+<rect x="394" y="411" rx="6" width="33" height="15" fill="#0F6E56"/>
+<text x="410.5" y="422" class="pn" text-anchor="middle">SDA</text>
+<text x="280" y="441" class="pl">XDA</text>
+<rect x="394" y="430" rx="6" width="33" height="15" fill="#BBBBBB"/>
+<text x="410.5" y="441" class="pn" text-anchor="middle">n/c</text>
+<text x="280" y="460" class="pl">XCL</text>
+<rect x="394" y="449" rx="6" width="33" height="15" fill="#BBBBBB"/>
+<text x="410.5" y="460" class="pn" text-anchor="middle">n/c</text>
+<text x="280" y="479" class="pl">AD0</text>
+<rect x="394" y="468" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="479" class="pn" text-anchor="middle">GND</text>
+<text x="280" y="498" class="pl">INT</text>
+<rect x="394" y="487" rx="6" width="33" height="15" fill="#BBBBBB"/>
+<text x="410.5" y="498" class="pn" text-anchor="middle">n/c</text>
+<rect x="270" y="531" rx="6" width="165" height="148" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="270" y="531" rx="6" width="165" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="280" y="545" class="ti">INMP441  mic</text>
+<text x="280" y="563" class="pl">VDD</text>
+<rect x="394" y="552" rx="6" width="33" height="15" fill="#993C1D"/>
+<text x="410.5" y="563" class="pn" text-anchor="middle">3V3</text>
+<text x="280" y="582" class="pl">GND</text>
+<rect x="394" y="571" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="582" class="pn" text-anchor="middle">GND</text>
+<text x="280" y="601" class="pl">L/R</text>
+<rect x="394" y="590" rx="6" width="33" height="15" fill="#444444"/>
+<text x="410.5" y="601" class="pn" text-anchor="middle">GND</text>
+<text x="280" y="620" class="pl">WS</text>
+<rect x="373" y="609" rx="6" width="54" height="15" fill="#534AB7"/>
+<text x="400.0" y="620" class="pn" text-anchor="middle">I2S_WS</text>
+<text x="280" y="639" class="pl">SCK</text>
+<rect x="366" y="628" rx="6" width="61" height="15" fill="#534AB7"/>
+<text x="396.5" y="639" class="pn" text-anchor="middle">I2S_SCK</text>
+<text x="280" y="658" class="pl">SD</text>
+<rect x="373" y="647" rx="6" width="54" height="15" fill="#534AB7"/>
+<text x="400.0" y="658" class="pn" text-anchor="middle">I2S_SD</text>
+<rect x="480" y="70" rx="6" width="170" height="205" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="480" y="70" rx="6" width="170" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="490" y="84" class="ti">MAX98357A  amp</text>
+<text x="490" y="102" class="pl">VIN</text>
+<rect x="609" y="91" rx="6" width="33" height="15" fill="#993C1D"/>
+<text x="625.5" y="102" class="pn" text-anchor="middle">3V3</text>
+<text x="490" y="121" class="pl">GND</text>
+<rect x="609" y="110" rx="6" width="33" height="15" fill="#444444"/>
+<text x="625.5" y="121" class="pn" text-anchor="middle">GND</text>
+<text x="490" y="140" class="pl">LRC</text>
+<rect x="581" y="129" rx="6" width="61" height="15" fill="#534AB7"/>
+<text x="611.5" y="140" class="pn" text-anchor="middle">I2S_LRC</text>
+<text x="490" y="159" class="pl">BCLK</text>
+<rect x="574" y="148" rx="6" width="68" height="15" fill="#534AB7"/>
+<text x="608.0" y="159" class="pn" text-anchor="middle">I2S_BCLK</text>
+<text x="490" y="178" class="pl">DIN</text>
+<rect x="581" y="167" rx="6" width="61" height="15" fill="#534AB7"/>
+<text x="611.5" y="178" class="pn" text-anchor="middle">I2S_DIN</text>
+<text x="490" y="197" class="pl">GAIN</text>
+<rect x="609" y="186" rx="6" width="33" height="15" fill="#BBBBBB"/>
+<text x="625.5" y="197" class="pn" text-anchor="middle">n/c</text>
+<text x="490" y="216" class="pl">SD</text>
+<rect x="609" y="205" rx="6" width="33" height="15" fill="#BBBBBB"/>
+<text x="625.5" y="216" class="pn" text-anchor="middle">n/c</text>
+<text x="490" y="235" class="pl">OUT+</text>
+<rect x="602" y="224" rx="6" width="40" height="15" fill="#993556"/>
+<text x="622.0" y="235" class="pn" text-anchor="middle">SPK+</text>
+<text x="490" y="254" class="pl">OUT-</text>
+<rect x="602" y="243" rx="6" width="40" height="15" fill="#993556"/>
+<text x="622.0" y="254" class="pn" text-anchor="middle">SPK-</text>
+<rect x="480" y="287" rx="6" width="170" height="91" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="480" y="287" rx="6" width="170" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="490" y="301" class="ti">SK6812  strip</text>
+<text x="490" y="319" class="pl">+5V</text>
+<rect x="609" y="308" rx="6" width="33" height="15" fill="#D85A30"/>
+<text x="625.5" y="319" class="pn" text-anchor="middle">+5V</text>
+<text x="490" y="338" class="pl">DIN</text>
+<rect x="574" y="327" rx="6" width="68" height="15" fill="#1D9E75"/>
+<text x="608.0" y="338" class="pn" text-anchor="middle">LED_DATA</text>
+<text x="490" y="357" class="pl">GND</text>
+<rect x="609" y="346" rx="6" width="33" height="15" fill="#444444"/>
+<text x="625.5" y="357" class="pn" text-anchor="middle">GND</text>
+<rect x="480" y="390" rx="6" width="170" height="72" fill="#FAFAFA" stroke="#C8C8C8"/>
+<rect x="480" y="390" rx="6" width="170" height="20" fill="#EDEDED" stroke="#C8C8C8"/>
+<text x="490" y="404" class="ti">Speaker 4ohm</text>
+<text x="490" y="422" class="pl">+</text>
+<rect x="602" y="411" rx="6" width="40" height="15" fill="#993556"/>
+<text x="622.0" y="422" class="pn" text-anchor="middle">SPK+</text>
+<text x="490" y="441" class="pl">-</text>
+<rect x="602" y="430" rx="6" width="40" height="15" fill="#993556"/>
+<text x="622.0" y="441" class="pn" text-anchor="middle">SPK-</text>
+<text x="30" y="709" class="note">I2C bus: SDA/SCL shared by BH1750 + BME280 + IMU.  LED data via 470Ω + 1000µF at strip.  Amp + sensors on 3V3; SK6812 on 5V; one common ground.</text>
+</svg>
