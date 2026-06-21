@@ -41,6 +41,8 @@
 #define ENABLE_LIGHT  1
 #define ENABLE_MOTION   1   // ICM-20689 IMU (I2C 0x68), stream "motion" scalar
 #define ENABLE_WEATHER  1   // BME280 (I2C 0x76), stream "temp_c" and "pressure_hpa"
+#define ENABLE_STRIP    1   // SK6812 RGBW strip (GPIO 4, 16 px), PIX: command
+#define ENABLE_VOICE    1   // MAX98357A amp (I2S1 15/16/17), VOX: command
 
 #ifndef CREATURE_WIFI_SSID
 #define CREATURE_WIFI_SSID ""
@@ -86,6 +88,21 @@ bool  bmeReady = false;
 float lastTempC = 0.0f;
 float lastPressureHpa = 0.0f;
 
+// ---- SK6812 RGBW strip emitter (GPIO 4, 16 px) ----------------------------
+#define STRIP_PIN            4
+#define STRIP_COUNT          16
+#define STRIP_MAX_BRIGHTNESS 40   // current cap on USB/PowerBoost; never all-white
+Adafruit_NeoPixel strip(STRIP_COUNT, STRIP_PIN, NEO_GRBW + NEO_KHZ800);
+
+// ---- MAX98357A amp emitter (I2S1, GPIO 15/16/17) --------------------------
+#define AMP_PORT        I2S_NUM_1
+#define AMP_BCLK_PIN    15
+#define AMP_LRC_PIN     16
+#define AMP_DIN_PIN     17
+#define AMP_SAMPLE_RATE 16000
+#define TONE_AMP        0.25f     // digital level; for quieter, lower the GAIN pin, not this
+float tonePhase = 0.0f;           // continuous phase across tones (no click)
+
 // ---- INMP441 microphone (I2S) ---------------------------------------------
 #define I2S_PORT          I2S_NUM_0
 #define I2S_SCK_PIN       5      // bit clock   (SCK / BCLK)
@@ -128,6 +145,12 @@ void  setupIMU();
 float readMotion();
 void  setupBME();
 void  readWeather(float& tempC, float& pressureHpa);
+void  setupStrip();
+void  stripProof();
+void  applyPixels(const String& csv);
+void  ampSetup();
+void  ampSilence(int ms);
+void  playTone(float freq, int ms, float vol);
 void  setupI2SMic();
 float readSoundRms();
 void  setupWifi();
@@ -157,6 +180,25 @@ void handleCommand(String command, const char* source)
     response += "}";
     writeSystemLineToTransports(response);
   }
+#if ENABLE_STRIP
+  else if (command.startsWith("PIX:"))
+  {
+    applyPixels(command.substring(4));
+  }
+#endif
+#if ENABLE_VOICE
+  else if (command.startsWith("VOX:"))
+  {
+    // VOX:freq,ms[,vol]   freq in Hz, ms duration, vol 0-1
+    String args = command.substring(4);
+    int c1 = args.indexOf(',');
+    int c2 = (c1 >= 0) ? args.indexOf(',', c1 + 1) : -1;
+    float freq = (c1 >= 0 ? args.substring(0, c1) : args).toFloat();
+    int   ms   = (c1 >= 0) ? args.substring(c1 + 1, (c2 >= 0) ? c2 : args.length()).toInt() : 150;
+    float vol  = (c2 >= 0) ? args.substring(c2 + 1).toFloat() : 1.0f;
+    if (freq > 0.0f && ms > 0) playTone(freq, ms, vol);
+  }
+#endif
 }
 
 void readSerialCommands()
@@ -411,6 +453,138 @@ void readWeather(float& tempC, float& pressureHpa)
   lastPressureHpa = pressureHpa;
 }
 
+// ---- SK6812 RGBW strip emitter --------------------------------------------
+void setupStrip()
+{
+  strip.begin();
+  strip.setBrightness(STRIP_MAX_BRIGHTNESS);   // current cap; never all-white
+  strip.clear();
+  strip.show();
+}
+
+// Boot proof: drive each colour channel across all pixels, one channel at a
+// time. The brightness cap is the current limiter, so this is safe on USB.
+void stripProof()
+{
+  uint32_t cols[4] = {
+    strip.Color(255, 0, 0, 0), strip.Color(0, 255, 0, 0),
+    strip.Color(0, 0, 255, 0), strip.Color(0, 0, 0, 255)
+  };
+  for (int c = 0; c < 4; c++)
+  {
+    for (int i = 0; i < STRIP_COUNT; i++) strip.setPixelColor(i, cols[c]);
+    strip.show();
+    delay(300);
+  }
+  strip.clear();
+  strip.show();
+}
+
+// PIX:r,g,b,w,r,g,b,w,...  A full frame of up to STRIP_COUNT RGBW pixels
+// (0-255 each). The decoder builds the frame; the body only renders it.
+void applyPixels(const String& csv)
+{
+  String s = csv;
+  s.trim();
+  s += ",";                          // sentinel so the final value flushes
+  uint8_t rgbw[4] = {0, 0, 0, 0};
+  int ch = 0, px = 0, start = 0;
+  for (int i = 0; i < (int)s.length() && px < STRIP_COUNT; i++)
+  {
+    if (s[i] != ',') continue;
+    rgbw[ch] = (uint8_t)constrain(s.substring(start, i).toInt(), 0, 255);
+    start = i + 1;
+    if (++ch == 4)
+    {
+      strip.setPixelColor(px++, strip.Color(rgbw[0], rgbw[1], rgbw[2], rgbw[3]));
+      ch = 0;
+    }
+  }
+  strip.show();
+}
+
+// ---- MAX98357A amp emitter (I2S1) -----------------------------------------
+void ampSetup()
+{
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = AMP_SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 8,
+    .dma_buf_len = 256,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0
+  };
+  i2s_pin_config_t pins = {
+    .mck_io_num = I2S_PIN_NO_CHANGE,
+    .bck_io_num = AMP_BCLK_PIN,
+    .ws_io_num = AMP_LRC_PIN,
+    .data_out_num = AMP_DIN_PIN,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+  i2s_driver_install(AMP_PORT, &cfg, 0, NULL);
+  i2s_set_pin(AMP_PORT, &pins);
+  i2s_zero_dma_buffer(AMP_PORT);
+}
+
+// Write `ms` of silence: settles the clock after driver churn and drains a
+// tone's tail so it is not chopped (a chop is an end click).
+void ampSilence(int ms)
+{
+  int16_t z[256] = {0};
+  int total = (AMP_SAMPLE_RATE * ms) / 1000;
+  int done = 0;
+  while (done < total)
+  {
+    int n = min(256, total - done);
+    size_t written = 0;
+    i2s_write(AMP_PORT, z, n * sizeof(int16_t), &written, portMAX_DELAY);
+    done += n;
+  }
+}
+
+// Play a faded tone on the amp. The mic (I2S0) is uninstalled for the tone and
+// reinstalled after: do not listen while speaking. Recipe proven in the bench
+// smoke test (warm first, ~10 ms fades, drain the tail). Do not rediscover it.
+void playTone(float freq, int ms, float vol)
+{
+#if ENABLE_MIC
+  i2s_driver_uninstall(I2S_PORT);        // give the amp the I2S subsystem
+#endif
+  ampSilence(40);                        // warm the amp (fixes first-tone distortion)
+  const float dt = 2.0f * (float)M_PI * freq / AMP_SAMPLE_RATE;
+  const int total = (AMP_SAMPLE_RATE * ms) / 1000;
+  const int fade = AMP_SAMPLE_RATE / 100;
+  const float amp = TONE_AMP * constrain(vol, 0.0f, 1.0f);
+  int16_t buf[256];
+  int done = 0;
+  while (done < total)
+  {
+    int n = min(256, total - done);
+    for (int i = 0; i < n; i++)
+    {
+      int idx = done + i;
+      float env = 1.0f;
+      if (idx < fade) env = (float)idx / fade;
+      else if (idx > total - fade) env = (float)(total - idx) / fade;
+      buf[i] = (int16_t)(amp * 32767.0f * env * sinf(tonePhase));
+      tonePhase += dt;
+      if (tonePhase > 2.0f * (float)M_PI) tonePhase -= 2.0f * (float)M_PI;
+    }
+    size_t written = 0;
+    i2s_write(AMP_PORT, buf, n * sizeof(int16_t), &written, portMAX_DELAY);
+    done += n;
+  }
+  ampSilence(150);                       // drain the faded tail (no end click)
+#if ENABLE_MIC
+  setupI2SMic();                         // reinstall the mic for listening
+#endif
+}
+
 // Configure the I2S peripheral for the INMP441 (receive, mono left channel).
 void setupI2SMic()
 {
@@ -528,6 +702,18 @@ void setup()
 #if ENABLE_MIC
   setupI2SMic();
 #endif
+#if ENABLE_STRIP
+  setupStrip();
+#endif
+#if ENABLE_VOICE
+  ampSetup();
+#endif
+#if ENABLE_STRIP
+  stripProof();              // boot proof: R, G, B, W across all pixels
+#endif
+#if ENABLE_VOICE
+  playTone(523.0f, 120, 1.0f);   // boot chirp = amp alive
+#endif
 
   String startLine = "{\"system\":\"creature body node v06 started\"";
 #if ENABLE_LIGHT
@@ -544,6 +730,12 @@ void setup()
 #if ENABLE_WEATHER
   startLine += ",\"bme_ready\":";
   startLine += bmeReady ? "true" : "false";
+#endif
+#if ENABLE_STRIP
+  startLine += ",\"strip\":true";
+#endif
+#if ENABLE_VOICE
+  startLine += ",\"voice\":true";
 #endif
   startLine += ",\"mic\":";
   startLine += ENABLE_MIC ? "true" : "false";
