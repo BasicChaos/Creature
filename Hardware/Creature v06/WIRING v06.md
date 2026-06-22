@@ -202,9 +202,10 @@ Runtime output protocol:
 
 Audio note: the MAX98357A sounded scratchy at very low digital levels in bench
 testing. The clean quiet path is hardware gain (GAIN to VIN) plus decoupling on
-amp VIN, not tiny samples. The collector therefore keeps tones sparse and low;
-use `CREATURE_VOICE_VOLUME` gently, and prefer hardware gain if it is still too
-loud.
+amp VIN, not tiny samples. The collector therefore keeps tones sparse and low,
+but keeps digital volume in the cleaner range. If it is too loud, prefer hardware
+gain; `CREATURE_VOICE_VOLUME` is clamped so it cannot accidentally request the
+scratchy low-sample regime.
 
 ## History
 

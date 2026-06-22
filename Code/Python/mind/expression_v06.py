@@ -18,26 +18,26 @@ import os
 DEFAULT_PIXELS = 16
 
 KNOBS = {
-    "ACT_GAIN": 4.0,
-    "FLOOR": 0.04,
+    "ACT_GAIN": 4.7,
+    "FLOOR": 0.055,
     # Keep white as a glow, not the whole expression. The SK6812 W channel is
     # efficient enough that high values quickly wash every colour to white.
-    "WHITE_GLOW": 24.0,
-    "WHITE_CHANNEL": 70.0,
+    "WHITE_GLOW": 18.0,
+    "WHITE_CHANNEL": 52.0,
     "RIPPLE_REF": 0.18,
-    "PULSE_BASE": 0.006,
-    "PULSE_SPEED": 0.055,
-    "PULSE_WIDTH": 0.16,
-    "PULSE_STRENGTH": 0.22,
-    "SHIMMER": 0.0,
-    "FRAME_SMOOTHING": 0.24,
-    "MAX_CHANNEL_STEP": 26,
+    "PULSE_BASE": 0.014,
+    "PULSE_SPEED": 0.12,
+    "PULSE_WIDTH": 0.18,
+    "PULSE_STRENGTH": 0.42,
+    "SHIMMER": 4.0,
+    "FRAME_SMOOTHING": 0.38,
+    "MAX_CHANNEL_STEP": 42,
     "EVENT_SIG_MIN": 0.55,
     "EVENT_FLASH": 0.0,
     "EVENT_WIDTH": 1.3,
     "COOL": (35, 150, 230),
     "WARM": (255, 135, 35),
-    "PULSE_RGB": (140, 120, 95),
+    "PULSE_RGB": (185, 150, 105),
     "EVENT_RGB": (255, 255, 255),
     "LED_CAP": 200,
     "F_LOW": 85.0,
@@ -282,5 +282,7 @@ def voice_command_from_signal(signal, speaker_activation):
     mix = (balance + 1.0) * 0.5
     freq = k["F_LOW"] * ((k["F_HIGH"] / k["F_LOW"]) ** mix)
     ms = int(280 + 320 * tempo)
-    vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "0.34")), 0.25, 0.55)
+    # MAX98357A gets fuzzy with tiny digital samples. Keep the digital signal in
+    # the clean range from the bench notes; use the amp GAIN pin for quiet.
+    vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "1.0")), 0.75, 1.0)
     return f"VOX:{freq:.1f},{ms},{vol:.2f}\n"
