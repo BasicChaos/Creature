@@ -14,6 +14,7 @@ It uses the standard library only. No pip install needed.
 """
 
 import json
+import mimetypes
 import os
 import sqlite3
 import sys
@@ -30,9 +31,9 @@ from common.paths import DB_PATH, STATE_JSON_PATH
 
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(DASHBOARD_DIR, "index.html")
-HARDWARE_PHOTO_PATH = os.path.join(DASHBOARD_DIR, "creature-v05-2.jpg")
 HOST = os.environ.get("CREATURE_DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CREATURE_DASHBOARD_PORT", "8080"))
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
 def open_db_readonly():
@@ -194,16 +195,20 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if path == "/creature-v05-2.jpg":
+        filename = path.lstrip("/")
+        _, ext = os.path.splitext(filename)
+        if "/" not in filename and ext.lower() in IMAGE_EXTENSIONS:
+            image_path = os.path.join(DASHBOARD_DIR, filename)
             try:
-                with open(HARDWARE_PHOTO_PATH, "rb") as image_file:
+                with open(image_path, "rb") as image_file:
                     body = image_file.read()
             except OSError:
                 self.send_error(404, "Image not found")
                 return
 
             self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
+            content_type = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

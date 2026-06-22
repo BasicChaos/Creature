@@ -134,9 +134,9 @@ def write_json(filename, payload):
 
 shutil.copyfile(INDEX_PATH, EXPORT_DIR / "index.html")
 
-HARDWARE_PHOTO_PATH = DASHBOARD_DIR / "creature-v05-2.jpg"
-if HARDWARE_PHOTO_PATH.exists():
-    shutil.copyfile(HARDWARE_PHOTO_PATH, EXPORT_DIR / "creature-v05-2.jpg")
+for image_path in DASHBOARD_DIR.iterdir():
+    if image_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        shutil.copyfile(image_path, EXPORT_DIR / image_path.name)
 
 write_json("state.json", read_json(STATE_JSON_PATH))
 write_json("history.json", read_history())
