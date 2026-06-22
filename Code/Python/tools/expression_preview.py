@@ -40,7 +40,8 @@ PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
 
-from mind.cell_field import build_field  # noqa: E402
+from mind.cell_field_v06 import build_field  # noqa: E402
+from mind.expression_v06 import ExpressionDecoderV06  # noqa: E402
 
 
 # --- Decoder knobs (the same numbers the collector decoder will expose) -------
@@ -85,151 +86,35 @@ def smoothstep(x, lo, hi):
 
 
 def scenario_inputs(name, ticks, rng):
-    """Yield (sound, light) in 0-1 for a named synthetic scenario."""
+    """Yield v06 sense dicts in 0-1 for a named synthetic scenario."""
     for t in range(ticks):
+        weather = 0.42 + 0.08 * math.sin(2 * math.pi * t / max(1, ticks) + 0.4)
+        motion = 0.0
         if name == "day":
             # slow day/night light, sparse sound bursts (someone in the room)
             light = 0.5 + 0.45 * math.sin(2 * math.pi * t / ticks - math.pi / 2)
             sound = 0.0
             if rng.random() < 0.06:
                 sound = rng.uniform(0.4, 1.0)
+                motion = rng.uniform(0.15, 0.55)
             elif rng.random() < 0.15:
                 sound = rng.uniform(0.05, 0.2)
         elif name == "bursts":
             light = 0.4 + 0.05 * math.sin(2 * math.pi * t / 120)
             sound = rng.uniform(0.5, 1.0) if rng.random() < 0.25 else rng.uniform(0.0, 0.1)
+            motion = rng.uniform(0.35, 1.0) if rng.random() < 0.18 else rng.uniform(0.0, 0.08)
         elif name == "quiet":
             light = 0.2 + 0.02 * math.sin(2 * math.pi * t / 300)
             sound = rng.uniform(0.0, 0.05)
+            motion = rng.uniform(0.0, 0.03)
         else:
             raise ValueError(f"unknown scenario: {name}")
-        yield clamp(sound, 0, 1), clamp(light, 0, 1)
-
-
-class Decoder:
-    """Read-only map from field state to strip pixels and voice parameters."""
-
-    def __init__(self, field, knobs):
-        self.field = field
-        self.k = knobs
-        self.n_pixels = knobs["PIXELS"]
-        self.pulse_pos = 0.0
-        self.max_col = max(c.col for c in field.cells.values())
-
-    def read(self, state):
-        k = self.k
-        cells = state["cells"]
-        sw = self.field.sound_weight
-        lw = self.field.light_weight
-        meta = state.get("metabolism", {}) or {}
-
-        # --- arousal A (energy-gated): blend the active-cell mean with the
-        # active peak, so localized activity still registers as arousal ---
-        acts = [c["activation"] for c in cells]
-        live = [a for a in acts if a > 0.02]
-        mean_live = (sum(live) / len(live)) if live else 0.0
-        peak = float(np.percentile(acts, 90)) if acts else 0.0
-        raw_A = 0.5 * mean_live + 0.5 * peak
-        reserve = meta.get("energy_reserve", 0.0) or 0.0
-        reserve_max = meta.get("energy_reserve_max", 1.0) or 1.0
-        gate = smoothstep(reserve / reserve_max, k["GATE_LOW"], k["GATE_HIGH"])
-        A = clamp(raw_A * k["ACT_GAIN"] * gate, 0.0, 1.0)
-
-        # --- balance B in -1..+1 (warm sound vs cool light) ---
-        warm = sum(c["activation"] * sw[c["n"]] for c in cells)
-        cool = sum(c["activation"] * lw[c["n"]] for c in cells)
-        B = (warm - cool) / (warm + cool + 1e-6)
-
-        # --- tempo T from ripple ---
-        T = clamp((sum(abs(c["ripple"]) for c in cells) / len(cells)) / k["RIPPLE_REF"], 0.0, 1.0)
-
-        # --- per-column aggregates for the spatial profile ---
-        cols = self.max_col + 1
-        col_act = [0.0] * cols
-        col_warm = [0.0] * cols
-        col_cool = [0.0] * cols
-        col_n = [0] * cols
-        for c in cells:
-            j = c["col"]
-            col_act[j] += c["activation"]
-            col_warm[j] += c["activation"] * sw[c["n"]]
-            col_cool[j] += c["activation"] * lw[c["n"]]
-            col_n[j] += 1
-        for j in range(cols):
-            if col_n[j]:
-                col_act[j] /= col_n[j]
-
-        # --- significant event origin column (for the flash and the chirp) ---
-        event_col, event_sig, event_flag = None, 0.0, False
-        for e in state.get("events") or []:
-            sig = clamp(e.get("significance", 0.0), 0.0, 2.0)
-            if sig < k["EVENT_SIG_MIN"]:
-                continue
-            ec = (e.get("cells") or [{}])[0].get("n")
-            if ec is not None:
-                event_col = self.field.cells[ec].col
-                event_sig = sig
-                event_flag = True
-                break
-
-        pixels = self._render(A, B, T, col_act, col_warm, col_cool, event_col, event_sig)
-        return dict(A=A, B=B, T=T, pixels=pixels, event=event_flag)
-
-    def _render(self, A, B, T, col_act, col_warm, col_cool, event_col, event_sig):
-        k = self.k
-        n = self.n_pixels
-        cols = len(col_act)
-        self.pulse_pos = (self.pulse_pos + k["PULSE_BASE"] + k["PULSE_SPEED"] * T) % 1.0
-        out = []
-        for p in range(n):
-            x = p / (n - 1) if n > 1 else 0.0
-            fpos = x * (cols - 1)
-            j0 = int(math.floor(fpos))
-            j1 = min(j0 + 1, cols - 1)
-            f = fpos - j0
-            a_local = col_act[j0] * (1 - f) + col_act[j1] * f
-            warm_l = col_warm[j0] * (1 - f) + col_warm[j1] * f
-            cool_l = col_cool[j0] * (1 - f) + col_cool[j1] * f
-            warmth = (warm_l - cool_l) / (warm_l + cool_l + 1e-6)
-            warmth_eff = clamp(0.6 * warmth + 0.4 * B, -1.0, 1.0)
-
-            mix = (warmth_eff + 1) / 2
-            r = k["COOL"][0] * (1 - mix) + k["WARM"][0] * mix
-            g = k["COOL"][1] * (1 - mix) + k["WARM"][1] * mix
-            b = k["COOL"][2] * (1 - mix) + k["WARM"][2] * mix
-
-            val = k["FLOOR"] + (1 - k["FLOOR"]) * clamp(a_local * k["ACT_GAIN"], 0.0, 1.0)
-            r, g, b = r * val, g * val, b * val
-
-            glow = A * k["WHITE_GLOW"]
-            r, g, b = r + glow, g + glow, b + glow
-
-            d = (x - self.pulse_pos)
-            d = min(abs(d), abs(d + 1), abs(d - 1))
-            band = math.exp(-(d / k["PULSE_WIDTH"]) ** 2) * T
-            r += band * k["PULSE_RGB"][0]
-            g += band * k["PULSE_RGB"][1]
-            b += band * k["PULSE_RGB"][2]
-
-            if T > 0:
-                jit = (np.random.random() - 0.5) * 2 * k["SHIMMER"] * T
-                r += jit; g += jit; b += jit
-
-            if event_col is not None:
-                ef = math.exp(-((fpos - event_col) / k["EVENT_WIDTH"]) ** 2) * event_sig
-                r += ef * k["EVENT_RGB"][0]
-                g += ef * k["EVENT_RGB"][1]
-                b += ef * k["EVENT_RGB"][2]
-
-            scale = k["LED_CAP"] / 255.0
-            w = clamp(A * 255, 0, 255) * scale
-            out.append((
-                int(clamp(r, 0, 255) * scale),
-                int(clamp(g, 0, 255) * scale),
-                int(clamp(b, 0, 255) * scale),
-                int(w),
-            ))
-        return out
+        yield {
+            "sound": clamp(sound, 0, 1),
+            "light": clamp(light, 0, 1),
+            "motion": clamp(motion, 0, 1),
+            "weather": clamp(weather, 0, 1),
+        }
 
 
 def synth_voice(A, B, T, events, secs_per_tick, sr, knobs):
@@ -375,11 +260,14 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     field = build_field()
-    decoder = Decoder(field, knobs)
+    decoder = ExpressionDecoderV06(
+        pixels=args.pixels,
+        knobs={"LED_CAP": knobs["LED_CAP"]},
+    )
 
     rows, A, B, T, events = [], [], [], [], []
-    for sound, light in scenario_inputs(args.scenario, args.ticks, rng):
-        state = field.step(sound, light)
+    for senses in scenario_inputs(args.scenario, args.ticks, rng):
+        state = field.step(senses)
         sig = decoder.read(state)
         rows.append(sig["pixels"])
         A.append(sig["A"]); B.append(sig["B"]); T.append(sig["T"])

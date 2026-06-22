@@ -3,9 +3,10 @@ Creature collector (v06.1, drives the twelve-cell ring).
 
 Reads the ESP stream (one JSON line per sample, ~10 Hz), normalizes
 light and sound to 0-1, and steps the v06 twelve-cell ring once per second.
-The mean emitter activation drives the onboard LED. The database is observation, not memory:
-high-volume cell detail is sampled, while structure and sleep summaries are
-kept as the longer-lived record.
+The LED emitter drives the onboard status pixel, and the v06 expression decoder
+sends PIX frames to the SK6812 strip. The database is observation, not memory:
+high-volume cell detail is sampled, while structure and sleep summaries are kept
+as the longer-lived record.
 
 Run on the Pi:
     cd ~/Creature/Code/Python
@@ -40,6 +41,11 @@ from mind.cell_field_v06 import (
     CELL_COUNT,
     EMITTER_ANCHORS,
     FIELD_VERSION,
+)
+from mind.expression_v06 import (
+    ExpressionDecoderV06,
+    pixels_to_pix_command,
+    voice_command_from_signal,
 )
 from mind.normalize import RollingNormalizer
 
@@ -108,6 +114,12 @@ WEATHER_TEMP_MAX = float(os.environ.get("CREATURE_WEATHER_TEMP_MAX", "35.0"))
 # --- LED ---
 DEFAULT_LED_MAX_BRIGHTNESS = 80
 LED_MAX_BRIGHTNESS = int(os.environ.get("CREATURE_LED_MAX_BRIGHTNESS", DEFAULT_LED_MAX_BRIGHTNESS))
+ENABLE_ONBOARD_LED = os.environ.get("CREATURE_ENABLE_ONBOARD_LED", "1") == "1"
+ENABLE_STRIP = os.environ.get("CREATURE_ENABLE_STRIP", "1") == "1"
+ENABLE_VOICE = os.environ.get("CREATURE_ENABLE_VOICE", "0") == "1"
+STRIP_PIXELS = int(os.environ.get("CREATURE_STRIP_PIXELS", "16"))
+STRIP_VALUE_CAP = int(os.environ.get("CREATURE_STRIP_VALUE_CAP", "200"))
+VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_SECONDS", "6.0"))
 
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
@@ -331,18 +343,60 @@ def ensure_columns(cur, table, columns):
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
-def make_led_sender(transport):
-    """Return a send(brightness) that only writes when the value changes."""
-    last = {"command": None}
+def make_body_sender(transport):
+    """Return send(state, brightness, now) for all v06 body outputs."""
+    decoder = ExpressionDecoderV06(
+        pixels=STRIP_PIXELS,
+        knobs={"LED_CAP": STRIP_VALUE_CAP},
+    )
+    last = {
+        "led": None,
+        "pix": None,
+        "voice_at": -VOICE_MIN_INTERVAL_SECONDS,
+    }
 
-    def send(brightness):
-        brightness = clamp(int(brightness), 0, 255)
-        command = f"LED:{brightness}\n"
-        if command == last["command"]:
-            return brightness
+    def write_changed(kind, command):
+        if command == last.get(kind):
+            return False
         transport.write(command.encode("utf-8"))
-        last["command"] = command
-        return brightness
+        last[kind] = command
+        return True
+
+    def send(state, brightness, now):
+        brightness = clamp(int(brightness), 0, 255)
+        sent_brightness = None
+        expression = None
+        strip_sent = False
+        voice_sent = False
+
+        if ENABLE_ONBOARD_LED:
+            command = f"LED:{brightness}\n"
+            write_changed("led", command)
+            sent_brightness = brightness
+
+        if ENABLE_STRIP:
+            expression = decoder.read(state)
+            pix_command = pixels_to_pix_command(expression["pixels"])
+            strip_sent = write_changed("pix", pix_command)
+            if sent_brightness is None:
+                sent_brightness = brightness
+
+        if ENABLE_VOICE:
+            if expression is None:
+                expression = decoder.read(state)
+            speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+            voice_command = voice_command_from_signal(expression, speaker)
+            if voice_command and now - last["voice_at"] >= VOICE_MIN_INTERVAL_SECONDS:
+                transport.write(voice_command.encode("utf-8"))
+                last["voice_at"] = now
+                voice_sent = True
+
+        return {
+            "sent_brightness": sent_brightness,
+            "expression": expression,
+            "strip_sent": strip_sent,
+            "voice_sent": voice_sent,
+        }
 
     return send
 
@@ -664,7 +718,7 @@ def main():
         print("   or: python collector/collector.py tcp://creature-esp.local:7777")
         raise error
 
-    led_send = make_led_sender(esp)
+    body_send = make_body_sender(esp)
 
     # Always save the slow field state on exit, however we leave.
     atexit.register(lambda: save_field(field, FIELD_STATE_PATH))
@@ -674,6 +728,8 @@ def main():
     print(f"Database: {DB_PATH}")
     print(f"Live snapshot: {STATE_JSON_PATH}")
     print(f"Field tick: {TICK_SECONDS:.0f} Hz inverse, LED max: {LED_MAX_BRIGHTNESS}")
+    print(f"Outputs: onboard_led={ENABLE_ONBOARD_LED} strip_PIX={ENABLE_STRIP} "
+          f"voice_VOX={ENABLE_VOICE}")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -695,7 +751,7 @@ def main():
             esp = reconnect_esp_transport(transport_target, stop)
             if esp is None:
                 break
-            led_send = make_led_sender(esp)
+            body_send = make_body_sender(esp)
             continue
 
         now = monotonic()
@@ -744,14 +800,18 @@ def main():
             "weather": weather_value,
         })
 
-        brightness = emitter_to_brightness(field.emitter_activation, LED_MAX_BRIGHTNESS)
+        emitter_values = state.get("emitter_activations") or {}
+        led_activation = emitter_values.get("led", field.emitter_activation)
+        brightness = emitter_to_brightness(led_activation, LED_MAX_BRIGHTNESS)
+        output_info = {}
         try:
-            sent_brightness = led_send(brightness)
+            output_info = body_send(state, brightness, now)
+            sent_brightness = output_info["sent_brightness"]
         except TransportError as error:
             if not is_tcp_target(transport_target):
-                print("Could not send LED command over serial. Check USB, then restart the collector.")
+                print("Could not send body command over serial. Check USB, then restart the collector.")
                 raise error
-            print(f"Could not send LED command over WiFi: {error}. Reconnecting...")
+            print(f"Could not send body command over WiFi: {error}. Reconnecting...")
             sent_brightness = None
             try:
                 esp.close()
@@ -760,7 +820,7 @@ def main():
             esp = reconnect_esp_transport(transport_target, stop)
             if esp is None:
                 break
-            led_send = make_led_sender(esp)
+            body_send = make_body_sender(esp)
 
         logged_at = datetime.now().isoformat()
         tick = field.tick_count
@@ -824,6 +884,7 @@ def main():
             "emitter_activations": state.get("emitter_activations"),
             "reservoir": state.get("reservoir"),
             "readout": state.get("readout"),
+            "expression": output_info.get("expression"),
         }
         write_json_atomic(STATE_JSON_PATH, snapshot)
 

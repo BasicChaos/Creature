@@ -14,7 +14,7 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Creature body node firmware (v.05)
+// Creature body node firmware (v06)
 // Board: ESP32-S3-DevKitC-1-N8R8
 //
 // Bring-up switches: enable one sensor at a time while the wiring is settled.
@@ -29,7 +29,8 @@
 // The Raspberry Pi collector normalizes raw values to 0-1.
 //
 // A temporary "status" line prints every 2 seconds for bring-up debugging.
-// Still accepts "LED:<0-255>\n" for the onboard NeoPixel over USB or TCP.
+// Accepts "LED:<0-255>\n" for the onboard NeoPixel over USB or TCP, mirrored
+// to the SK6812 strip as a v06 fallback. The full strip output is PIX:.
 //
 // WiFi is disabled unless CREATURE_WIFI_SSID is defined and non-empty. Keep real
 // credentials out of git by creating include/creature_wifi_secrets.h with:
@@ -147,6 +148,8 @@ void  setupBME();
 void  readWeather(float& tempC, float& pressureHpa);
 void  setupStrip();
 void  stripProof();
+void  stripBootIdle();
+void  applyLegacyStripBrightness(uint8_t brightness);
 void  applyPixels(const String& csv);
 void  ampSetup();
 void  ampSilence(int ms);
@@ -173,10 +176,17 @@ void handleCommand(String command, const char* source)
     pixel.setBrightness(brightness);
     setRgb(0, 0, 255);
 
+#if ENABLE_STRIP
+    applyLegacyStripBrightness((uint8_t)brightness);
+#endif
+
     String response = "{\"system\":\"led_command_received\",\"source\":\"";
     response += source;
     response += "\",\"brightness\":";
     response += brightness;
+#if ENABLE_STRIP
+    response += ",\"strip_mirror\":true";
+#endif
     response += "}";
     writeSystemLineToTransports(response);
   }
@@ -466,6 +476,7 @@ void setupStrip()
 // time. The brightness cap is the current limiter, so this is safe on USB.
 void stripProof()
 {
+  writeSystemLineToTransports("{\"system\":\"strip_proof_start\",\"pin\":4,\"count\":16,\"brightness\":40}");
   uint32_t cols[4] = {
     strip.Color(255, 0, 0, 0), strip.Color(0, 255, 0, 0),
     strip.Color(0, 0, 255, 0), strip.Color(0, 0, 0, 255)
@@ -474,9 +485,42 @@ void stripProof()
   {
     for (int i = 0; i < STRIP_COUNT; i++) strip.setPixelColor(i, cols[c]);
     strip.show();
-    delay(300);
+    delay(650);
   }
-  strip.clear();
+  stripBootIdle();
+  writeSystemLineToTransports("{\"system\":\"strip_proof_done\",\"idle\":\"blue\"}");
+}
+
+// Leave a dim visible mark after boot. If this is dark, the strip is not powered,
+// data is not reaching DIN, the strip direction is reversed, or this firmware is
+// not what is running on the ESP.
+void stripBootIdle()
+{
+  strip.setBrightness(18);
+  for (int i = 0; i < STRIP_COUNT; i++)
+  {
+    strip.setPixelColor(i, strip.Color(0, 0, 255, 0));
+  }
+  strip.show();
+}
+
+// Backward compatibility for the v05/v06 collector LED:<n> command. It used to
+// mean "onboard pixel"; for v06 it also gives the SK6812 a visible fallback.
+void applyLegacyStripBrightness(uint8_t brightness)
+{
+  uint8_t capped = min((int)brightness, STRIP_MAX_BRIGHTNESS);
+  strip.setBrightness(capped);
+  if (brightness == 0)
+  {
+    strip.clear();
+  }
+  else
+  {
+    for (int i = 0; i < STRIP_COUNT; i++)
+    {
+      strip.setPixelColor(i, strip.Color(0, 0, 255, 0));
+    }
+  }
   strip.show();
 }
 
@@ -484,6 +528,7 @@ void stripProof()
 // (0-255 each). The decoder builds the frame; the body only renders it.
 void applyPixels(const String& csv)
 {
+  strip.setBrightness(STRIP_MAX_BRIGHTNESS);
   String s = csv;
   s.trim();
   s += ",";                          // sentinel so the final value flushes
@@ -499,6 +544,10 @@ void applyPixels(const String& csv)
       strip.setPixelColor(px++, strip.Color(rgbw[0], rgbw[1], rgbw[2], rgbw[3]));
       ch = 0;
     }
+  }
+  while (px < STRIP_COUNT)
+  {
+    strip.setPixelColor(px++, 0);
   }
   strip.show();
 }

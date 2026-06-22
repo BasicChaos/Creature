@@ -2,10 +2,10 @@
 
 Version: v06 — June 19 2026
 
-Body node wiring for v06. The mic and light sensor below match the live firmware
-in `Code/Firmware/esp-creature-core/src/main.cpp` (still tagged v.05). The BME280,
-the IMU, the MAX98357A amp, and the external SK6812 strip are wired in hardware
-for v06 but are NOT in the firmware yet. Each is marked below.
+Body node wiring for v06. The devices below match the live firmware in
+`Code/Firmware/esp-creature-core/src/main.cpp`. The ESP reads the four senses,
+accepts legacy `LED:<brightness>` status commands, and accepts v06 `PIX:` strip
+frames plus optional `VOX:` speaker commands.
 
 ## Board
 
@@ -17,10 +17,10 @@ collector and sends `LED:<brightness>` back over the same connection.
 
 - INMP441: I2S MEMS microphone, sound. (coded + enabled)
 - BH1750: I2C ambient light, lux. (coded + enabled)
-- BME280: I2C temperature / humidity / pressure. (wired, not in firmware yet)
-- MPU-6050 / ICM-20689: I2C IMU, motion + orientation. (wired, not in firmware yet)
-- MAX98357A + 4Ω 3W speaker: I2S audio output. (wired, not in firmware yet)
-- SK6812 RGBW strip: addressable emitter, ~16 px. (wired, not in firmware yet)
+- BME280: I2C temperature / humidity / pressure. (coded + enabled)
+- MPU-6050 / ICM-20689: I2C IMU, motion + orientation. (coded + enabled)
+- MAX98357A + 4Ω 3W speaker: I2S audio output. (coded + enabled; `VOX:` optional)
+- SK6812 RGBW strip: addressable emitter, ~16 px. (coded + enabled; `PIX:`)
 - Onboard NeoPixel (RGB@IO38): status pixel. No external wiring.
 
 ## Pin assignments
@@ -34,12 +34,12 @@ collector and sends `LED:<brightness>` back over the same connection.
 | I2C data            | GPIO 8       | SDA        | BH1750 + BME280 + IMU, shared          |
 | I2C clock           | GPIO 9       | SCL        | BH1750 + BME280 + IMU, shared          |
 | BH1750 address      | GND          | ADDR       | ADDR to GND = 0x23                     |
-| BME280 address      | GND          | SDO        | SDO to GND = 0x76 (not in firmware)    |
-| IMU address         | GND          | AD0        | AD0 to GND = 0x68 (not in firmware)    |
-| I2S1 bit clock      | GPIO 15      | BCLK       | MAX98357A (not in firmware)            |
-| I2S1 word select    | GPIO 16      | LRC        | MAX98357A (not in firmware)            |
-| I2S1 data out       | GPIO 17      | DIN        | MAX98357A (not in firmware)            |
-| SK6812 data         | GPIO 4       | DIN        | via 470Ω on perfboard (not in firmware) |
+| BME280 address      | GND          | SDO        | SDO to GND = 0x76                      |
+| IMU address         | GND          | AD0        | AD0 to GND = 0x68                      |
+| I2S1 bit clock      | GPIO 15      | BCLK       | MAX98357A                              |
+| I2S1 word select    | GPIO 16      | LRC        | MAX98357A                              |
+| I2S1 data out       | GPIO 17      | DIN        | MAX98357A                              |
+| SK6812 data         | GPIO 4       | DIN        | via 470Ω on perfboard                  |
 | Onboard RGB LED     | GPIO 38      | -          | NeoPixel status pixel, no ext wiring   |
 | 3V3                 | 3V3 rail     | VDD / VIN  | All sensors, mic, and amp              |
 | 5V                  | 5V pin       | +5V        | SK6812 strip only                      |
@@ -176,12 +176,22 @@ On/off and cautions:
 
 ## Firmware status
 
-Coded today: INMP441 (I2S0) and BH1750 (I2C). Output is one JSON line per sample
-at ~10 Hz over USB serial, raw values normalized 0-1 by the Pi collector.
+The firmware streams one JSON line per sample at ~10 Hz over USB serial and WiFi
+TCP when configured. Raw values are normalized 0-1 by the Pi collector.
 
-To match this layout, the firmware still needs: BME280 read, IMU read
-(ICM20689), MAX98357A output on I2S1 (GPIO 15/16/17), and the external SK6812
-strip object on GPIO 4 (NEO_GRBW).
+On boot, current firmware runs a strip proof on GPIO 4: red, green, blue, white,
+then a dim blue idle fill. If the onboard ESP LEDs are alive but the strip stays
+dark during that proof, check strip 5V, common ground, the 470 ohm data resistor,
+DIN direction, and whether the ESP has actually been flashed with the current
+firmware.
+
+Runtime output protocol:
+
+- `LED:<0-255>`: legacy status command. Drives the onboard RGB pixel and mirrors
+  a capped blue fill to the SK6812 strip.
+- `PIX:r,g,b,w,...`: full v06 RGBW strip frame, up to 16 pixels.
+- `VOX:freq,ms[,vol]`: optional speaker tone. The live collector keeps this off
+  unless `CREATURE_ENABLE_VOICE=1`.
 
 ## History
 
