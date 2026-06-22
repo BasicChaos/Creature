@@ -20,7 +20,10 @@ DEFAULT_PIXELS = 16
 KNOBS = {
     "ACT_GAIN": 4.0,
     "FLOOR": 0.04,
-    "WHITE_GLOW": 80.0,
+    # Keep white as a glow, not the whole expression. The SK6812 W channel is
+    # efficient enough that high values quickly wash every colour to white.
+    "WHITE_GLOW": 24.0,
+    "WHITE_CHANNEL": 70.0,
     "RIPPLE_REF": 0.18,
     "PULSE_BASE": 0.02,
     "PULSE_SPEED": 0.22,
@@ -221,7 +224,7 @@ class ExpressionDecoderV06:
                 green += event_flash * k["EVENT_RGB"][1]
                 blue += event_flash * k["EVENT_RGB"][2]
 
-            white = clamp(arousal * 255.0, 0.0, 255.0)
+            white = clamp((arousal ** 1.7) * k["WHITE_CHANNEL"], 0.0, 255.0)
             out.append((
                 int(clamp(red, 0.0, 255.0) * scale),
                 int(clamp(green, 0.0, 255.0) * scale),

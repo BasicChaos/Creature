@@ -173,6 +173,10 @@ On/off and cautions:
   MPU-6050. Use the `finani/ICM20689` library when adding it to firmware.
 - Only one program can hold the ESP serial port. Do not run the PlatformIO
   Serial Monitor and the Pi collector at once.
+- The small green board LED that blinks during runtime is the board's USB-serial
+  activity indicator on many ESP32-S3 dev boards, not the controllable RGB LED.
+  Current firmware keeps USB Serial chatty for boot/debug, then quiets it while a
+  WiFi collector client is connected so normal TCP runs do not blink constantly.
 
 ## Firmware status
 

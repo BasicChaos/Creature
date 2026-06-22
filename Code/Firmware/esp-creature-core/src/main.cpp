@@ -45,6 +45,13 @@
 #define ENABLE_STRIP    1   // SK6812 RGBW strip (GPIO 4, 16 px), PIX: command
 #define ENABLE_VOICE    1   // MAX98357A amp (I2S1 15/16/17), VOX: command
 
+// Most ESP32-S3 dev boards have a USB-serial activity LED that cannot be
+// controlled as a GPIO. If a WiFi collector is connected, stop mirroring the
+// 10 Hz JSON stream to USB Serial so that board LED does not blink constantly.
+#ifndef QUIET_SERIAL_WHEN_WIFI_CLIENT
+#define QUIET_SERIAL_WHEN_WIFI_CLIENT 1
+#endif
+
 #ifndef CREATURE_WIFI_SSID
 #define CREATURE_WIFI_SSID ""
 #endif
@@ -160,6 +167,7 @@ void  setupWifi();
 void  serviceWifi();
 void  readSerialCommands();
 void  readWifiCommands();
+bool  shouldWriteSerial();
 void  writeLineToTransports(const String& line);
 void  writeSystemLineToTransports(const String& line);
 
@@ -254,7 +262,10 @@ void readWifiCommands()
 
 void writeLineToTransports(const String& line)
 {
-  Serial.println(line);
+  if (shouldWriteSerial())
+  {
+    Serial.println(line);
+  }
 
   if (wifiClient && wifiClient.connected())
   {
@@ -265,6 +276,15 @@ void writeLineToTransports(const String& line)
 void writeSystemLineToTransports(const String& line)
 {
   writeLineToTransports(line);
+}
+
+bool shouldWriteSerial()
+{
+#if QUIET_SERIAL_WHEN_WIFI_CLIENT
+  return !(wifiEnabled && wifiClient && wifiClient.connected());
+#else
+  return true;
+#endif
 }
 
 void setupWifi()
