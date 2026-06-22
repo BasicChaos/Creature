@@ -297,6 +297,9 @@ void setupWifi()
   }
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false); // no modem power-save: keeps current steady on boot/connect.
+                        // (Previously blamed for amp distortion via the 3V3 rail; real
+                        // cause was amp VIN wired to 3V3 — fixed, VIN now on 5V.)
   WiFi.setHostname(CREATURE_WIFI_HOSTNAME);
   WiFi.begin(CREATURE_WIFI_SSID, CREATURE_WIFI_PASSWORD);
   lastWifiAttemptMs = millis();

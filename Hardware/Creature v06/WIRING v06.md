@@ -41,8 +41,8 @@ collector and sends `LED:<brightness>` back over the same connection.
 | I2S1 data out       | GPIO 17      | DIN        | MAX98357A                              |
 | SK6812 data         | GPIO 4       | DIN        | via 470Ω on perfboard                  |
 | Onboard RGB LED     | GPIO 38      | -          | NeoPixel status pixel, no ext wiring   |
-| 3V3                 | 3V3 rail     | VDD / VIN  | All sensors, mic, and amp              |
-| 5V                  | 5V pin       | +5V        | SK6812 strip only                      |
+| 3V3                 | 3V3 rail     | VDD / VIN  | All sensors and mic                    |
+| 5V                  | 5V pin       | +5V        | SK6812 strip and MAX98357A amp VIN     |
 | Ground              | GND rail     | GND        | Single common ground for everything    |
 
 Pins avoided on the N8R8: 0/3/45/46 (strapping), 19/20 (USB), 43/44
@@ -79,9 +79,10 @@ Two separate I2S peripherals so the mic and amp never share pins:
 - I2S0 (RX) = INMP441 mic, on GPIO 5/6/7. Already in firmware.
 - I2S1 (TX) = MAX98357A amp, on GPIO 15/16/17. Needs firmware.
 
-MAX98357A: VIN to 3V3 (gives ~1.3W into 4Ω — enough for quiet use; 5V would give
-the full 3W). Leave SD and GAIN floating for default enable and gain. Speaker +
-and - to the screw terminal.
+MAX98357A: VIN to the +5V rail, not 3V3. **Confirmed 22 Jun 2026: VIN on 3V3 was
+the actual cause of the persistent distortion** — not enough headroom, so it
+clipped at real signal levels. Moving VIN to 5V fixed it completely. Leave SD and
+GAIN floating for default enable and gain. Speaker + and - to the screw terminal.
 
 ## SK6812 strip
 
@@ -103,9 +104,9 @@ That 5V is the system +5V rail. The ESP USB-C is only for programming.
 
 - PowerBoost 5V to the +5V rail. PowerBoost GND to the common ground rail.
 - ESP 5V IN pin from the +5V rail. The onboard regulator makes 3.3V from it.
-- SK6812 +5V from the +5V rail. The strip is the only direct 5V load.
-- Sensors, mic, and amp take 3V3 from the ESP 3V3 pin, GND from the common rail.
-  That 3V3 is the regulator output, so the same source powers it.
+- SK6812 +5V and MAX98357A VIN both run from the +5V rail directly.
+- Sensors and mic take 3V3 from the ESP 3V3 pin, GND from the common rail. That
+  3V3 is the regulator output, so the same source powers it.
 - One common ground for everything.
 
 Notes:
@@ -200,12 +201,13 @@ Runtime output protocol:
 - `VOX:freq,ms[,vol]`: optional speaker tone. The live collector sends quiet,
   low, slow tones by default. Set `CREATURE_ENABLE_VOICE=0` to silence it.
 
-Audio note: the MAX98357A sounded scratchy at very low digital levels in bench
-testing. The clean recipe is the one in `Code/Firmware/bench/src/smoke_test.cpp`:
-real signal level, about 10 ms fades, 40 ms warm-up before the tone, 150 ms tail
-drain, and mic uninstalled while speaking. The collector keeps tones sparse; if
-it is too loud, prefer hardware gain (GAIN to VIN) and amp VIN decoupling rather
-than tiny digital samples.
+Audio note: distortion was traced to amp VIN sitting on the 3V3 rail — not enough
+headroom, so it clipped (fixed 22 Jun 2026 by wiring VIN to 5V instead; see
+"Audio" above). The click-free playback recipe is a separate concern, still
+worth keeping: real signal level, about 10 ms fades, 40 ms warm-up before the
+tone, 150 ms tail drain, and mic uninstalled while speaking — see
+`Code/Firmware/bench/src/smoke_test.cpp`. If 5V VIN is too loud, prefer hardware
+gain (GAIN to VIN) over shrinking the digital amplitude.
 
 ## History
 
@@ -223,8 +225,8 @@ Six colours, six net groups, one to one. White is reassigned from the old
 | Colour | Use | Wires |
 |--------|-----|-------|
 | Black  | GND | every ground (one common net) |
-| Red    | 5V  | SK6812 +5V only |
-| White  | 3V3 | power to BH1750, BME280, IMU, INMP441, MAX98357A |
+| Red    | 5V  | SK6812 +5V, MAX98357A VIN |
+| White  | 3V3 | power to BH1750, BME280, IMU, INMP441 |
 | Yellow | I2C SDA | GPIO 8 → all three I2C sensors |
 | Blue   | I2C SCL | GPIO 9 → all three I2C sensors |
 | Green  | digital signal | I2S (mic 5/6/7, amp 15/16/17) + LED data (GPIO 4) |

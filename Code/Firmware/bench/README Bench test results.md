@@ -60,9 +60,15 @@ the motion, light, and mic values move.
 
 ## Audio: playing clean tones (important)
 
-This took a long debug to get right. The reference is `playTone` + `ampSilence` in
-`src/smoke_test.cpp`. Reuse this recipe in the real v06 firmware; do not rediscover
-it. Each rule earns its place:
+**Root cause + fix (confirmed 22 Jun 2026):** the persistent distortion was not a
+software/timing problem. Amp VIN was wired to 3V3, which is not enough headroom —
+it clipped at real signal levels. Moving VIN to the +5V rail removed the
+distortion completely. See `WIRING v06.md` → Audio for the pin change.
+
+The recipe below is still worth keeping — it fixes click artifacts at start/stop,
+a separate issue from clipping. This took a long debug to get right. The
+reference is `playTone` + `ampSilence` in `src/smoke_test.cpp`. Reuse this recipe
+in the real v06 firmware; do not rediscover it. Each rule earns its place:
 
 - **Drive a real signal level** (amplitude ~0.25 of full scale, not tiny). The
   MAX98357A is class-D and sounds scratchy at very low digital levels. To make it
@@ -81,8 +87,10 @@ it. Each rule earns its place:
   STAND_I2S, `use_apll=false`, 8x256 DMA, continuous phase across tones. ONLY_LEFT is
   fine (the standalone speaker test proved it). APLL did not help.
 
-For clean tones at any pitch while staying quiet, the hardware option is a
-decoupling cap on the amp VIN (100µF + 0.1µF) and/or VIN at 5V with lower gain.
+VIN is now 5V (full 3W headroom). If that is too loud at default gain, turn it
+down with hardware GAIN (GAIN to VIN) rather than shrinking the digital
+amplitude. A decoupling cap on VIN (100µF + 0.1µF) is optional extra insurance,
+not required for the fix.
 
 ## Notes carried from WIRING v06
 
