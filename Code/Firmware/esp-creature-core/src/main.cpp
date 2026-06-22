@@ -625,10 +625,10 @@ void playTone(float freq, int ms, float vol)
 #if ENABLE_MIC
   i2s_driver_uninstall(I2S_PORT);        // give the amp the I2S subsystem
 #endif
-  ampSilence(220);                       // warm the amp after I2S churn
+  ampSilence(40);                        // warm the amp after I2S churn
   const float dt = 2.0f * (float)M_PI * freq / AMP_SAMPLE_RATE;
   const int total = (AMP_SAMPLE_RATE * ms) / 1000;
-  const int fade = AMP_SAMPLE_RATE / 30;  // slower fade avoids start fuzz/clicks
+  const int fade = AMP_SAMPLE_RATE / 100; // ~10 ms fade, from the clean bench test
   const float amp = TONE_AMP * constrain(vol, 0.0f, 1.0f);
   int16_t buf[256];
   int done = 0;

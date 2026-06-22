@@ -63,8 +63,8 @@ KNOBS = dict(
     SHIMMER=22.0,        # tempo-scaled per-pixel jitter (0-255)
     EVENT_WIDTH=1.6,     # event flash width, in field columns
     # voice
-    F_LOW=85.0,
-    F_HIGH=210.0,
+    F_LOW=220.0,
+    F_HIGH=440.0,
     # color poles (RGB)
     COOL=(40, 170, 230),
     WARM=(255, 150, 40),

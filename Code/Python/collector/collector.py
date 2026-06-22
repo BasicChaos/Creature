@@ -119,7 +119,7 @@ ENABLE_STRIP = os.environ.get("CREATURE_ENABLE_STRIP", "1") == "1"
 ENABLE_VOICE = os.environ.get("CREATURE_ENABLE_VOICE", "1") == "1"
 STRIP_PIXELS = int(os.environ.get("CREATURE_STRIP_PIXELS", "16"))
 STRIP_VALUE_CAP = int(os.environ.get("CREATURE_STRIP_VALUE_CAP", "200"))
-VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_SECONDS", "14.0"))
+VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_SECONDS", "20.0"))
 
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.

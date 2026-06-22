@@ -195,17 +195,17 @@ Runtime output protocol:
   a capped blue fill to the SK6812 strip. The live collector does not send this
   by default while `PIX:` expression is active, to avoid tick flicker.
 - `PIX:r,g,b,w,...`: full v06 RGBW strip frame, up to 16 pixels. The live decoder
-  smooths frame-to-frame changes and disables hard event flashes, so expression
-  moves without one-tick white blinks.
+  keeps the white channel capped, but otherwise leaves the field's pulse and
+  shimmer visible.
 - `VOX:freq,ms[,vol]`: optional speaker tone. The live collector sends quiet,
   low, slow tones by default. Set `CREATURE_ENABLE_VOICE=0` to silence it.
 
 Audio note: the MAX98357A sounded scratchy at very low digital levels in bench
-testing. The clean quiet path is hardware gain (GAIN to VIN) plus decoupling on
-amp VIN, not tiny samples. The collector therefore keeps tones sparse and low,
-but keeps digital volume in the cleaner range. If it is too loud, prefer hardware
-gain; `CREATURE_VOICE_VOLUME` is clamped so it cannot accidentally request the
-scratchy low-sample regime.
+testing. The clean recipe is the one in `Code/Firmware/bench/src/smoke_test.cpp`:
+real signal level, about 10 ms fades, 40 ms warm-up before the tone, 150 ms tail
+drain, and mic uninstalled while speaking. The collector keeps tones sparse; if
+it is too loud, prefer hardware gain (GAIN to VIN) and amp VIN decoupling rather
+than tiny digital samples.
 
 ## History
 

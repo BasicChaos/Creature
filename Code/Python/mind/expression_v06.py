@@ -18,30 +18,27 @@ import os
 DEFAULT_PIXELS = 16
 
 KNOBS = {
-    "ACT_GAIN": 4.7,
-    "FLOOR": 0.055,
+    "ACT_GAIN": 4.0,
+    "FLOOR": 0.04,
     # Keep white as a glow, not the whole expression. The SK6812 W channel is
     # efficient enough that high values quickly wash every colour to white.
-    "WHITE_GLOW": 18.0,
-    "WHITE_CHANNEL": 52.0,
+    "WHITE_GLOW": 24.0,
+    "WHITE_CHANNEL": 70.0,
     "RIPPLE_REF": 0.18,
-    "PULSE_BASE": 0.014,
-    "PULSE_SPEED": 0.12,
-    "PULSE_WIDTH": 0.18,
-    "PULSE_STRENGTH": 0.42,
-    "SHIMMER": 4.0,
-    "FRAME_SMOOTHING": 0.38,
-    "MAX_CHANNEL_STEP": 42,
+    "PULSE_BASE": 0.02,
+    "PULSE_SPEED": 0.22,
+    "PULSE_WIDTH": 0.11,
+    "PULSE_STRENGTH": 1.0,
+    "SHIMMER": 14.0,
     "EVENT_SIG_MIN": 0.55,
-    "EVENT_FLASH": 0.0,
     "EVENT_WIDTH": 1.3,
     "COOL": (35, 150, 230),
     "WARM": (255, 135, 35),
-    "PULSE_RGB": (185, 150, 105),
+    "PULSE_RGB": (255, 240, 210),
     "EVENT_RGB": (255, 255, 255),
     "LED_CAP": 200,
-    "F_LOW": 85.0,
-    "F_HIGH": 210.0,
+    "F_LOW": 220.0,
+    "F_HIGH": 440.0,
 }
 
 
@@ -94,7 +91,6 @@ class ExpressionDecoderV06:
         if knobs:
             self.knobs.update(knobs)
         self.pulse_pos = 0.0
-        self.previous_pixels = None
 
     def read(self, state):
         cells = sorted(state.get("cells") or [], key=lambda c: c.get("n", 0))
@@ -145,7 +141,7 @@ class ExpressionDecoderV06:
         balance = (warm_total - cool_total) / (warm_total + cool_total + 1e-6)
 
         event_n, event_sig, event_flag = self._event_origin(state, count)
-        raw_pixels = self._render(
+        pixels = self._render(
             activations,
             warm_by_cell,
             cool_by_cell,
@@ -156,7 +152,6 @@ class ExpressionDecoderV06:
             event_sig,
             int(state.get("tick", 0) or 0),
         )
-        pixels = self._smooth_pixels(raw_pixels)
 
         return {
             "A": round(arousal, 4),
@@ -225,7 +220,7 @@ class ExpressionDecoderV06:
             blue += shimmer
 
             if event_n is not None:
-                event_flash = math.exp(-((pos - event_n) / k["EVENT_WIDTH"]) ** 2) * event_sig * k["EVENT_FLASH"]
+                event_flash = math.exp(-((pos - event_n) / k["EVENT_WIDTH"]) ** 2) * event_sig
                 red += event_flash * k["EVENT_RGB"][0]
                 green += event_flash * k["EVENT_RGB"][1]
                 blue += event_flash * k["EVENT_RGB"][2]
@@ -239,24 +234,6 @@ class ExpressionDecoderV06:
             ))
 
         return out
-
-    def _smooth_pixels(self, pixels):
-        if self.previous_pixels is None or len(self.previous_pixels) != len(pixels):
-            self.previous_pixels = pixels
-            return pixels
-
-        alpha = clamp(float(self.knobs["FRAME_SMOOTHING"]), 0.0, 1.0)
-        max_step = max(1, int(self.knobs["MAX_CHANNEL_STEP"]))
-        smoothed = []
-        for prev, raw in zip(self.previous_pixels, pixels):
-            channels = []
-            for old, new in zip(prev, raw):
-                target = old + (new - old) * alpha
-                delta = clamp(target - old, -max_step, max_step)
-                channels.append(int(clamp(round(old + delta), 0, 255)))
-            smoothed.append(tuple(channels))
-        self.previous_pixels = smoothed
-        return smoothed
 
 
 def pixels_to_pix_command(pixels):
@@ -273,7 +250,7 @@ def pixels_to_pix_command(pixels):
 
 def voice_command_from_signal(signal, speaker_activation):
     arousal = max(float(signal.get("A", 0.0) or 0.0), float(speaker_activation or 0.0))
-    if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.34")):
+    if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.45")):
         return None
 
     balance = clamp(float(signal.get("B", 0.0) or 0.0), -1.0, 1.0)
@@ -281,8 +258,8 @@ def voice_command_from_signal(signal, speaker_activation):
     k = KNOBS
     mix = (balance + 1.0) * 0.5
     freq = k["F_LOW"] * ((k["F_HIGH"] / k["F_LOW"]) ** mix)
-    ms = int(280 + 320 * tempo)
+    ms = int(220 + 180 * tempo)
     # MAX98357A gets fuzzy with tiny digital samples. Keep the digital signal in
     # the clean range from the bench notes; use the amp GAIN pin for quiet.
-    vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "1.0")), 0.75, 1.0)
+    vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "0.75")), 0.65, 0.9)
     return f"VOX:{freq:.1f},{ms},{vol:.2f}\n"
