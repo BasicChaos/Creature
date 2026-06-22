@@ -25,19 +25,23 @@ KNOBS = {
     "WHITE_GLOW": 24.0,
     "WHITE_CHANNEL": 70.0,
     "RIPPLE_REF": 0.18,
-    "PULSE_BASE": 0.02,
-    "PULSE_SPEED": 0.22,
-    "PULSE_WIDTH": 0.11,
-    "SHIMMER": 14.0,
+    "PULSE_BASE": 0.006,
+    "PULSE_SPEED": 0.055,
+    "PULSE_WIDTH": 0.16,
+    "PULSE_STRENGTH": 0.22,
+    "SHIMMER": 0.0,
+    "FRAME_SMOOTHING": 0.24,
+    "MAX_CHANNEL_STEP": 26,
     "EVENT_SIG_MIN": 0.55,
+    "EVENT_FLASH": 0.0,
     "EVENT_WIDTH": 1.3,
     "COOL": (35, 150, 230),
     "WARM": (255, 135, 35),
-    "PULSE_RGB": (255, 240, 210),
+    "PULSE_RGB": (140, 120, 95),
     "EVENT_RGB": (255, 255, 255),
     "LED_CAP": 200,
-    "F_LOW": 120.0,
-    "F_HIGH": 520.0,
+    "F_LOW": 85.0,
+    "F_HIGH": 210.0,
 }
 
 
@@ -90,6 +94,7 @@ class ExpressionDecoderV06:
         if knobs:
             self.knobs.update(knobs)
         self.pulse_pos = 0.0
+        self.previous_pixels = None
 
     def read(self, state):
         cells = sorted(state.get("cells") or [], key=lambda c: c.get("n", 0))
@@ -140,7 +145,7 @@ class ExpressionDecoderV06:
         balance = (warm_total - cool_total) / (warm_total + cool_total + 1e-6)
 
         event_n, event_sig, event_flag = self._event_origin(state, count)
-        pixels = self._render(
+        raw_pixels = self._render(
             activations,
             warm_by_cell,
             cool_by_cell,
@@ -151,6 +156,7 @@ class ExpressionDecoderV06:
             event_sig,
             int(state.get("tick", 0) or 0),
         )
+        pixels = self._smooth_pixels(raw_pixels)
 
         return {
             "A": round(arousal, 4),
@@ -208,7 +214,7 @@ class ExpressionDecoderV06:
             blue += glow
 
             d = min(abs(x - self.pulse_pos), abs(x - self.pulse_pos + 1.0), abs(x - self.pulse_pos - 1.0))
-            pulse = math.exp(-((d / k["PULSE_WIDTH"]) ** 2)) * tempo
+            pulse = math.exp(-((d / k["PULSE_WIDTH"]) ** 2)) * tempo * k["PULSE_STRENGTH"]
             red += pulse * k["PULSE_RGB"][0]
             green += pulse * k["PULSE_RGB"][1]
             blue += pulse * k["PULSE_RGB"][2]
@@ -219,7 +225,7 @@ class ExpressionDecoderV06:
             blue += shimmer
 
             if event_n is not None:
-                event_flash = math.exp(-((pos - event_n) / k["EVENT_WIDTH"]) ** 2) * event_sig
+                event_flash = math.exp(-((pos - event_n) / k["EVENT_WIDTH"]) ** 2) * event_sig * k["EVENT_FLASH"]
                 red += event_flash * k["EVENT_RGB"][0]
                 green += event_flash * k["EVENT_RGB"][1]
                 blue += event_flash * k["EVENT_RGB"][2]
@@ -233,6 +239,24 @@ class ExpressionDecoderV06:
             ))
 
         return out
+
+    def _smooth_pixels(self, pixels):
+        if self.previous_pixels is None or len(self.previous_pixels) != len(pixels):
+            self.previous_pixels = pixels
+            return pixels
+
+        alpha = clamp(float(self.knobs["FRAME_SMOOTHING"]), 0.0, 1.0)
+        max_step = max(1, int(self.knobs["MAX_CHANNEL_STEP"]))
+        smoothed = []
+        for prev, raw in zip(self.previous_pixels, pixels):
+            channels = []
+            for old, new in zip(prev, raw):
+                target = old + (new - old) * alpha
+                delta = clamp(target - old, -max_step, max_step)
+                channels.append(int(clamp(round(old + delta), 0, 255)))
+            smoothed.append(tuple(channels))
+        self.previous_pixels = smoothed
+        return smoothed
 
 
 def pixels_to_pix_command(pixels):
@@ -249,7 +273,7 @@ def pixels_to_pix_command(pixels):
 
 def voice_command_from_signal(signal, speaker_activation):
     arousal = max(float(signal.get("A", 0.0) or 0.0), float(speaker_activation or 0.0))
-    if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.22")) and not signal.get("event"):
+    if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.34")):
         return None
 
     balance = clamp(float(signal.get("B", 0.0) or 0.0), -1.0, 1.0)
@@ -257,6 +281,6 @@ def voice_command_from_signal(signal, speaker_activation):
     k = KNOBS
     mix = (balance + 1.0) * 0.5
     freq = k["F_LOW"] * ((k["F_HIGH"] / k["F_LOW"]) ** mix)
-    ms = int(55 + 95 * tempo)
-    vol = clamp(0.18 + 0.62 * arousal, 0.10, 0.72)
+    ms = int(280 + 320 * tempo)
+    vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "0.34")), 0.25, 0.55)
     return f"VOX:{freq:.1f},{ms},{vol:.2f}\n"

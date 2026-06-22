@@ -114,12 +114,12 @@ WEATHER_TEMP_MAX = float(os.environ.get("CREATURE_WEATHER_TEMP_MAX", "35.0"))
 # --- LED ---
 DEFAULT_LED_MAX_BRIGHTNESS = 80
 LED_MAX_BRIGHTNESS = int(os.environ.get("CREATURE_LED_MAX_BRIGHTNESS", DEFAULT_LED_MAX_BRIGHTNESS))
-ENABLE_ONBOARD_LED = os.environ.get("CREATURE_ENABLE_ONBOARD_LED", "1") == "1"
+ENABLE_ONBOARD_LED = os.environ.get("CREATURE_ENABLE_ONBOARD_LED", "0") == "1"
 ENABLE_STRIP = os.environ.get("CREATURE_ENABLE_STRIP", "1") == "1"
-ENABLE_VOICE = os.environ.get("CREATURE_ENABLE_VOICE", "0") == "1"
+ENABLE_VOICE = os.environ.get("CREATURE_ENABLE_VOICE", "1") == "1"
 STRIP_PIXELS = int(os.environ.get("CREATURE_STRIP_PIXELS", "16"))
 STRIP_VALUE_CAP = int(os.environ.get("CREATURE_STRIP_VALUE_CAP", "200"))
-VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_SECONDS", "6.0"))
+VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_SECONDS", "14.0"))
 
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
@@ -372,7 +372,7 @@ def make_body_sender(transport):
         if ENABLE_ONBOARD_LED:
             command = f"LED:{brightness}\n"
             write_changed("led", command)
-            sent_brightness = brightness
+        sent_brightness = brightness
 
         if ENABLE_STRIP:
             expression = decoder.read(state)

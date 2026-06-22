@@ -192,10 +192,19 @@ firmware.
 Runtime output protocol:
 
 - `LED:<0-255>`: legacy status command. Drives the onboard RGB pixel and mirrors
-  a capped blue fill to the SK6812 strip.
-- `PIX:r,g,b,w,...`: full v06 RGBW strip frame, up to 16 pixels.
-- `VOX:freq,ms[,vol]`: optional speaker tone. The live collector keeps this off
-  unless `CREATURE_ENABLE_VOICE=1`.
+  a capped blue fill to the SK6812 strip. The live collector does not send this
+  by default while `PIX:` expression is active, to avoid tick flicker.
+- `PIX:r,g,b,w,...`: full v06 RGBW strip frame, up to 16 pixels. The live decoder
+  smooths frame-to-frame changes and disables hard event flashes, so expression
+  moves without one-tick white blinks.
+- `VOX:freq,ms[,vol]`: optional speaker tone. The live collector sends quiet,
+  low, slow tones by default. Set `CREATURE_ENABLE_VOICE=0` to silence it.
+
+Audio note: the MAX98357A sounded scratchy at very low digital levels in bench
+testing. The clean quiet path is hardware gain (GAIN to VIN) plus decoupling on
+amp VIN, not tiny samples. The collector therefore keeps tones sparse and low;
+use `CREATURE_VOICE_VOLUME` gently, and prefer hardware gain if it is still too
+loud.
 
 ## History
 

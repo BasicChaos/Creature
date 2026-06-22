@@ -63,8 +63,8 @@ KNOBS = dict(
     SHIMMER=22.0,        # tempo-scaled per-pixel jitter (0-255)
     EVENT_WIDTH=1.6,     # event flash width, in field columns
     # voice
-    F_LOW=120.0,
-    F_HIGH=520.0,
+    F_LOW=85.0,
+    F_HIGH=210.0,
     # color poles (RGB)
     COOL=(40, 170, 230),
     WARM=(255, 150, 40),
@@ -139,9 +139,6 @@ def synth_voice(A, B, T, events, secs_per_tick, sr, knobs):
         noise = np.random.uniform(-1, 1, spt)
         rough = T[i]
         sig = amps * ((1 - 0.7 * rough) * tone + 0.7 * rough * noise)
-        if events[i]:
-            env = np.exp(-np.linspace(0, 6, spt))
-            sig = sig + 0.5 * amp_target * env * np.sin(ph * 2.0)
         out[i * spt:(i + 1) * spt] = sig
         prev_f, prev_amp = f_target, amp_target
 

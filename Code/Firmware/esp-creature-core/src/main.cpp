@@ -44,6 +44,7 @@
 #define ENABLE_WEATHER  1   // BME280 (I2C 0x76), stream "temp_c" and "pressure_hpa"
 #define ENABLE_STRIP    1   // SK6812 RGBW strip (GPIO 4, 16 px), PIX: command
 #define ENABLE_VOICE    1   // MAX98357A amp (I2S1 15/16/17), VOX: command
+#define ENABLE_BOOT_CHIRP 0  // keep startup quiet; collector sends gentle VOX tones
 
 // Most ESP32-S3 dev boards have a USB-serial activity LED that cannot be
 // controlled as a GPIO. If a WiFi collector is connected, stop mirroring the
@@ -780,7 +781,7 @@ void setup()
 #if ENABLE_STRIP
   stripProof();              // boot proof: R, G, B, W across all pixels
 #endif
-#if ENABLE_VOICE
+#if (ENABLE_VOICE && ENABLE_BOOT_CHIRP)
   playTone(523.0f, 120, 1.0f);   // boot chirp = amp alive
 #endif
 
