@@ -108,6 +108,21 @@ stays unpredictable. Random bursts keep surprise alive.
 | novelty | adaptive novelty opens a temperament band | `--exprnov` | 2/2 |
 | dark-room | self-generated, bounded, learned activity in an empty room | `--darkroom` | 5/5 |
 
+## Into the runtime (v06.5 software)
+
+The record layer is now in the live creature, not just the gates. The validated
+logic moved into `Code/Python/mind/expression_memory_v06.py`, the single source of
+truth; `field_lab_v06` imports its primitives (all four gates still pass) and the
+collector imports the same module. Each tick the collector records what the body
+expressed into a lasting autobiography, saved alongside the field slow-state and
+reloaded on start, with a summary in the dashboard snapshot under
+`expression_memory`. It is behind `CREATURE_EXPR_MEMORY` (default on) and is
+passive: it changes nothing about what the body does.
+
+Bias and novelty steering, and the loop, are deliberately not wired to the body
+yet. Steering needs a decoder that renders from a steered signal, and the loop
+needs the hardware sensors placed and stable power. Those are the next increments.
+
 ## Where this leaves the project
 
 The whole sim arc stands. Record, bias, novelty, and the closed loop with its

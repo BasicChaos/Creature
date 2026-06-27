@@ -44,6 +44,17 @@ from mind.expression_v06 import (
     ExpressionDecoderV06,
     voice_command_from_signal,
 )
+# Expression-memory primitives live in the runtime module; field_lab imports them
+# so the offline gates and the live collector share one source of truth.
+from mind.expression_memory_v06 import (
+    clamp01,
+    expression_vector,
+    quantize_expression,
+    dequantize_expression,
+    ExpressionGraph,
+    graph_distance,
+    novelty_target as _novelty_target,
+)
 
 REPORT_EVERY_DEFAULT = 2000
 
@@ -710,139 +721,6 @@ def predictive_probe(args):
 # 1.0 when the decoder would send a VOX tone this tick, else 0.0.
 
 
-def clamp01(x):
-    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
-
-
-def expression_vector(signal, speaker_activation):
-    """The body's emitted state for this tick, exactly as the decoder made it."""
-    a = clamp01(float(signal.get("A", 0.0) or 0.0))
-    b = clamp01((float(signal.get("B", 0.0) or 0.0) + 1.0) * 0.5)
-    t = clamp01(float(signal.get("T", 0.0) or 0.0))
-    voiced = 1.0 if voice_command_from_signal(signal, speaker_activation) else 0.0
-    return (a, b, t, voiced)
-
-
-def quantize_expression(vec, bins):
-    """Grid-quantize an expression vector to a node key. `bins` is the
-    resolution knob, the spectral radius of this layer: too many and every tick
-    is a fresh node, too few and everything collapses to one."""
-    a, b, t, voiced = vec
-
-    def q(x):
-        return min(bins - 1, int(x * bins))
-
-    return (q(a), q(b), q(t), int(round(voiced)))
-
-
-def dequantize_expression(node, bins):
-    """Node key back to a representative expression vector (bin centres)."""
-    qa, qb, qt, qv = node
-    return ((qa + 0.5) / bins, (qb + 0.5) / bins, (qt + 0.5) / bins, float(qv))
-
-
-class ExpressionGraph:
-    """An autobiographical graph of the creature's own expressions.
-
-    Nodes are quantized expression states. Edges are transitions between
-    consecutive states. `visits`/`count` are cumulative, the life's full tally,
-    and drive the identity metric. `node_weight`/`edge_weight` are the same
-    tally under slow decay: the live graph, where unused paths fade and prune."""
-
-    def __init__(self, bins=5, decay=0.999, prune=0.01):
-        self.bins = int(bins)
-        self.decay = float(decay)
-        self.prune = float(prune)
-        self.visits = {}        # node -> cumulative count
-        self.node_weight = {}   # node -> decayed weight
-        self.count = {}         # (src, dst) -> cumulative count
-        self.edge_weight = {}   # (src, dst) -> decayed weight
-        self.prev = None
-        self.ticks = 0
-
-    def observe(self, vec):
-        node = quantize_expression(vec, self.bins)
-        self.ticks += 1
-        if self.decay < 1.0:
-            for k in list(self.edge_weight):
-                w = self.edge_weight[k] * self.decay
-                if w < self.prune:
-                    del self.edge_weight[k]
-                else:
-                    self.edge_weight[k] = w
-            for k in list(self.node_weight):
-                self.node_weight[k] *= self.decay
-        self.visits[node] = self.visits.get(node, 0) + 1
-        self.node_weight[node] = self.node_weight.get(node, 0.0) + 1.0
-        if self.prev is not None:
-            edge = (self.prev, node)
-            self.count[edge] = self.count.get(edge, 0) + 1
-            self.edge_weight[edge] = self.edge_weight.get(edge, 0.0) + 1.0
-        self.prev = node
-
-    def visit_entropy(self):
-        """Shannon entropy of the node-visit distribution, normalized 0..1.
-        Near 0 is a rut (one groove); near 1 is an even smear (no habit). The
-        collapse detector step 3 will act on; here it is only a readout."""
-        total = sum(self.visits.values())
-        if total <= 0 or len(self.visits) <= 1:
-            return 0.0
-        h = 0.0
-        for c in self.visits.values():
-            p = c / total
-            h -= p * math.log(p, 2)
-        return h / math.log(len(self.visits), 2)
-
-    def top_motifs(self, k=5, include_self=True):
-        """The most-travelled transitions: the creature's recurring moves. With
-        include_self=False, drop dwell (X -> X) and show the actual moves
-        between states, which is what a narrative motif is."""
-        items = self.count.items()
-        if not include_self:
-            items = [(e, c) for e, c in items if e[0] != e[1]]
-        return sorted(items, key=lambda kv: kv[1], reverse=True)[:k]
-
-    def node_distribution(self):
-        total = sum(self.visits.values()) or 1
-        return {n: c / total for n, c in self.visits.items()}
-
-    def edge_distribution(self):
-        total = sum(self.count.values()) or 1
-        return {e: c / total for e, c in self.count.items()}
-
-    def predict_next(self, node):
-        """Where the creature usually goes from `node`: the count-weighted
-        centroid of its successors, dwell included, since staying put is a habit
-        too. None if this state has no recorded future yet."""
-        succ = [(dst, c) for (src, dst), c in self.count.items() if src == node]
-        if not succ:
-            return None
-        total = sum(c for _, c in succ)
-        acc = [0.0, 0.0, 0.0, 0.0]
-        for dst, c in succ:
-            vec = dequantize_expression(dst, self.bins)
-            for i in range(4):
-                acc[i] += vec[i] * c
-        return tuple(a / total for a in acc)
-
-
-def graph_distance(g1, g2):
-    """Total-variation distance between two autobiographies, 0..1.
-
-    Treat each graph as a distribution over nodes and over edges; average the
-    two distances. 0 means identical histories, 1 means no shared expression at
-    all. This is the identity metric: two creatures with different lives should
-    sit far apart, two with the same kind of life close."""
-
-    def tv(d1, d2):
-        keys = set(d1) | set(d2)
-        return 0.5 * sum(abs(d1.get(k, 0.0) - d2.get(k, 0.0)) for k in keys)
-
-    node_tv = tv(g1.node_distribution(), g2.node_distribution())
-    edge_tv = tv(g1.edge_distribution(), g2.edge_distribution())
-    return 0.5 * (node_tv + edge_tv)
-
-
 def _record_expression(scenario, ticks, seed, bins, decay):
     """Run one life and return its expression graph. Passive: the decoder reads
     the field, the graph records the decoder, nothing feeds back."""
@@ -1045,24 +923,6 @@ def expression_bias_probe(args):
 #
 # The probe maps w against n and looks for the band where motifs survive (more
 # concentrated than pure field) without collapse. That band is temperament.
-
-
-def _novelty_target(graph, vec, bins):
-    """Aim at the least-explored expression state next to where bias wants to
-    go. Look at the grid neighbours (one step on each axis, plus a voiced flip)
-    and pick the one visited least so far. Directed exploration, not a twitch."""
-    node = quantize_expression(vec, bins)
-    qa, qb, qt, qv = node
-    candidates = [node, (qa, qb, qt, 1 - qv)]
-    for i, q in enumerate((qa, qb, qt)):
-        for step in (-1, 1):
-            nq = q + step
-            if 0 <= nq < bins:
-                cand = list(node)
-                cand[i] = nq
-                candidates.append(tuple(cand))
-    best = min(candidates, key=lambda c: (graph.visits.get(c, 0), c))
-    return dequantize_expression(best, bins)
 
 
 def _run_bias_novelty(scenario, ticks, seed, bins, decay, w, n, dwell_ref=6):

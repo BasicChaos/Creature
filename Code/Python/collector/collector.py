@@ -47,6 +47,7 @@ from mind.expression_v06 import (
     pixels_to_pix_command,
     voice_command_from_signal,
 )
+from mind.expression_memory_v06 import ExpressionMemory
 from mind.normalize import RollingNormalizer
 
 # --- Serial ---
@@ -121,6 +122,12 @@ STRIP_PIXELS = int(os.environ.get("CREATURE_STRIP_PIXELS", "16"))
 STRIP_VALUE_CAP = int(os.environ.get("CREATURE_STRIP_VALUE_CAP", "200"))
 VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_SECONDS", "20.0"))
 
+# --- Expression memory (v06.5 autobiography) ---
+# Passive by default: it records what the body expresses and persists across
+# runs. It does not change the body output. Set CREATURE_EXPR_MEMORY=0 to skip.
+ENABLE_EXPR_MEMORY = os.environ.get("CREATURE_EXPR_MEMORY", "1") == "1"
+EXPR_MEMORY_SAVE_EVERY_TICKS = int(os.environ.get("CREATURE_EXPR_MEMORY_SAVE_EVERY_TICKS", "100"))
+
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
 # STATE_JSON_PATH lands on tmpfs on the Pi, so the per-tick live snapshot
@@ -133,6 +140,12 @@ if FIELD_STATE_PATH.endswith(".json"):
     FIELD_STATE_PATH = FIELD_STATE_PATH[: -len(".json")] + "_v06.json"
 else:
     FIELD_STATE_PATH = FIELD_STATE_PATH + ".v06"
+
+# The expression-memory autobiography persists alongside the field slow-state.
+if FIELD_STATE_PATH.endswith("_v06.json"):
+    EXPR_MEMORY_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_autobiography_v06.json"
+else:
+    EXPR_MEMORY_PATH = FIELD_STATE_PATH + ".autobiography"
 
 
 def clamp(value, low, high):
@@ -692,6 +705,14 @@ def main():
     else:
         print("No saved field state. Starting fresh.")
 
+    expr_memory = ExpressionMemory() if ENABLE_EXPR_MEMORY else None
+    if expr_memory is not None:
+        if expr_memory.load(EXPR_MEMORY_PATH):
+            print(f"Loaded autobiography ({expr_memory.graph.ticks} ticks, "
+                  f"{len(expr_memory.graph.visits)} states).")
+        else:
+            print("No saved autobiography. Starting a fresh one.")
+
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
     motion_norm = RollingNormalizer(MOTION_WINDOW_SECONDS, MOTION_EMA_ALPHA, MOTION_MIN_RANGE)
@@ -722,6 +743,8 @@ def main():
 
     # Always save the slow field state on exit, however we leave.
     atexit.register(lambda: save_field(field, FIELD_STATE_PATH))
+    if expr_memory is not None:
+        atexit.register(lambda: expr_memory.save(EXPR_MEMORY_PATH))
 
     print(f"Collector running ({FIELD_VERSION} metabolism + structural memory).")
     print(f"ESP transport: {esp.description}")
@@ -730,6 +753,7 @@ def main():
     print(f"Field tick: {TICK_SECONDS:.0f} Hz inverse, LED max: {LED_MAX_BRIGHTNESS}")
     print(f"Outputs: onboard_led={ENABLE_ONBOARD_LED} strip_PIX={ENABLE_STRIP} "
           f"voice_VOX={ENABLE_VOICE}")
+    print(f"Expression memory (autobiography): {'on' if ENABLE_EXPR_MEMORY else 'off'}")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -822,6 +846,14 @@ def main():
                 break
             body_send = make_body_sender(esp)
 
+        # Record what the body expressed into the lasting autobiography. Passive:
+        # this reads the expression already computed, it does not change output.
+        if expr_memory is not None:
+            expression = output_info.get("expression")
+            if expression is not None:
+                speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+                expr_memory.observe(expression, speaker)
+
         logged_at = datetime.now().isoformat()
         tick = field.tick_count
 
@@ -885,6 +917,7 @@ def main():
             "reservoir": state.get("reservoir"),
             "readout": state.get("readout"),
             "expression": output_info.get("expression"),
+            "expression_memory": expr_memory.stats() if expr_memory is not None else None,
         }
         write_json_atomic(STATE_JSON_PATH, snapshot)
 
@@ -908,6 +941,9 @@ def main():
             except OSError as error:
                 print("Could not save field state:", error)
 
+        if expr_memory is not None and tick % EXPR_MEMORY_SAVE_EVERY_TICKS == 0:
+            expr_memory.save(EXPR_MEMORY_PATH)
+
         # Schedule the next tick. If we fell behind, resync instead of bursting.
         next_tick += TICK_SECONDS
         if now > next_tick:
@@ -915,6 +951,8 @@ def main():
 
     print("Stop requested. Saving field state and shutting down cleanly.")
     save_field(field, FIELD_STATE_PATH)
+    if expr_memory is not None:
+        expr_memory.save(EXPR_MEMORY_PATH)
     conn.commit()
     conn.close()
 
