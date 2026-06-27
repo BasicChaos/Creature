@@ -205,7 +205,7 @@ Audio note: distortion was traced to amp VIN sitting on the 3V3 rail — not eno
 headroom, so it clipped (fixed 22 Jun 2026 by wiring VIN to 5V instead; see
 "Audio" above). The click-free playback recipe is a separate concern, still
 worth keeping: real signal level, about 10 ms fades, 40 ms warm-up before the
-tone, 150 ms tail drain, and mic uninstalled while speaking — see
+tone, and a 150 ms tail drain. The mic stays live during playback now (mic on I2S0 and amp on I2S1 are separate peripherals, no need to uninstall); see
 `Code/Firmware/bench/src/smoke_test.cpp`. If 5V VIN is too loud, prefer hardware
 gain (GAIN to VIN) over shrinking the digital amplitude.
 

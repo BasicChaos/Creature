@@ -80,9 +80,11 @@ in the real v06 firmware; do not rediscover it. Each rule earns its place:
   trailing silence so the faded tail plays out.
 - **Warm the amp before the first tone** with ~40 ms of silence, or the first tone
   is distorted (cold start), especially after any I2S driver churn.
-- **Give the amp the I2S subsystem to itself during playback.** Mic (I2S0) and amp
-  (I2S1) interfere; the smoke test uninstalls the mic during the tone. Principle for
-  the real firmware: do not listen while speaking, gate the mic during output.
+- **Mic and amp run concurrently; do not gate the mic (corrected 27 Jun 2026).** Mic
+  (I2S0) and amp (I2S1) are separate peripherals on separate pins and run fine at the
+  same time. The smoke test below still uninstalls the mic during its tone, harmless
+  for a part-test, but the real firmware keeps the mic live. The distortion was amp
+  VIN on 3V3 (power), not I2S contention, so the creature hears its own voice.
 - **Config that works:** I2S1, BCLK=15/LRC=16/DIN=17, 16 kHz, 16-bit, ONLY_LEFT,
   STAND_I2S, `use_apll=false`, 8x256 DMA, continuous phase across tones. ONLY_LEFT is
   fine (the standalone speaker test proved it). APLL did not help.

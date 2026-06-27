@@ -108,9 +108,10 @@ Hardware idea:
 
 ### Sound Loop
 
-Current caution: the firmware uninstalls the mic while playing a tone so the amp
-can sound cleanly. That is good for audio quality, but it limits direct "hear
-self while speaking" feedback.
+Update (27 Jun 2026): the firmware no longer uninstalls the mic during a tone. Mic
+(I2S0) and amp (I2S1) are separate peripherals, so the mic stays live and the
+creature hears itself while speaking. That direct "hear self while speaking"
+feedback is now available, which is the start of the audio loop.
 
 Good loop options:
 

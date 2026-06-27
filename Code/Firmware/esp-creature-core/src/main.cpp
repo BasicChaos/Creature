@@ -620,15 +620,15 @@ void ampSilence(int ms)
   }
 }
 
-// Play a faded tone on the amp. The mic (I2S0) is uninstalled for the tone and
-// reinstalled after: do not listen while speaking. Recipe proven in the bench
-// smoke test (warm first, ~10 ms fades, drain the tail). Do not rediscover it.
+// Play a faded tone on the amp. The mic (I2S0) stays live: it and the amp (I2S1)
+// are separate I2S peripherals on separate pins, so the creature keeps listening
+// while it speaks, and hears its own voice. The clean-tone recipe still holds
+// (warm first, ~10 ms fades, drain the tail); do not rediscover it. The old mic
+// uninstall was a wrong guess at the distortion. The real cause was amp VIN on
+// 3V3, fixed by moving VIN to 5V.
 void playTone(float freq, int ms, float vol)
 {
-#if ENABLE_MIC
-  i2s_driver_uninstall(I2S_PORT);        // give the amp the I2S subsystem
-#endif
-  ampSilence(40);                        // warm the amp after I2S churn
+  ampSilence(40);                        // warm the amp before the tone
   const float dt = 2.0f * (float)M_PI * freq / AMP_SAMPLE_RATE;
   const int total = (AMP_SAMPLE_RATE * ms) / 1000;
   const int fade = AMP_SAMPLE_RATE / 100; // ~10 ms fade, from the clean bench test
@@ -653,9 +653,6 @@ void playTone(float freq, int ms, float vol)
     done += n;
   }
   ampSilence(150);                       // drain the faded tail (no end click)
-#if ENABLE_MIC
-  setupI2SMic();                         // reinstall the mic for listening
-#endif
 }
 
 // Configure the I2S peripheral for the INMP441 (receive, mono left channel).
