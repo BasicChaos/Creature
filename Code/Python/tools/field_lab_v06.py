@@ -40,6 +40,10 @@ if str(PROJECT_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
 
 from mind import cell_field_v06 as cf
+from mind.expression_v06 import (
+    ExpressionDecoderV06,
+    voice_command_from_signal,
+)
 
 REPORT_EVERY_DEFAULT = 2000
 
@@ -685,6 +689,631 @@ def predictive_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Expression memory: the passive recorder (Evolution 2, step 1)
+# ---------------------------------------------------------------------------
+#
+# See "Creature Expression as Memory" (direction doc). This is step 1 only:
+# RECORD. The creature's lasting memory is the graph of its own expressions.
+# Each tick the decoder turns the field into a body signal (arousal, balance,
+# tempo, and whether it speaks). We quantize that signal into a node, draw a
+# weighted edge from the previous node, and decay unused paths. Nothing feeds
+# back into the field: this records, it does not yet bias. Bias is step 2,
+# novelty step 3.
+#
+# The expression vector is taken from what the body actually emits, as the
+# decoder produces it, not a hand-picked feature list:
+#
+#     E = (arousal, balance01, tempo, voiced)
+#
+# arousal/tempo are already 0..1; balance is -1..1 remapped to 0..1; voiced is
+# 1.0 when the decoder would send a VOX tone this tick, else 0.0.
+
+
+def clamp01(x):
+    return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+
+def expression_vector(signal, speaker_activation):
+    """The body's emitted state for this tick, exactly as the decoder made it."""
+    a = clamp01(float(signal.get("A", 0.0) or 0.0))
+    b = clamp01((float(signal.get("B", 0.0) or 0.0) + 1.0) * 0.5)
+    t = clamp01(float(signal.get("T", 0.0) or 0.0))
+    voiced = 1.0 if voice_command_from_signal(signal, speaker_activation) else 0.0
+    return (a, b, t, voiced)
+
+
+def quantize_expression(vec, bins):
+    """Grid-quantize an expression vector to a node key. `bins` is the
+    resolution knob, the spectral radius of this layer: too many and every tick
+    is a fresh node, too few and everything collapses to one."""
+    a, b, t, voiced = vec
+
+    def q(x):
+        return min(bins - 1, int(x * bins))
+
+    return (q(a), q(b), q(t), int(round(voiced)))
+
+
+def dequantize_expression(node, bins):
+    """Node key back to a representative expression vector (bin centres)."""
+    qa, qb, qt, qv = node
+    return ((qa + 0.5) / bins, (qb + 0.5) / bins, (qt + 0.5) / bins, float(qv))
+
+
+class ExpressionGraph:
+    """An autobiographical graph of the creature's own expressions.
+
+    Nodes are quantized expression states. Edges are transitions between
+    consecutive states. `visits`/`count` are cumulative, the life's full tally,
+    and drive the identity metric. `node_weight`/`edge_weight` are the same
+    tally under slow decay: the live graph, where unused paths fade and prune."""
+
+    def __init__(self, bins=5, decay=0.999, prune=0.01):
+        self.bins = int(bins)
+        self.decay = float(decay)
+        self.prune = float(prune)
+        self.visits = {}        # node -> cumulative count
+        self.node_weight = {}   # node -> decayed weight
+        self.count = {}         # (src, dst) -> cumulative count
+        self.edge_weight = {}   # (src, dst) -> decayed weight
+        self.prev = None
+        self.ticks = 0
+
+    def observe(self, vec):
+        node = quantize_expression(vec, self.bins)
+        self.ticks += 1
+        if self.decay < 1.0:
+            for k in list(self.edge_weight):
+                w = self.edge_weight[k] * self.decay
+                if w < self.prune:
+                    del self.edge_weight[k]
+                else:
+                    self.edge_weight[k] = w
+            for k in list(self.node_weight):
+                self.node_weight[k] *= self.decay
+        self.visits[node] = self.visits.get(node, 0) + 1
+        self.node_weight[node] = self.node_weight.get(node, 0.0) + 1.0
+        if self.prev is not None:
+            edge = (self.prev, node)
+            self.count[edge] = self.count.get(edge, 0) + 1
+            self.edge_weight[edge] = self.edge_weight.get(edge, 0.0) + 1.0
+        self.prev = node
+
+    def visit_entropy(self):
+        """Shannon entropy of the node-visit distribution, normalized 0..1.
+        Near 0 is a rut (one groove); near 1 is an even smear (no habit). The
+        collapse detector step 3 will act on; here it is only a readout."""
+        total = sum(self.visits.values())
+        if total <= 0 or len(self.visits) <= 1:
+            return 0.0
+        h = 0.0
+        for c in self.visits.values():
+            p = c / total
+            h -= p * math.log(p, 2)
+        return h / math.log(len(self.visits), 2)
+
+    def top_motifs(self, k=5, include_self=True):
+        """The most-travelled transitions: the creature's recurring moves. With
+        include_self=False, drop dwell (X -> X) and show the actual moves
+        between states, which is what a narrative motif is."""
+        items = self.count.items()
+        if not include_self:
+            items = [(e, c) for e, c in items if e[0] != e[1]]
+        return sorted(items, key=lambda kv: kv[1], reverse=True)[:k]
+
+    def node_distribution(self):
+        total = sum(self.visits.values()) or 1
+        return {n: c / total for n, c in self.visits.items()}
+
+    def edge_distribution(self):
+        total = sum(self.count.values()) or 1
+        return {e: c / total for e, c in self.count.items()}
+
+    def predict_next(self, node):
+        """Where the creature usually goes from `node`: the count-weighted
+        centroid of its successors, dwell included, since staying put is a habit
+        too. None if this state has no recorded future yet."""
+        succ = [(dst, c) for (src, dst), c in self.count.items() if src == node]
+        if not succ:
+            return None
+        total = sum(c for _, c in succ)
+        acc = [0.0, 0.0, 0.0, 0.0]
+        for dst, c in succ:
+            vec = dequantize_expression(dst, self.bins)
+            for i in range(4):
+                acc[i] += vec[i] * c
+        return tuple(a / total for a in acc)
+
+
+def graph_distance(g1, g2):
+    """Total-variation distance between two autobiographies, 0..1.
+
+    Treat each graph as a distribution over nodes and over edges; average the
+    two distances. 0 means identical histories, 1 means no shared expression at
+    all. This is the identity metric: two creatures with different lives should
+    sit far apart, two with the same kind of life close."""
+
+    def tv(d1, d2):
+        keys = set(d1) | set(d2)
+        return 0.5 * sum(abs(d1.get(k, 0.0) - d2.get(k, 0.0)) for k in keys)
+
+    node_tv = tv(g1.node_distribution(), g2.node_distribution())
+    edge_tv = tv(g1.edge_distribution(), g2.edge_distribution())
+    return 0.5 * (node_tv + edge_tv)
+
+
+def _record_expression(scenario, ticks, seed, bins, decay):
+    """Run one life and return its expression graph. Passive: the decoder reads
+    the field, the graph records the decoder, nothing feeds back."""
+    random.seed(seed)
+    rng = random.Random(seed + 1)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06()
+    graph = ExpressionGraph(bins=bins, decay=decay)
+    for values in scenario_inputs(scenario, ticks, rng):
+        state = field.step(values)
+        signal = decoder.read(state)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        graph.observe(expression_vector(signal, speaker))
+    return graph
+
+
+def expression_memory_probe(args):
+    """Step-1 gate for expression-as-memory: an autobiography forms, and two
+    different lives produce distinguishable graphs (more different from each
+    other than two lives of the same kind). RECORD only, no feedback."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    bins = args.expr_bins
+    decay = args.expr_decay
+
+    # Three lives. A and C are the same kind of world (different seed); B is a
+    # different world. Identity holds if A sits closer to C than to B.
+    gA = _record_expression("day", ticks, args.seed, bins, decay)
+    gB = _record_expression("bursts", ticks, args.seed, bins, decay)
+    gC = _record_expression("day", ticks, args.seed + 100, bins, decay)
+
+    d_AB = graph_distance(gA, gB)   # different lives
+    d_AC = graph_distance(gA, gC)   # same kind of life
+
+    print(f"field {cf.FIELD_VERSION} | EXPRESSION MEMORY (RECORD) | seed={args.seed} "
+          f"| ticks={ticks} | bins={bins} decay={decay}")
+    print("\n  three autobiographies (nodes = expression states, "
+          "edges = transitions):")
+    for name, g in (("A day    ", gA), ("B bursts ", gB), ("C day+100", gC)):
+        print(f"    {name}  nodes {len(g.visits):3d}  edges {len(g.count):4d}  "
+              f"live-edges {len(g.edge_weight):4d}  visit-entropy {g.visit_entropy():.3f}")
+
+    print("\n  identity distance (0 = identical, 1 = nothing shared):")
+    print(f"    A vs B  (different lives)    {d_AB:.3f}")
+    print(f"    A vs C  (same kind of life)  {d_AC:.3f}")
+
+    print("\n  A's recurring moves (top transitions between states, dwell "
+          "dropped; src -> dst as [A,B,T,voiced] bins):")
+    for (src, dst), c in gA.top_motifs(5, include_self=False):
+        print(f"    {src} -> {dst}   x{c}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("an autobiography forms",
+          len(gA.visits) >= 3 and len(gA.count) >= 3,
+          f"A has {len(gA.visits)} nodes, {len(gA.count)} edges")
+    check("two different lives are distinguishable",
+          d_AB > 0.05,
+          f"A vs B distance {d_AB:.3f}")
+    check("identity tracks the life, not the seed",
+          d_AB > 1.3 * d_AC,
+          f"different-life {d_AB:.3f} > 1.3x same-life {d_AC:.3f} "
+          f"(ratio {d_AB / (d_AC or 1e-9):.2f})")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    print("  note: this is RECORD only. The graph does not yet bias expression\n"
+          "  (step 2) or push for novelty (step 3). It proves the autobiography\n"
+          "  forms and is legible: two lives, two different graphs.")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Expression memory: bias (Evolution 2, step 2)  [sim experiment, ahead of queue]
+# ---------------------------------------------------------------------------
+#
+# Step 1 recorded. Step 2 lets the record bias the next expression: after a
+# state, nudge the creature toward where it usually goes from there. One mixing
+# weight w, field against habit. This is where it becomes memory.
+#
+# It also opens the failure the direction doc names: too much habit and the
+# creature falls into a groove, dwelling in one place, as dead as a flat line.
+# So this sweeps w and watches for it. Per the doc this is a sim probe ahead of
+# the dark-room proof, not a hardware commitment. Novelty (step 3) is the
+# counter-force, and is not built here.
+
+
+def _run_biased(scenario, ticks, seed, bins, decay, w):
+    """One life where the graph biases expression by weight w. Returns the graph
+    built from what it actually expressed (the biased output)."""
+    random.seed(seed)
+    rng = random.Random(seed + 1)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06()
+    graph = ExpressionGraph(bins=bins, decay=decay)
+    for values in scenario_inputs(scenario, ticks, rng):
+        state = field.step(values)
+        signal = decoder.read(state)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        raw = expression_vector(signal, speaker)
+        prev = graph.prev
+        biased = raw
+        if w > 0.0 and prev is not None:
+            pred = graph.predict_next(prev)
+            if pred is not None:
+                biased = tuple((1.0 - w) * r + w * p for r, p in zip(raw, pred))
+        graph.observe(biased)
+    return graph
+
+
+def _habit_stats(graph):
+    """Concentration of behaviour. dwell = fraction of transitions that stay
+    put; coverage = share of the moves (non-dwell) taken by the top 5 motifs;
+    entropy = node-visit spread (low = collapsed into a groove)."""
+    total = sum(graph.count.values()) or 1
+    dwell = sum(c for (s, d), c in graph.count.items() if s == d) / total
+    moves = [(e, c) for e, c in graph.count.items() if e[0] != e[1]]
+    move_total = sum(c for _, c in moves) or 1
+    top = sorted((c for _, c in moves), reverse=True)[:5]
+    coverage = sum(top) / move_total
+    return {
+        "nodes": len(graph.visits),
+        "dwell": dwell,
+        "coverage": coverage,
+        "entropy": graph.visit_entropy(),
+    }
+
+
+def expression_bias_probe(args):
+    """Step-2 probe: sweep the field-vs-habit mixing weight. Bias should
+    concentrate behaviour into motifs; too much should collapse it into a
+    groove. RECORD plus BIAS, still no feedback into the field."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    bins = args.expr_bins
+    decay = args.expr_decay
+    weights = [0.0, 0.4, 0.7, 0.95]
+
+    rows = {w: _habit_stats(_run_biased("day", ticks, args.seed, bins, decay, w))
+            for w in weights}
+
+    print(f"field {cf.FIELD_VERSION} | EXPRESSION MEMORY (BIAS) | seed={args.seed} "
+          f"| ticks={ticks} | bins={bins} decay={decay}")
+    print("\n  field-vs-habit sweep (w=0 is pure field/step-1; w->1 is pure habit):")
+    print("    w       nodes   dwell   top5-move-coverage   visit-entropy")
+    for w in weights:
+        r = rows[w]
+        print(f"    {w:4.2f}   {r['nodes']:5d}   {r['dwell']:5.3f}   "
+              f"{r['coverage']:18.3f}   {r['entropy']:.3f}")
+
+    base, mid, high = rows[0.0], rows[0.7], rows[0.95]
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("bias forms habit (concentrates the moves)",
+          mid["coverage"] > base["coverage"],
+          f"top5 move-coverage {base['coverage']:.3f} (w=0) -> "
+          f"{mid['coverage']:.3f} (w=0.7)")
+    check("over-bias collapses toward a groove",
+          high["dwell"] > base["dwell"] and high["entropy"] < base["entropy"],
+          f"dwell {base['dwell']:.3f} (w=0) -> {high['dwell']:.3f} (w=0.95); "
+          f"entropy {base['entropy']:.3f} -> {high['entropy']:.3f}")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    print("  reading: a little memory sharpens motifs; too much memory eats the\n"
+          "  creature, which is why step 3 (novelty as a force) has to follow.")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Expression memory: novelty (Evolution 2, step 3)  [sim experiment]
+# ---------------------------------------------------------------------------
+#
+# Step 2 showed bias has no stable middle: more habit slides to a groove. Step 3
+# adds the counter-force the doc demands. Novelty is a drive, not a readout: at
+# each tick it looks at where bias wants to go and pushes toward the least-
+# explored adjacent state instead. Directed, not noise, which is the bar the
+# direction doc set (a probe must aim somewhere, a twitch does not).
+#
+# The blend is two stages. Bias first (field vs habit, weight w), then novelty
+# pulls that result toward the least-explored neighbour. Novelty is adaptive: it
+# fires in proportion to how worn the creature is right now (a dwell counter),
+# so it pushes hardest in a groove and eases off on fresh ground. That self-
+# limiting is what a constant push lacks, and what lets a stable middle exist:
+#
+#     base  = (1 - w) * field + w * usual_next
+#     eff_n = n * (how worn the creature is right now)
+#     final = (1 - eff_n) * base + eff_n * least_explored_neighbour
+#
+# The probe maps w against n and looks for the band where motifs survive (more
+# concentrated than pure field) without collapse. That band is temperament.
+
+
+def _novelty_target(graph, vec, bins):
+    """Aim at the least-explored expression state next to where bias wants to
+    go. Look at the grid neighbours (one step on each axis, plus a voiced flip)
+    and pick the one visited least so far. Directed exploration, not a twitch."""
+    node = quantize_expression(vec, bins)
+    qa, qb, qt, qv = node
+    candidates = [node, (qa, qb, qt, 1 - qv)]
+    for i, q in enumerate((qa, qb, qt)):
+        for step in (-1, 1):
+            nq = q + step
+            if 0 <= nq < bins:
+                cand = list(node)
+                cand[i] = nq
+                candidates.append(tuple(cand))
+    best = min(candidates, key=lambda c: (graph.visits.get(c, 0), c))
+    return dequantize_expression(best, bins)
+
+
+def _run_bias_novelty(scenario, ticks, seed, bins, decay, w, n, dwell_ref=6):
+    """One life under habit weight w and adaptive novelty weight n. Novelty
+    fires in proportion to how long the creature has been stuck in one node, so
+    it only pushes when worn in. Returns the graph of what it expressed. Still
+    no feedback into the field."""
+    random.seed(seed)
+    rng = random.Random(seed + 1)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06()
+    graph = ExpressionGraph(bins=bins, decay=decay)
+    dwell_run = 0
+    last_node = None
+    for values in scenario_inputs(scenario, ticks, rng):
+        state = field.step(values)
+        signal = decoder.read(state)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        raw = expression_vector(signal, speaker)
+        prev = graph.prev
+        base = raw
+        if w > 0.0 and prev is not None:
+            pred = graph.predict_next(prev)
+            if pred is not None:
+                base = tuple((1.0 - w) * r + w * p for r, p in zip(raw, pred))
+        final = base
+        if n > 0.0:
+            worn = min(1.0, dwell_run / dwell_ref)   # 0 fresh, 1 stuck
+            eff_n = n * worn
+            if eff_n > 0.0:
+                nov = _novelty_target(graph, base, bins)
+                final = tuple((1.0 - eff_n) * b + eff_n * v
+                              for b, v in zip(base, nov))
+        final = tuple(min(1.0, max(0.0, x)) for x in final)
+        node = quantize_expression(final, bins)
+        dwell_run = dwell_run + 1 if node == last_node else 0
+        last_node = node
+        graph.observe(final)
+    return graph
+
+
+def expression_novelty_probe(args):
+    """Step-3 probe: map habit weight w against novelty weight n. Without
+    novelty, rising habit collapses the creature into a groove (step 2). An
+    adaptive novelty force, firing only where the creature is worn in, should
+    open a band of moderate w and n where motifs survive without collapse. That
+    band is temperament."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    bins = args.expr_bins
+    decay = args.expr_decay
+    ws = [0.0, 0.6, 0.8, 0.95]
+    ns = [0.0, 0.2, 0.4]
+
+    grid = {(w, n): _habit_stats(
+        _run_bias_novelty("day", ticks, args.seed, bins, decay, w, n))
+        for w in ws for n in ns}
+    field_ref = grid[(0.0, 0.0)]
+
+    print(f"field {cf.FIELD_VERSION} | EXPRESSION MEMORY (NOVELTY) | seed={args.seed} "
+          f"| ticks={ticks} | bins={bins}")
+    print(f"\n  reference, pure field (w=0 n=0): nodes {field_ref['nodes']}, "
+          f"coverage {field_ref['coverage']:.3f}, entropy {field_ref['entropy']:.3f}")
+
+    def grid_table(metric, label):
+        print(f"\n  {label}:")
+        print("    w \\\\ n  " + "".join(f"   n={n:.1f}" for n in ns))
+        for w in ws:
+            cells = "".join(f"   {grid[(w, n)][metric]:5.3f}" for n in ns)
+            print(f"    w={w:.2f}{cells}")
+
+    grid_table("entropy", "visit-entropy (low = groove collapse; ~field is healthy)")
+    grid_table("coverage", "top5-move-coverage (high = strong motifs / habit)")
+
+    # Temperament band: novelty on, habit sharper than pure field, not collapsed.
+    fc = field_ref["coverage"]
+    band = sorted((w, n) for (w, n), r in grid.items()
+                  if w > 0 and n > 0 and r["coverage"] > fc
+                  and r["entropy"] >= 0.3 and r["nodes"] >= 15)
+
+    if band:
+        print("\n  temperament band (habit above field, no collapse):")
+        for (w, n) in band:
+            r = grid[(w, n)]
+            print(f"    w={w:.2f} n={n:.1f}   nodes {r['nodes']:3d}   "
+                  f"coverage {r['coverage']:.3f}   entropy {r['entropy']:.3f}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    collapse_cell = grid[(ws[-1], 0.0)]
+    check("bias alone collapses (no novelty, high habit)",
+          collapse_cell["entropy"] < 0.05,
+          f"w={ws[-1]} n=0 entropy {collapse_cell['entropy']:.3f}, "
+          f"nodes {collapse_cell['nodes']}")
+    check("adaptive novelty opens a temperament band",
+          len(band) >= 1,
+          f"{len(band)} (w,n) cell(s) keep motifs above field "
+          f"(coverage>{fc:.3f}) without collapse")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    print("  reading: habit and novelty are a pair. Habit alone collapses to a\n"
+          "  groove; adaptive novelty, firing only where the creature is worn\n"
+          "  in, holds a middle open. The band where motifs survive without\n"
+          "  collapse is the creature's temperament.")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# The loop and the dark-room probe (Evolution 1, sim rehearsal)
+# ---------------------------------------------------------------------------
+#
+# The expression-memory steps never fed the body's output back to the field.
+# This one does, which is the whole point. Close the loop in sim: the creature's
+# own light and voice return as light and sound input next tick. Add a curiosity
+# drive that wakes when the creature goes flat and pokes the loop with a varying
+# probe. A steady self-loop is as predictable as a steady room, so a predictive
+# cell would go quiet on it; curiosity has to vary to keep surprise alive. A
+# small forward model learns the loop gain, so the poke is directed, not a
+# twitch.
+#
+# The dark-room test (the result the Risks doc keeps asking for): in a dark,
+# silent room a creature with no loop goes flat, while a creature with the loop
+# and curiosity stays active on its own, bounded, and learns its own echo.
+
+
+def _run_loop(seed, ticks, gain, curiosity, bored_floor=0.3):
+    """Run the field in a dark, silent room with the body's output looped back
+    into its senses. gain=0, curiosity=0 is the open-loop control. Returns the
+    arousal timeline, forward-model error series, and summary stats."""
+    random.seed(seed)
+    rng = random.Random(seed + 1)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06()
+
+    last_a = 0.0
+    last_voiced = 0.0
+    g_model = 0.0            # learned forward gain: predict light feedback from A
+    arousal = []
+    err = []
+
+    for _ in range(ticks):
+        # curiosity gates on the creature's current arousal: poke hard when flat,
+        # not at all when already active. With a sub-unit loop gain that makes a
+        # relaxation oscillator, bounded by construction (no runaway) yet never
+        # fully still. Random bursts keep the poke unpredictable, so the
+        # predictive field cannot habituate to a smooth self-signal and flatten.
+        bored = max(0.0, bored_floor - last_a)
+        burst = rng.random() if rng.random() < 0.15 else 0.1
+        probe = curiosity * bored * burst
+
+        light_in = min(1.0, gain * last_a + probe)
+        sound_in = min(1.0, gain * last_voiced + 0.5 * probe)
+
+        state = field.step({
+            "light": light_in,
+            "sound": sound_in,
+            "motion": 0.0,
+            "weather": 0.0,
+        })
+        signal = decoder.read(state)
+        a = float(signal.get("A", 0.0) or 0.0)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        voiced = 1.0 if voice_command_from_signal(signal, speaker) else 0.0
+
+        # forward model: predict the loop's light feedback from last arousal,
+        # learn it by a delta rule. The error falls as it learns its own echo.
+        pred_fb = g_model * last_a
+        actual_fb = gain * last_a
+        err.append(abs(actual_fb - pred_fb))
+        g_model += 0.05 * (actual_fb - pred_fb) * last_a
+
+        arousal.append(a)
+        last_a, last_voiced = a, voiced
+
+    half = ticks // 2
+    tail = arousal[half:]
+    span = max(1, ticks // 10)
+    return {
+        "mean_a": statistics.mean(tail),
+        "std_a": statistics.pstdev(tail),
+        "max_a": max(tail),            # steady-state max, ignores warm-up spike
+        "peak_a": max(arousal),        # whole-run peak, for info
+        "err_early": statistics.mean(err[:span]),
+        "err_late": statistics.mean(err[-span:]),
+    }
+
+
+def darkroom_probe(args):
+    """The dark-room test: open-loop control vs closed-loop-with-curiosity, in a
+    dark silent room. The control should go flat; the loop creature should stay
+    active on its own, varying and bounded, and learn its own echo."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    gain = args.loop_gain
+    cur = args.curiosity
+
+    control = _run_loop(args.seed, ticks, gain=0.0, curiosity=0.0)
+    variant = _run_loop(args.seed, ticks, gain=gain, curiosity=cur)
+
+    print(f"field {cf.FIELD_VERSION} | DARK-ROOM PROBE | seed={args.seed} "
+          f"| ticks={ticks} | loop_gain={gain} curiosity={cur}")
+    print("\n  dark, silent room (no external input):")
+    print("                  mean-arousal   std(tail)   max   fwd-err early->late")
+    print(f"    control (no loop)   {control['mean_a']:.3f}        "
+          f"{control['std_a']:.3f}     {control['max_a']:.3f}   "
+          f"{control['err_early']:.3f} -> {control['err_late']:.3f}")
+    print(f"    loop + curiosity    {variant['mean_a']:.3f}        "
+          f"{variant['std_a']:.3f}     {variant['max_a']:.3f}   "
+          f"{variant['err_early']:.3f} -> {variant['err_late']:.3f}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("control goes flat (no loop, dark room)",
+          control["mean_a"] < 0.05,
+          f"control mean arousal {control['mean_a']:.3f}")
+    check("the loop creature stays alive on its own",
+          variant["mean_a"] > control["mean_a"] + 0.10 and variant["mean_a"] > 0.10,
+          f"loop mean arousal {variant['mean_a']:.3f} vs control "
+          f"{control['mean_a']:.3f}")
+    check("its activity stays restless (not flat, not stuck on)",
+          variant["std_a"] > 0.03,
+          f"tail std {variant['std_a']:.3f} vs control {control['std_a']:.3f}")
+    check("bounded, not screaming into its own eye",
+          variant["max_a"] < 0.99,
+          f"steady-state max arousal {variant['max_a']:.3f}")
+    check("the probing is directed (learns its own echo)",
+          variant["err_late"] < 0.6 * variant["err_early"],
+          f"fwd error {variant['err_early']:.3f} -> {variant['err_late']:.3f}")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    print("  reading: in an empty room the open-loop creature goes quiet. The\n"
+          "  looped, curious one makes its own gradient, stays restless and\n"
+          "  bounded, and learns its own echo, with nothing from the room. That\n"
+          "  self-generated, learned activity is the result the project has been\n"
+          "  after. Sim rehearsal; the hardware run on placed sensors is the\n"
+          "  real proof.")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -722,12 +1351,50 @@ def main():
     p.add_argument("--predictive", action="store_true",
                    help="run the step-4 predictive-cell gate (no flattening to "
                         "uniform under steady input, leaky vs predictive)")
+    p.add_argument("--exprmem", action="store_true",
+                   help="run the expression-memory step-1 gate (passive "
+                        "recorder: an autobiography graph forms, two lives are "
+                        "distinguishable)")
+    p.add_argument("--expr-bins", type=int, default=5,
+                   help="expression-memory resolution: bins per signal "
+                        "dimension (default 5)")
+    p.add_argument("--expr-decay", type=float, default=0.999,
+                   help="expression-memory edge decay per tick "
+                        "(1.0 = no decay; default 0.999)")
+    p.add_argument("--exprbias", action="store_true",
+                   help="run the expression-memory step-2 bias sweep (field vs "
+                        "habit mixing weight; watches for groove collapse)")
+    p.add_argument("--exprnov", action="store_true",
+                   help="run the expression-memory step-3 novelty map "
+                        "(habit vs adaptive novelty; finds the temperament band)")
+    p.add_argument("--darkroom", action="store_true",
+                   help="run the dark-room loop probe (open-loop control vs "
+                        "closed-loop-with-curiosity in an empty room)")
+    p.add_argument("--loop-gain", type=float, default=0.3,
+                   help="how strongly the body's output returns as input "
+                        "(dark-room probe; default 0.3, kept loose to avoid "
+                        "runaway)")
+    p.add_argument("--curiosity", type=float, default=1.2,
+                   help="strength of the boredom-gated probe drive "
+                        "(dark-room probe; default 1.2)")
     p.add_argument("--set", action="append", metavar="NAME=VALUE",
                    help="override a cell_field_v06 constant for this run")
     p.add_argument("--json", help="save full result (metrics + weight map)")
     p.add_argument("--compare", help="baseline result JSON to diff against")
     p.add_argument("--report-every", type=int, default=REPORT_EVERY_DEFAULT)
     args = p.parse_args()
+    if args.exprmem:
+        ok = expression_memory_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.exprbias:
+        ok = expression_bias_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.exprnov:
+        ok = expression_novelty_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.darkroom:
+        ok = darkroom_probe(args)
+        sys.exit(0 if ok else 1)
     if args.predictive:
         ok = predictive_probe(args)
         sys.exit(0 if ok else 1)

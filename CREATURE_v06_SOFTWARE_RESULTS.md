@@ -42,7 +42,7 @@ touched and still runs.
 
 - `Code/Python/mind/cell_field_v06.py`: the ring field, the reservoir, the
   emitter readout, and the predictive cell. Current version string
-  `v06.4-predictive`.
+  `v06.5-predictive`.
 - `Code/Python/tools/field_lab_v06.py`: the offline test harness, one gate per
   step.
 
