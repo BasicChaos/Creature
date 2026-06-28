@@ -298,6 +298,31 @@
       flex: none;
     }
 
+    .legend-line {
+      width: 26px;
+      height: 0;
+      border-top: 2.5px solid;
+      flex: none;
+    }
+
+    .legend-line.dashed {
+      border-top-style: dashed;
+    }
+
+    .legend-line.dotted {
+      border-top-style: dotted;
+    }
+
+    .legend-head {
+      margin-top: 10px;
+      margin-bottom: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--text);
+    }
+
     .legend-sub {
       color: var(--muted);
       font-size: 11px;
@@ -1289,8 +1314,14 @@
         '<div class="legend-item"><span class="swatch" style="background:' + C.motion + '"></span> Motion <span class="muted">· C4 · MPU-6050</span></div>' +
         '<div class="legend-item"><span class="swatch" style="background:' + C.light + '"></span> Light <span class="muted">· C8 · BH1750</span></div>' +
         '<div class="legend-item"><span class="swatch" style="background:' + C.weather + '"></span> Weather <span class="muted">· C10 · BME280</span></div>' +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.reservoir + '"></span> Reservoir <span class="muted">· R0-R5 · fixed weights</span></div>' +
-        '<div class="legend-sub"><span style="color:' + C.loop + '">Orange edges</span> = closed loop · dashed orange = trained readout to emitters · blue = reservoir drive.<br>Fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
+        '<div class="legend-item"><span class="swatch" style="background:' + C.reservoir + '"></span> Reservoir cell <span class="muted">· R0-R5 · brightness = how active it is right now</span></div>' +
+        '<div class="legend-head">Connecting lines</div>' +
+        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.rel + '"></span> Ring connection <span class="muted">· links neighboring outer cells · thicker/brighter = stronger</span></div>' +
+        '<div class="legend-item"><span class="legend-line dotted" style="border-color:' + C.linkGhost + '"></span> Pruned connection <span class="muted">· weight has faded near zero · still wired, just quiet for now</span></div>' +
+        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.loop + '"></span> Loop wiring <span class="muted">· C1 (speaker/mic) and C7 (LED/light) to the emitters · loop isn\'t physically closed yet, so no real feedback runs here yet</span></div>' +
+        '<div class="legend-item"><span class="legend-line dashed" style="border-color:' + C.loop + '"></span> Trained readout <span class="muted">· reservoir cell → emitter · same orange as loop wiring, dashed instead of solid · brighter dash = more influence right now</span></div>' +
+        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.reservoir + '"></span> Reservoir drive <span class="muted">· ring cell → reservoir cell · fixed strength, never changes</span></div>' +
+        '<div class="legend-sub">Cell fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
     }
 
     async function pullField() {
