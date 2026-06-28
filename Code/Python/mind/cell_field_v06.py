@@ -224,6 +224,16 @@ CONSOLIDATION_WEAK_KEEP = 0.998
 LOW_STIMULATION_TICKS = 160
 SLEEP_DURATION_TICKS = 30
 SLEEP_COOLDOWN_TICKS = 240
+# Raised from 0.055 on 2026-06-28. The weather anchor keeps a steady, non-zero
+# pressure on itself and its ring neighbors at all times, and the v06.5 ring
+# logged a median top-cell pressure around 0.6 overnight with a literally
+# silent room (sound/light/motion all 0.00). 0.055 could never be true, so
+# quiet_ticks never accumulated and the field never slept. 0.7 sits just
+# above the calm-period ceiling (p90 ~0.62-0.68 during quiet hours) while
+# staying below sustained real activity (median ~0.9-1.17 in the one evening
+# stretch with real sound/light/motion in the same log).
+QUIET_PRESSURE_THRESHOLD = 0.7
+QUIET_MOTION_THRESHOLD = 0.015
 MEMORY_PRESSURE_SLEEP_THRESHOLD = 0.58
 # scaled to the smaller reserve (was 7.5 against a 36-unit pool)
 LOW_RESERVE_SLEEP_THRESHOLD = 0.9
@@ -761,7 +771,7 @@ class CellField:
 
         sensor_motion = max(deltas.values())
         max_pressure = max(c.pressure for c in self.cells.values())
-        if sensor_motion < 0.015 and max_pressure < 0.055:
+        if sensor_motion < QUIET_MOTION_THRESHOLD and max_pressure < QUIET_PRESSURE_THRESHOLD:
             self.quiet_ticks += 1
         else:
             self.quiet_ticks = 0
