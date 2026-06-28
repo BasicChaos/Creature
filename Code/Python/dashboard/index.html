@@ -168,6 +168,10 @@
       .bottom-panels {
         grid-template-columns: 1fr;
       }
+
+      .about-panel {
+        margin: 0 12px 16px;
+      }
     }
 
     .panel h2 {
@@ -366,6 +370,66 @@
       font-size: 12px;
       line-height: 1.7;
     }
+
+    /* about / glossary panel */
+    .about-panel {
+      margin: 0 20px 20px;
+    }
+
+    .about-intro {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.7;
+      margin: 0 0 10px;
+    }
+
+    .about-sub {
+      font-size: 11px;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 18px 0 6px;
+      font-weight: 600;
+    }
+
+    .about-sub:first-of-type {
+      margin-top: 2px;
+    }
+
+    .log-sample {
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: var(--text);
+      overflow-x: auto;
+      white-space: pre;
+      margin: 0 0 14px;
+    }
+
+    .glossary {
+      margin: 0;
+    }
+
+    .glossary dt {
+      font-weight: 700;
+      color: var(--text);
+      font-size: 13px;
+      margin-top: 10px;
+    }
+
+    .glossary dt:first-of-type {
+      margin-top: 0;
+    }
+
+    .glossary dd {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
   </style>
 </head>
 
@@ -472,6 +536,102 @@
         <div class="meta" id="health">--</div>
       </div>
     </div>
+  </div>
+
+  <div class="panel about-panel">
+    <h2>What is Creature?</h2>
+    <p class="about-intro">
+      Creature is a small homemade life form built from sensors, an ESP32 chip, and a Raspberry Pi.
+      It senses sound, light, motion, and weather, and expresses itself through an RGB LED strip and
+      a speaker.
+    </p>
+    <p class="about-intro">
+      Inside it, twelve software cells sit in a ring. Each one watches a mix of those senses. Instead
+      of running a script, each cell predicts what it expects to sense next, and reacts when reality
+      doesn't match. Connections between cells get stronger or weaker depending on what keeps
+      happening together.
+    </p>
+    <p class="about-intro">
+      There is no script and no decision tree. Everything on this page is Creature's actual state
+      right now, not a performance of one. The diagram above shows that state live. Below is a plain
+      explanation of every term on this page, and in the log line the software prints while running.
+    </p>
+
+    <div class="about-sub">Dashboard header bar</div>
+    <dl class="glossary">
+      <dt>Sound / Light / Motion / Weather</dt>
+      <dd>How much is happening right now for each sense, from 0 (nothing) to 1 (a lot). These are
+        scaled values, not raw sensor numbers.</dd>
+      <dt>Energy</dt>
+      <dd>How much working energy Creature has in reserve, out of a maximum of 6. Activity drains
+        it, rest refills it.</dd>
+      <dt>Memory</dt>
+      <dd>Short for "memory pressure" — a 0 to 1 measure of how much unresolved activity has built
+        up. High memory pressure is one of the things that can trigger sleep.</dd>
+      <dt>Emit</dt>
+      <dd>How strongly Creature is currently expressing itself, from 0 to 1. This number drives both
+        the LED strip and the speaker.</dd>
+      <dt>LED</dt>
+      <dd>The actual brightness value being sent to the LED strip right now.</dd>
+      <dt>States</dt>
+      <dd>How many of the 12 main cells are active / resting / dormant / in deep sleep, in that
+        order. "12/0/0/0" means all 12 cells are awake and active.</dd>
+      <dt>Links live</dt>
+      <dd>How many of the connections between cells currently carry a meaningful strength, out of
+        the total number of connections that exist.</dd>
+      <dt>Tick</dt>
+      <dd>Creature's internal clock. One tick passes every second, and the whole field updates once
+        per tick.</dd>
+    </dl>
+
+    <div class="about-sub">Metabolism panel</div>
+    <dl class="glossary">
+      <dt>mode</dt>
+      <dd>Whether Creature is currently awake or asleep.</dd>
+      <dt>reserve</dt>
+      <dd>Same as Energy above, shown as current amount / maximum.</dd>
+      <dt>cell energy avg</dt>
+      <dd>The average energy level across all 12 cells.</dd>
+      <dt>fatigue avg</dt>
+      <dd>The average fatigue (how worn down) across all 12 cells.</dd>
+      <dt>memory pressure</dt>
+      <dd>Same as Memory above.</dd>
+      <dt>recent events</dt>
+      <dd>How many notable moments have been logged recently.</dd>
+      <dt>railed gains</dt>
+      <dd>How many cells have hit the ceiling of their own internal adjustment range.</dd>
+      <dt>sleep remaining</dt>
+      <dd>If asleep, how many ticks are left in the current sleep cycle. Zero means Creature is
+        awake.</dd>
+      <dt>reviewed</dt>
+      <dd>How many recent events got reconsidered during the last sleep cycle.</dd>
+    </dl>
+
+    <div class="about-sub">Terminal log line (collector)</div>
+    <p class="about-intro" style="margin-bottom:8px;">
+      The software that runs Creature prints a line like this one every 30 ticks:
+    </p>
+    <div class="log-sample">t116880  in s=0.00 l=0.00 m=0.00 w=0.59  anchors snd=0.11 lit=0.05 mot=0.11 wth=0.03  emit=0.09  led=30  E=5.8 M=0.28 states=12/0/0/0</div>
+    <dl class="glossary">
+      <dt>t116880</dt>
+      <dd>The tick number — same meaning as Tick above.</dd>
+      <dt>in s / l / m / w</dt>
+      <dd>The raw incoming sense readings this tick: sound, light, motion, weather. Same meaning as
+        Sound/Light/Motion/Weather above.</dd>
+      <dt>anchors snd / lit / mot / wth</dt>
+      <dd>How active each sense's dedicated cell in the ring is right now. This can differ from the
+        raw reading above, since the cell reacts to its own prediction, not just the raw number.</dd>
+      <dt>emit</dt>
+      <dd>Same as Emit above.</dd>
+      <dt>led</dt>
+      <dd>Same as LED above.</dd>
+      <dt>E</dt>
+      <dd>Same as Energy/reserve above.</dd>
+      <dt>M</dt>
+      <dd>Same as Memory/memory pressure above.</dd>
+      <dt>states</dt>
+      <dd>Same as States above.</dd>
+    </dl>
   </div>
 
   <script>
