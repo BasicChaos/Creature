@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Creature v05.4 — live</title>
+  <title>Creature · live</title>
   <style>
     :root {
       --bg: #0e1116;
@@ -461,7 +461,7 @@
 <body>
   <header>
     <span id="dot" class="dot"></span>
-    <h1 id="creatureTitle">Creature v05.4</h1>
+    <h1 id="creatureTitle">Creature</h1>
     <span id="status" class="status-text">connecting…</span>
     <span class="spacer"></span>
     <div class="readout">
@@ -486,7 +486,7 @@
 
   <div class="viewer">
     <div class="panel stage">
-      <h2 id="fieldHeading">Live field — 111 cells</h2>
+      <h2 id="fieldHeading">Live field</h2>
       <svg id="field" viewBox="0 0 760 660" xmlns="http://www.w3.org/2000/svg" aria-label="Creature cell field"></svg>
     </div>
 
@@ -945,7 +945,7 @@
     }
 
     function renderReadout(f) {
-      const version = f.field_version || "v05.4";
+      const version = f.field_version || "v06.6";
       const title = `Creature ${version}`;
       document.getElementById("creatureTitle").textContent = title;
       document.title = `${title} — live`;
