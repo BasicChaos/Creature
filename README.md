@@ -4,6 +4,10 @@ An experiment in building a small artificial organism, not an AI assistant.
 
 Live dashboard: https://basicchaos.com/creature/index.html
 
+<p align="center">
+<img src="Code/Python/dashboard/creature-v06.jpg" alt="Creature v0.6" width="700">
+</p>
+
 ## What it is
 
 Creature is a persistent entity that senses its room, builds internal state from
