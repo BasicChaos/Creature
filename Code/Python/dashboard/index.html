@@ -99,7 +99,9 @@
     .viewer {
       display: grid;
       grid-template-columns: minmax(340px, 2.6fr) minmax(240px, 1fr) 240px;
-      grid-template-rows: auto auto;
+      /* Row 1 is the photo (fixed 4:3, see .hardware-photo); row 2 is fixed. Nothing
+         inside a panel can change the row heights, so the field never resizes. */
+      grid-template-rows: auto 400px;
       gap: 14px;
       padding: 16px 20px;
       align-items: stretch;
@@ -130,7 +132,9 @@
     #sensorPanel { grid-column: 3; grid-row: 2; display: flex; flex-direction: column; }
     #sensorPanel[hidden] { display: none; }
     .hardware-panel { grid-column: 3; grid-row: 1; align-self: start; }
-    .inspector-panel { grid-column: 2; grid-row: 1 / span 2; }
+    .inspector-panel { grid-column: 2; grid-row: 1 / span 2; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+    .inspector-panel #inspector { flex: 1; min-height: 0; overflow-y: auto; }
+    #sensorPanel { min-height: 0; overflow: hidden; }
 
     /* inspector: one narrow column, always open */
     #inspector { display: grid; grid-template-columns: 1fr; align-content: start; }
@@ -159,6 +163,8 @@
       display: block;
       width: 100%;
       height: auto;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
       object-position: center;
       border-radius: 7px;
       border: 1px solid var(--line);
@@ -188,6 +194,8 @@
       }
 
       .viewer { grid-template-rows: none; }
+      .inspector-panel { overflow: visible; }
+      .inspector-panel #inspector { overflow-y: visible; }
       .stage, #sensorPanel, .hardware-panel, .inspector-panel {
         grid-column: auto;
         grid-row: auto;
@@ -261,6 +269,8 @@
     }
 
     .insp-role {
+      line-height: 1.4;
+      min-height: 2.8em; /* always two lines, so wrapping never shifts the bars */
       font-size: 12px;
       color: var(--muted);
       margin-top: 2px;
@@ -306,6 +316,7 @@
     }
 
     .pinned-note {
+      min-height: 2.8em;
       color: var(--accent);
       font-size: 11px;
       margin-top: 8px;
