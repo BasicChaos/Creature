@@ -98,10 +98,11 @@
 
     .viewer {
       display: grid;
-      grid-template-columns: minmax(340px, 1fr) 190px minmax(380px, 1.1fr);
+      grid-template-columns: minmax(340px, 1fr) 190px 240px;
+      grid-template-rows: 500px;
       gap: 14px;
       padding: 16px 20px;
-      align-items: start;
+      align-items: stretch;
     }
 
     .panel {
@@ -112,7 +113,7 @@
       min-width: 0;
     }
 
-    .sensor-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .sensor-grid { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 8px; flex: 1; min-height: 0; }
     .sensor { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
     .sensor .s-label { color: var(--muted); font-size: 11px; }
     .sensor .s-value { font-size: 20px; font-variant-numeric: tabular-nums; }
@@ -121,13 +122,14 @@
     .sensor-foot { margin-top: 8px; color: var(--muted); font-size: 11px; }
     .sensor-foot code { color: var(--accent); }
 
-    .stage { grid-column: 1; grid-row: 1 / span 2; }
-    #sensorPanel { grid-column: 2; grid-row: 1; }
-    .hardware-panel { grid-column: 3; grid-row: 1; }
-    .inspector-panel { grid-column: 2 / -1; grid-row: 2; }
+    .stage { grid-column: 1; grid-row: 1; overflow: hidden; }
+    #sensorPanel { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; }
+    #sensorPanel[hidden] { display: none; }
+    .hardware-panel { grid-column: 3; grid-row: 1; align-self: start; }
+    .inspector-panel { grid-column: 1 / -1; grid-row: 2; }
 
     /* inspector: two columns of bars so it stays short and is always open */
-    #inspector { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+    #inspector { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 24px; }
     #inspector > .insp-name, #inspector > .insp-role,
     #inspector > .pinned-note, #inspector > .hint { grid-column: 1 / -1; }
     #inspector .insp-row { margin-top: 8px; }
@@ -181,10 +183,12 @@
         min-width: 0;
       }
 
+      .viewer { grid-template-rows: none; }
       .stage, #sensorPanel, .hardware-panel, .inspector-panel {
         grid-column: auto;
         grid-row: auto;
       }
+      .stage #field { flex: none; height: auto; max-height: 620px; }
 
       .cell-list-panel {
         grid-column: auto;
@@ -211,8 +215,9 @@
     #field {
       width: 100%;
       max-width: 100%;
-      max-height: 480px;
-      height: auto;
+      flex: 1 1 0;
+      min-height: 0;
+      height: 100%;
       display: block;
     }
 
