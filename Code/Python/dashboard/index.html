@@ -112,6 +112,15 @@
       min-width: 0;
     }
 
+    .sensor-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .sensor { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    .sensor .s-label { color: var(--muted); font-size: 11px; }
+    .sensor .s-value { font-size: 20px; font-variant-numeric: tabular-nums; }
+    .sensor .s-unit { color: var(--muted); font-size: 11px; margin-left: 4px; }
+    .sensor.off .s-value { color: var(--muted); }
+    .sensor-foot { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    .sensor-foot code { color: var(--accent); }
+
     .stage {
       min-width: 320px;
       display: flex;
@@ -500,6 +509,12 @@
         <div id="inspector">
           <div class="hint">Hover a cell or table row to inspect it. Click to pin.</div>
         </div>
+      </div>
+
+      <div class="panel" id="sensorPanel" hidden>
+        <h2>Sensors</h2>
+        <div class="sensor-grid" id="sensors"></div>
+        <div class="sensor-foot" id="sensorFoot">API: <code>/api/sensors</code></div>
       </div>
 
       <div class="panel">
@@ -1355,7 +1370,27 @@
       } catch (err) { /* ignore */ }
     }
 
-    pullField(); pullHealth();
+    // Raw sensor readings from the sensor API (live mode only; the public
+    // static export deliberately does not publish them).
+    const SENSOR_DECIMALS = { light: 1, sound: 3, motion: 3, temperature: 1, pressure: 1 };
+    async function pullSensors() {
+      if (STATIC_MODE) return;
+      try {
+        const doc = await (await fetch("/api/sensors?ts=" + Date.now())).json();
+        document.getElementById("sensorPanel").hidden = false;
+        document.getElementById("sensors").innerHTML = Object.entries(doc.sensors).map(([name, s]) => {
+          const shown = s.available ? Number(s.value).toFixed(SENSOR_DECIMALS[name] ?? 2) : "--";
+          return '<div class="sensor' + (s.available ? "" : " off") + '">' +
+            '<div class="s-label">' + s.label + '</div>' +
+            '<div class="s-value">' + shown + '<span class="s-unit">' + s.unit + '</span></div></div>';
+        }).join("");
+        document.getElementById("sensorFoot").innerHTML =
+          (doc.stale ? "stale · " : "live · ") + "API: <code>/api/sensors</code>";
+      } catch (err) { /* keep last values */ }
+    }
+
+    pullField(); pullHealth(); pullSensors();
+    setInterval(pullSensors, POLL_MS);
     setInterval(pullField, POLL_MS);
     setInterval(pullHealth, 60000);
   </script>

@@ -18,6 +18,7 @@ import mimetypes
 import os
 import sqlite3
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -34,6 +35,18 @@ HTML_PATH = os.path.join(DASHBOARD_DIR, "index.html")
 HOST = os.environ.get("CREATURE_DASHBOARD_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CREATURE_DASHBOARD_PORT", "8080"))
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+# Sensor layer: the creature's senses exposed as plain sensors for other apps.
+# Bump SENSOR_SCHEMA if a field is renamed or removed (adding fields is fine).
+SENSOR_SCHEMA = 1
+SENSOR_STALE_SECONDS = 5.0
+SENSORS = {
+    "light": {"key": "light_lux", "unit": "lux", "label": "Ambient light"},
+    "sound": {"key": "sound_rms", "unit": "rms", "label": "Sound level"},
+    "motion": {"key": "motion", "unit": "g", "label": "Motion (IMU)"},
+    "temperature": {"key": "temp_c", "unit": "C", "label": "Temperature"},
+    "pressure": {"key": "pressure_hpa", "unit": "hPa", "label": "Air pressure"},
+}
 
 
 def open_db_readonly():
@@ -52,6 +65,46 @@ def read_state():
             return json.load(state_file)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def read_sensors():
+    """
+    Raw sensor readings as a stable, app-friendly document.
+
+    Every sensor is always present; `value` is null when the hardware has not
+    reported it yet (e.g. temperature before BME280 firmware is running).
+    """
+    state = read_state()
+    raw = dict(state.get("sensors") or {})
+    # Snapshots from before the sensors block still carry BME280 values here.
+    weather = state.get("weather_raw") or {}
+    for key in ("temp_c", "pressure_hpa"):
+        if raw.get(key) is None and weather.get(key):
+            raw[key] = weather[key]
+
+    try:
+        age = max(0.0, time.time() - os.path.getmtime(STATE_JSON_PATH))
+    except OSError:
+        age = None
+    stale = age is None or age > SENSOR_STALE_SECONDS
+
+    sensors = {}
+    for name, meta in SENSORS.items():
+        value = raw.get(meta["key"])
+        sensors[name] = {
+            "value": value,
+            "unit": meta["unit"],
+            "label": meta["label"],
+            "available": value is not None,
+        }
+    return {
+        "schema": SENSOR_SCHEMA,
+        "updated_at": state.get("updated_at"),
+        "tick": state.get("tick"),
+        "age_s": round(age, 2) if age is not None else None,
+        "stale": stale,
+        "sensors": sensors,
+    }
 
 
 def read_field_history(seconds):
@@ -174,6 +227,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # Read-only LAN API: let browser apps on other origins call it.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -235,6 +291,28 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             limit = int(query.get("limit", ["40"])[0])
             self._send_json(read_sleep_summaries(limit))
+            return
+
+        # Sensor layer for other apps/services.
+        if path == "/api/sensors":
+            self._send_json(read_sensors())
+            return
+
+        if path.startswith("/api/sensors/"):
+            name = path[len("/api/sensors/"):]
+            doc = read_sensors()
+            if name not in doc["sensors"]:
+                self.send_response(404)
+                body = json.dumps({"error": "unknown sensor", "known": list(SENSORS)}).encode()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self._send_json({
+                "schema": doc["schema"], "updated_at": doc["updated_at"],
+                "stale": doc["stale"], "name": name, **doc["sensors"][name],
+            })
             return
 
         if path == "/api/health":

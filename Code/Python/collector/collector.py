@@ -718,6 +718,10 @@ def main():
     motion_norm = RollingNormalizer(MOTION_WINDOW_SECONDS, MOTION_EMA_ALPHA, MOTION_MIN_RANGE)
     latest_temp_c = 0.0
     latest_pressure_hpa = 0.0
+    # Raw readings for the sensor API: None until first seen, never a fake 0.
+    latest_raw = {"light_lux": None, "sound_rms": None, "motion": None,
+                  "temp_c": None, "pressure_hpa": None}
+    last_sample_at = None
 
     # Stop cleanly on Ctrl-C (SIGINT) and `systemctl stop` (SIGTERM).
     stop = {"requested": False}
@@ -790,6 +794,10 @@ def main():
                 latest_temp_c = float(sample["temp_c"])
             if "pressure_hpa" in sample:
                 latest_pressure_hpa = float(sample["pressure_hpa"])
+            for raw_key in latest_raw:
+                if raw_key in sample:
+                    latest_raw[raw_key] = float(sample[raw_key])
+            last_sample_at = now
 
         if now < next_tick:
             continue
@@ -888,6 +896,10 @@ def main():
             "motion_norm": round(motion_value, 4),
             "motion_linear": round(motion_linear, 4),
             "weather_norm": round(weather_value, 4),
+            "sensors": {
+                **{k: (round(v, 3) if v is not None else None) for k, v in latest_raw.items()},
+                "sample_age_s": round(now - last_sample_at, 2) if last_sample_at is not None else None,
+            },
             "weather_raw": {"temp_c": round(weather_temp_c, 2), "pressure_hpa": round(weather_pressure_hpa, 1)},
             "sound_debug": {
                 **sound_norm.debug(),
