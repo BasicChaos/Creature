@@ -98,7 +98,7 @@
 
     .viewer {
       display: grid;
-      grid-template-columns: minmax(620px, 2fr) minmax(280px, 1fr);
+      grid-template-columns: minmax(340px, 1fr) 190px minmax(380px, 1.1fr);
       gap: 14px;
       padding: 16px 20px;
       align-items: start;
@@ -112,7 +112,7 @@
       min-width: 0;
     }
 
-    .sensor-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .sensor-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
     .sensor { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
     .sensor .s-label { color: var(--muted); font-size: 11px; }
     .sensor .s-value { font-size: 20px; font-variant-numeric: tabular-nums; }
@@ -120,6 +120,17 @@
     .sensor.off .s-value { color: var(--muted); }
     .sensor-foot { margin-top: 8px; color: var(--muted); font-size: 11px; }
     .sensor-foot code { color: var(--accent); }
+
+    .stage { grid-column: 1; grid-row: 1 / span 2; }
+    #sensorPanel { grid-column: 2; grid-row: 1; }
+    .hardware-panel { grid-column: 3; grid-row: 1; }
+    .inspector-panel { grid-column: 2 / -1; grid-row: 2; }
+
+    /* inspector: two columns of bars so it stays short and is always open */
+    #inspector { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+    #inspector > .insp-name, #inspector > .insp-role,
+    #inspector > .pinned-note, #inspector > .hint { grid-column: 1 / -1; }
+    #inspector .insp-row { margin-top: 8px; }
 
     .stage {
       min-width: 320px;
@@ -170,6 +181,11 @@
         min-width: 0;
       }
 
+      .stage, #sensorPanel, .hardware-panel, .inspector-panel {
+        grid-column: auto;
+        grid-row: auto;
+      }
+
       .cell-list-panel {
         grid-column: auto;
       }
@@ -195,7 +211,7 @@
     #field {
       width: 100%;
       max-width: 100%;
-      max-height: 620px;
+      max-height: 480px;
       height: auto;
       display: block;
     }
@@ -499,27 +515,20 @@
       <svg id="field" viewBox="0 0 760 660" xmlns="http://www.w3.org/2000/svg" aria-label="Creature cell field"></svg>
     </div>
 
-    <div class="side">
-      <div class="panel hardware-panel">
-        <img class="hardware-photo" src="creature-v06.jpg" alt="Creature hardware on breadboard" />
-      </div>
+    <div class="panel" id="sensorPanel" hidden>
+      <h2>Sensors</h2>
+      <div class="sensor-grid" id="sensors"></div>
+      <div class="sensor-foot" id="sensorFoot">API: <code>/api/sensors</code></div>
+    </div>
 
-      <div class="panel">
-        <h2>Cell inspector</h2>
-        <div id="inspector">
-          <div class="hint">Hover a cell or table row to inspect it. Click to pin.</div>
-        </div>
-      </div>
+    <div class="panel hardware-panel">
+      <img class="hardware-photo" src="creature-v06.jpg" alt="Creature hardware on breadboard" />
+    </div>
 
-      <div class="panel" id="sensorPanel" hidden>
-        <h2>Sensors</h2>
-        <div class="sensor-grid" id="sensors"></div>
-        <div class="sensor-foot" id="sensorFoot">API: <code>/api/sensors</code></div>
-      </div>
-
-      <div class="panel">
-        <h2>Metabolism</h2>
-        <div class="meta" id="metabolism">--</div>
+    <div class="panel inspector-panel">
+      <h2>Cell inspector</h2>
+      <div id="inspector">
+        <div class="hint">Waiting for data…</div>
       </div>
     </div>
 
@@ -572,7 +581,9 @@
       </div>
 
       <div class="panel">
-        <h2>System health</h2>
+        <h2>Metabolism</h2>
+        <div class="meta" id="metabolism">--</div>
+        <h2 style="margin-top:16px">System health</h2>
         <div class="meta" id="health">--</div>
       </div>
     </div>
@@ -1083,12 +1094,19 @@
 
     function renderInspector() {
       const box = document.getElementById("inspector");
-      const sel = pinned != null ? pinned : hoverId;
+      const cells = (latest && latest.cells) || [];
+      let sel = pinned != null ? pinned : hoverId;
+      let auto = false;
+      if (sel == null && cells.length) {
+        // Nothing chosen: follow the most active cell so the panel is never empty.
+        sel = cells.reduce((a, b) => ((b.activation || 0) > (a.activation || 0) ? b : a)).n;
+        auto = true;
+      }
       if (!latest || sel == null) {
-        box.innerHTML = '<div class="hint">Hover a cell or table row to inspect it. Click to pin.</div>';
+        box.innerHTML = '<div class="hint">Waiting for data…</div>';
         return;
       }
-      const c = (latest.cells || []).find(x => x.n === sel);
+      const c = cells.find(x => x.n === sel);
       if (!c) return;
       const role = ROLE[roleOf(c)];
       const hw = c.hardware_id ? c.hardware_id : "none";
@@ -1106,6 +1124,7 @@
         <div class="insp-row"><div class="label">size<b>${fmt(c.size, 2)}</b></div></div>
         <div class="insp-row"><div class="label">homeo gain<b>${fmt(c.homeo_gain, 2)}</b></div></div>
         ${pinned === sel ? '<div class="pinned-note">pinned — click again to release</div>' : ''}
+        ${auto ? '<div class="pinned-note">following the most active cell — hover or click a cell to choose</div>' : ''}
       `;
     }
 
