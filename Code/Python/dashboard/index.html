@@ -98,7 +98,7 @@
 
     .viewer {
       display: grid;
-      grid-template-columns: minmax(340px, 1.3fr) minmax(300px, 1fr) 240px;
+      grid-template-columns: minmax(340px, 2.6fr) minmax(240px, 1fr) 240px;
       grid-template-rows: auto auto;
       gap: 14px;
       padding: 16px 20px;
@@ -128,8 +128,8 @@
     .hardware-panel { grid-column: 3; grid-row: 1; align-self: start; }
     .inspector-panel { grid-column: 2; grid-row: 1 / span 2; }
 
-    /* inspector: two columns of bars so it stays short and is always open */
-    #inspector { display: grid; grid-template-columns: repeat(2, 1fr); column-gap: 24px; align-content: start; }
+    /* inspector: one narrow column, always open */
+    #inspector { display: grid; grid-template-columns: 1fr; align-content: start; }
     #inspector > .insp-name, #inspector > .insp-role,
     #inspector > .pinned-note, #inspector > .hint { grid-column: 1 / -1; }
     #inspector .insp-row { margin-top: 8px; }
