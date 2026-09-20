@@ -1406,7 +1406,10 @@
           const shown = s.available ? Number(s.value).toFixed(SENSOR_DECIMALS[name] ?? 2) : "--";
           return '<div class="sensor' + (s.available ? "" : " off") + '">' +
             '<div class="s-label">' + s.label + '</div>' +
-            '<div class="s-value">' + shown + '<span class="s-unit">' + s.unit + '</span></div></div>';
+            '<div class="s-value">' + shown + '<span class="s-unit">' + s.unit + '</span>' +
+            (name === "temperature" && s.available
+              ? ' <span class="s-unit">· ' + (s.value * 9 / 5 + 32).toFixed(1) + ' F</span>' : '') +
+            '</div></div>';
         }).join("");
         document.getElementById("sensorFoot").innerHTML =
           (doc.stale ? "stale · " : "live · ") + "API: <code>/api/sensors</code>";
