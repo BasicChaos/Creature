@@ -113,6 +113,10 @@
       min-width: 0;
     }
 
+    .mute-btn { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+    .mute-btn:hover { border-color: var(--accent); }
+    .mute-btn.muted { color: var(--fatigue); border-color: var(--fatigue); }
+
     .sensor-grid { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 8px; flex: 1; min-height: 0; }
     .sensor { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
     .sensor .s-label { color: var(--muted); font-size: 11px; }
@@ -493,6 +497,7 @@
     <span id="dot" class="dot"></span>
     <h1 id="creatureTitle">Creature</h1>
     <span id="status" class="status-text">connecting…</span>
+    <button id="muteBtn" class="mute-btn" type="button" hidden title="Silence the speaker (the C0 cell keeps running)">Speaker: on</button>
     <span class="spacer"></span>
     <div class="readout">
       <div class="stat"><span class="label">Sound</span><span id="rSound" class="val"
@@ -1416,7 +1421,35 @@
       } catch (err) { /* keep last values */ }
     }
 
-    pullField(); pullHealth(); pullSensors();
+    // Speaker mute: local dashboard only. Hidden on the public static mirror.
+    let speakerMuted = false;
+    function paintMute() {
+      const b = document.getElementById("muteBtn");
+      b.textContent = speakerMuted ? "Speaker: muted" : "Speaker: on";
+      b.classList.toggle("muted", speakerMuted);
+    }
+    async function pullSpeaker() {
+      if (STATIC_MODE) return;
+      try {
+        speakerMuted = (await (await fetch("/api/speaker?ts=" + Date.now())).json()).muted;
+        document.getElementById("muteBtn").hidden = false;
+        paintMute();
+      } catch (err) { /* keep last state */ }
+    }
+    document.getElementById("muteBtn").addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/speaker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Creature": "1" },
+          body: JSON.stringify({ muted: !speakerMuted }),
+        });
+        speakerMuted = (await res.json()).muted;
+        paintMute();
+      } catch (err) { /* leave as is */ }
+    });
+
+    pullField(); pullHealth(); pullSensors(); pullSpeaker();
+    setInterval(pullSpeaker, 10000);
     setInterval(pullSensors, POLL_MS);
     setInterval(pullField, POLL_MS);
     setInterval(pullHealth, 60000);

@@ -132,7 +132,7 @@ EXPR_MEMORY_SAVE_EVERY_TICKS = int(os.environ.get("CREATURE_EXPR_MEMORY_SAVE_EVE
 # Shared with the dashboard server and exporter; see common/paths.py.
 # STATE_JSON_PATH lands on tmpfs on the Pi, so the per-tick live snapshot
 # stops writing ~8 GB/day to the SSD. FIELD_STATE_PATH stays durable.
-from common.paths import DB_PATH, DB_DIR, STATE_JSON_PATH, FIELD_STATE_PATH
+from common.paths import DB_PATH, DB_DIR, STATE_JSON_PATH, FIELD_STATE_PATH, MUTE_FLAG_PATH
 
 # v06 keeps its own slow-state file so a v05 field state never cross-loads into
 # the twelve-cell ring. The v05 collector keeps using the original path.
@@ -394,7 +394,8 @@ def make_body_sender(transport):
             if sent_brightness is None:
                 sent_brightness = brightness
 
-        if ENABLE_VOICE:
+        # Dashboard mute: silences the speaker only. The C0 cell keeps running.
+        if ENABLE_VOICE and not os.path.exists(MUTE_FLAG_PATH):
             if expression is None:
                 expression = decoder.read(state)
             speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)

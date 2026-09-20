@@ -28,7 +28,7 @@ if str(PROJECT_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
 
 # Shared with the collector, so reader and writer always agree on paths.
-from common.paths import DB_PATH, STATE_JSON_PATH
+from common.paths import DB_PATH, STATE_JSON_PATH, MUTE_FLAG_PATH
 
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(DASHBOARD_DIR, "index.html")
@@ -65,6 +65,23 @@ def read_state():
             return json.load(state_file)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def speaker_muted():
+    return os.path.exists(MUTE_FLAG_PATH)
+
+
+def set_speaker_muted(muted):
+    """Create or remove the mute flag the collector checks each tick."""
+    if muted:
+        os.makedirs(os.path.dirname(MUTE_FLAG_PATH) or ".", exist_ok=True)
+        with open(MUTE_FLAG_PATH, "w"):
+            pass
+    else:
+        try:
+            os.remove(MUTE_FLAG_PATH)
+        except FileNotFoundError:
+            pass
 
 
 def read_sensors():
@@ -233,6 +250,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        # Control endpoint, local dashboard only. The custom header forces a CORS
+        # preflight that we never answer, so other web origins cannot call it.
+        if urlparse(self.path).path != "/api/speaker" or self.headers.get("X-Creature") != "1":
+            self.send_error(404, "Not found")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            muted = payload["muted"]
+            if not isinstance(muted, bool):
+                raise ValueError
+        except (ValueError, KeyError, json.JSONDecodeError):
+            self.send_error(400, 'Expected {"muted": true|false}')
+            return
+        try:
+            set_speaker_muted(muted)
+        except OSError:
+            self.send_error(500, "Could not write mute flag")
+            return
+        self._send_json({"muted": speaker_muted()})
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -313,6 +352,10 @@ class Handler(BaseHTTPRequestHandler):
                 "schema": doc["schema"], "updated_at": doc["updated_at"],
                 "stale": doc["stale"], "name": name, **doc["sensors"][name],
             })
+            return
+
+        if path == "/api/speaker":
+            self._send_json({"muted": speaker_muted()})
             return
 
         if path == "/api/health":

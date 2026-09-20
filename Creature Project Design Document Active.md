@@ -401,6 +401,11 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   can treat the Creature as ordinary sensors. Raw values come from a `sensors`
   block the collector adds to the live snapshot; missing sensors are `null`. See
   `instructions.md` for the contract. Raw history is not logged yet.
+- Speaker mute: a button in the local dashboard header (hidden on the public
+  mirror) toggles `POST /api/speaker {"muted": bool}`. It creates or removes a
+  flag file, `creature_speaker_muted`, next to the database. The collector skips
+  `VOX:` commands while it exists, so the speaker is silent but the C0 cell and
+  the field keep running unchanged. Mute persists across reboots.
 - `export_static.py` and `sync_to_vps.sh`: export the live data to static files and
   rsync them to the VPS over SSH as a restricted user. The Pi is never exposed to
   the internet; it only makes outbound connections.

@@ -37,5 +37,9 @@ elif os.path.isdir("/dev/shm"):
 else:
     STATE_JSON_PATH = os.path.join(DB_DIR, "creature_state.json")
 
+# Speaker mute flag. Its existence means muted. The dashboard creates/removes it
+# and the collector checks it each tick. Durable, so mute survives a reboot.
+MUTE_FLAG_PATH = os.path.join(DB_DIR, "creature_speaker_muted")
+
 # Persistent field state (structure + slow traits). Durable storage, never tmpfs.
 FIELD_STATE_PATH = os.path.join(DB_DIR, "creature_field_state.json")
