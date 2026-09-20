@@ -61,6 +61,11 @@ Mind node: Raspberry Pi 3 B+. Runs the collector, the field, persistence, the
 SQLite history, and the dashboard server. The Mac is only used for editing and
 Git and is not part of the runtime.
 
+Sensor API: the Pi's dashboard server (port 8080) also serves the raw sensors as
+JSON at `/api/sensors` (light, sound, motion, temperature, pressure), so other
+apps and services can use the Creature as a set of ordinary sensors. Details in
+`instructions.md`.
+
 Observation surface: a Linux VPS hosts a static mirror of the dashboard at
 basicchaos.com. The Pi only sends an outbound copy to it. The VPS cannot reach
 back in. Full pin assignments, power, and wiring notes live in

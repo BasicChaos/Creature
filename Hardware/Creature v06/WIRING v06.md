@@ -118,6 +118,21 @@ Notes:
 - The 5V IN pin is diode-protected, so the USB-C and the PowerBoost can be plugged
   in at the same time without back-feeding.
 
+Bench state, 20 Sep 2026: the PowerBoost is not wired in yet. The +5V rail is fed
+by a second ESP board on a wall USB adapter, and the main ESP USB-C is plugged in
+for data. That second ESP is not diode-protected against back-feed.
+
+Cutover to the PowerBoost (see the add-on below for the full path):
+
+1. Unplug all power, including the second ESP and the wall adapter.
+2. Remove the second ESP's 5V wire from the +5V rail. Never leave two 5V sources
+   tied to the rail.
+3. PowerBoost GND pad to the common ground rail first, then PowerBoost 5V pad to
+   the +5V rail.
+4. Plug the LiPo into the PowerBoost JST last.
+5. The ESP USB-C can stay plugged into the Pi for serial data. The collector needs
+   that link. If it is unplugged, no readings reach the dashboard.
+
 ## PowerBoost 1000C, untethered power (add-on)
 
 For the untethered build, a LiPo feeds the Adafruit PowerBoost 1000C. Its 5V boost

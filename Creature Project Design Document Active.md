@@ -393,7 +393,14 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   field state and history.
 - `index.html`: an SVG view of the ring and reservoir, polling once a second. Cells
   show activation, state, and relevance; links show weight, with scarred links drawn
-  as ghosts.
+  as ghosts. The cell inspector is always open (it follows the most active cell
+  until one is hovered or pinned). A Sensors panel shows the raw readings, with
+  temperature in both C and F.
+- Sensor API: `/api/sensors` and `/api/sensors/<name>` serve light, sound, motion,
+  temperature, and pressure as stable, versioned JSON so other apps and services
+  can treat the Creature as ordinary sensors. Raw values come from a `sensors`
+  block the collector adds to the live snapshot; missing sensors are `null`. See
+  `instructions.md` for the contract. Raw history is not logged yet.
 - `export_static.py` and `sync_to_vps.sh`: export the live data to static files and
   rsync them to the VPS over SSH as a restricted user. The Pi is never exposed to
   the internet; it only makes outbound connections.
