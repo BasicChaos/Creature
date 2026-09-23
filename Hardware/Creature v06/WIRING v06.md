@@ -111,6 +111,13 @@ That 5V is the system +5V rail. The ESP USB-C is only for programming.
 
 Notes:
 
+- The breadboard's power rails are not continuous end to end — they're split into
+  segments, not one long rail. Bridge each split with a short jumper where needed
+  rather than running a second dedicated supply wire back to the source. Current
+  bridges: 3V3 and GND are jumpered together on one end (ESP side), 5V is jumpered
+  separately on the other end (toward the amp/strip cluster). Check rail continuity
+  with a meter or by eye before assuming a rail tap reaches a newly-added device —
+  this is what bit the amp/strip relocation to the bottom-right.
 - The board's bottom-corner pin labelled 5V is an INPUT (5V IN). It does not output
   5V, so the strip is fed from the PowerBoost rail, not from the ESP.
 - ESP32-S3 GPIO is 3.3V. Never feed 5V into a GPIO. The INMP441 is a 1.8 to 3.3V
@@ -159,8 +166,12 @@ is powered from the battery automatically. Never put 5V on the 3V3 pin.
 
 MAX17048 fuel gauge (I2C, address 0x36):
 
-- VIN to battery positive. Tap the PowerBoost BAT pad, which is wired straight to the
-  JST. VIN must see the raw cell (3.0 to 4.2V), not 3V3, or the reading is useless.
+- Board is the Adafruit MAX17048 breakout (two JST-PH ports, passed straight through).
+  Battery path: LiPo into one JST, short JST-PH to JST-PH cable from the other JST to
+  the PowerBoost JST. The chip is powered by and measures the cell through that path.
+  Either port works for either side: the two JSTs are wired in parallel.
+- VIN to the 3V3 rail. VIN only powers the I2C pull-ups, so it must match ESP logic.
+  Never put VIN on the battery: it would pull SDA/SCL to ~4.2V, over the 3.3V GPIO limit.
 - GND to common ground.
 - SDA to GPIO 8, SCL to GPIO 9. Shares the I2C bus, no address clash.
 - Library when coding: Adafruit MAX1704X. Reports cell voltage and state of charge.
