@@ -22,8 +22,12 @@ Two small models, both learned online by a delta rule, plain Python, no numpy:
          adaptive normalizer, and keeps daylight from being mistaken for the
          strip: the room and the strip have to move in the same second to be
          confused.
-  sound  how far the mic's peak rises above the room when a tone is sent,
-         predicted from the tone's volume (one gain).
+  sound  how loud its own tone comes back, predicted from the tone's volume
+         and pitch. With v06.8 firmware the body listens while it plays and
+         reports the mic level at the tone's own pitch, next to the same
+         measure of the room just before, so room noise at other pitches does
+         not count. Without that report it falls back to how far the mic's
+         peak rises above the room in the second after a tone.
 
 Passive: it reads what the body emitted and what the sensors returned. It does
 not change the field or the body. Feeding the error back into the ring is a
@@ -34,6 +38,7 @@ imports it, so the offline gate and the live collector share one source.
 """
 
 import json
+import math
 import os
 
 
@@ -57,6 +62,7 @@ LIGHT_ACTED_THRESHOLD = 0.004
 SOUND_MU = 0.1
 SOUND_EPS = 1e-3
 SOUND_AMBIENT_ALPHA = 0.05  # room level, tracked only while not speaking
+SOUND_PITCH_CENTER = 311.0  # Hz, the middle of the voice's 220-440 range
 
 SKILL_ALPHA = 0.01          # slow average for the explained fraction
 SOUND_SKILL_ALPHA = 0.05    # tones are rare (one per 20 s at most), so average faster
@@ -189,12 +195,44 @@ class SoundModel:
         self.err_ema = 0.0
         self.null_ema = 0.0
         self.voiced = 0
+        # The pitch path: what the body heard at the tone's own pitch. Two
+        # weights, a gain and how that gain tilts with pitch, since a small
+        # speaker is not equally loud across its range.
+        self.pitch_w = [0.0, 0.0]
+        self.pitch_err_ema = 0.0
+        self.pitch_null_ema = 0.0
+        self.pitch_voiced = 0
         self.last = None
         self.last_voiced = None
 
-    def step(self, voice, rms_mean, rms_max):
+    def _step_pitch(self, voice, heard):
+        """A tone the body listened to while playing. `heard` is its report."""
+        vol = float(voice.get("vol", 0.0) or 0.0)
+        freq = float(voice.get("freq", SOUND_PITCH_CENTER) or SOUND_PITCH_CENTER)
+        tilt = max(-1.0, min(1.0, math.log2(freq / SOUND_PITCH_CENTER)))
+        x = (vol, vol * tilt)
+        own = float(heard.get("heard", 0.0) or 0.0) - float(heard.get("room_heard", 0.0) or 0.0)
+        pred = self.pitch_w[0] * x[0] + self.pitch_w[1] * x[1]
+        err = own - pred
+        step = SOUND_MU * err / (SOUND_EPS + x[0] * x[0] + x[1] * x[1])
+        self.pitch_w[0] += step * x[0]
+        self.pitch_w[1] += step * x[1]
+
+        self.pitch_voiced += 1
+        self.pitch_err_ema += SOUND_SKILL_ALPHA * (abs(err) - self.pitch_err_ema)
+        self.pitch_null_ema += SOUND_SKILL_ALPHA * (abs(own) - self.pitch_null_ema)
+
+        self.last = {"voiced": True, "excess": round(own, 1),
+                     "pred": round(pred, 1), "err": round(err, 1)}
+        self.last_voiced = dict(self.last, freq=freq, vol=vol, mode="pitch")
+        return self.last
+
+    def step(self, voice, rms_mean, rms_max, heard=None):
         """One tick: `voice` is the tone that was sent ({"freq","ms","vol"}) or
-        None, `rms_mean`/`rms_max` the mic over the same window."""
+        None, `rms_mean`/`rms_max` the mic over the same window, `heard` the
+        body's own report of the tone if its firmware sends one."""
+        if voice and heard:
+            return self._step_pitch(voice, heard)
         if rms_mean is None or rms_max is None:
             self.last = None
             return None
@@ -223,18 +261,25 @@ class SoundModel:
 
         self.last = {"voiced": True, "excess": round(excess, 1),
                      "pred": round(pred, 1), "err": round(err, 1)}
-        self.last_voiced = dict(self.last, freq=voice.get("freq"), vol=vol)
+        self.last_voiced = dict(self.last, freq=voice.get("freq"), vol=vol, mode="peak")
         return self.last
 
     def explained(self):
+        """Skill on the pitch path once the body has reported any tone, since
+        that is the measurement that can tell its voice from the room."""
+        if self.pitch_voiced:
+            return _explained(self.pitch_err_ema, self.pitch_null_ema)
         return _explained(self.err_ema, self.null_ema)
 
     def snapshot(self):
+        pitch = self.pitch_voiced > 0
         return {
-            "gain": round(self.gain, 1),
+            "mode": "pitch" if pitch else "peak",
+            "gain": round(self.pitch_w[0] if pitch else self.gain, 1),
+            "tilt": round(self.pitch_w[1], 1) if pitch else None,
             "ambient": round(self.ambient, 1) if self.ambient is not None else None,
             "explained": round(self.explained(), 4),
-            "voiced": self.voiced,
+            "voiced": self.pitch_voiced if pitch else self.voiced,
             "last": self.last,
             "last_voiced": self.last_voiced,
         }
@@ -244,6 +289,8 @@ class SoundModel:
             "gain": self.gain, "ambient": self.ambient,
             "quiet_excess": self.quiet_excess, "err_ema": self.err_ema,
             "null_ema": self.null_ema, "voiced": self.voiced,
+            "pitch_w": self.pitch_w, "pitch_err_ema": self.pitch_err_ema,
+            "pitch_null_ema": self.pitch_null_ema, "pitch_voiced": self.pitch_voiced,
         }
 
     def load_dict(self, data):
@@ -254,6 +301,12 @@ class SoundModel:
         self.err_ema = float(data.get("err_ema", 0.0))
         self.null_ema = float(data.get("null_ema", 0.0))
         self.voiced = int(data.get("voiced", 0))
+        pitch_w = [float(x) for x in data.get("pitch_w", [])]
+        if len(pitch_w) == 2:
+            self.pitch_w = pitch_w
+        self.pitch_err_ema = float(data.get("pitch_err_ema", 0.0))
+        self.pitch_null_ema = float(data.get("pitch_null_ema", 0.0))
+        self.pitch_voiced = int(data.get("pitch_voiced", 0))
 
 
 class ForwardModel:
@@ -270,7 +323,8 @@ class ForwardModel:
         body.
 
         action:   {"rgbw": frame_rgbw(...) or None, "voice": {...} or None}
-        returned: {"lux": ..., "rms_mean": ..., "rms_max": ...}, any may be None
+        returned: {"lux": ..., "rms_mean": ..., "rms_max": ..., "vox": ...}, any
+                  may be None. "vox" is the body's own report of a tone.
         """
         self.ticks += 1
         action = action or {}
@@ -278,7 +332,8 @@ class ForwardModel:
         return {
             "light": self.light.step(action.get("rgbw"), returned.get("lux")),
             "sound": self.sound.step(
-                action.get("voice"), returned.get("rms_mean"), returned.get("rms_max")
+                action.get("voice"), returned.get("rms_mean"), returned.get("rms_max"),
+                returned.get("vox"),
             ),
         }
 

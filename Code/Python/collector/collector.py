@@ -194,6 +194,23 @@ def parse_line(line):
     return data
 
 
+def parse_vox_line(line):
+    """The body's report of what it heard while a tone played, or None. Sent
+    once after each VOX tone: {"vox": {"freq", "ms", "vol", "heard", "level",
+    "room", "room_heard", "n"}}. `heard` is the mic level at the tone's own
+    pitch during the tone; `room_heard` is the same measure just before it."""
+    if not line or '"vox"' not in line:
+        return None
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    report = data.get("vox") if isinstance(data, dict) else None
+    if not isinstance(report, dict) or "heard" not in report:
+        return None
+    return report
+
+
 def emitter_to_brightness(activation, led_max):
     """Map emitter activation (0-1) to an LED brightness, capped by led_max."""
     brightness = int(round(activation * 255))
@@ -352,6 +369,14 @@ def setup_database(db_path):
     )
     """)
 
+    # What the body heard of its own tone (v06.8 firmware), at the tone's pitch.
+    ensure_columns(cur, "loop_log", [
+        ("vox_heard", "REAL"),
+        ("vox_room_heard", "REAL"),
+        ("vox_level", "REAL"),
+        ("vox_room", "REAL"),
+    ])
+
     ensure_columns(cur, "field_tick_log", [
         ("sound_linear", "REAL"),
         ("energy_reserve", "REAL"),
@@ -366,6 +391,10 @@ def setup_database(db_path):
         ("live_connections", "INTEGER"),
         ("pruned_connections", "INTEGER"),
         ("events_count", "INTEGER"),
+        # With motion and weather the tick log holds all four senses, so it is
+        # a complete record to replay the field from.
+        ("motion_norm", "REAL"),
+        ("weather_norm", "REAL"),
     ])
     ensure_columns(cur, "cell_log", [
         ("ripple", "REAL"),
@@ -469,12 +498,18 @@ class ReturnWindow:
         self.lux = []      # (seconds since the frame went out, lux)
         self.rms = []
         self.motion = []
+        self.vox = None    # the body's report of its own tone, if one played
 
     def open(self, now):
         self.opened_at = now
         self.lux = []
         self.rms = []
         self.motion = []
+        self.vox = None
+
+    def add_vox(self, report):
+        if self.opened_at is not None:
+            self.vox = report
 
     def add(self, now, sample):
         if self.opened_at is None:
@@ -492,7 +527,8 @@ class ReturnWindow:
         all of them if none are that late. Empty senses come back as None."""
         out = {"lux": None, "lux_mean": None, "lux_min": None, "lux_max": None,
                "lux_n": len(self.lux), "rms_mean": None, "rms_max": None,
-               "rms_n": len(self.rms), "motion_mean": None, "motion_max": None}
+               "rms_n": len(self.rms), "motion_mean": None, "motion_max": None,
+               "vox": self.vox}
         if self.lux:
             values = [v for _, v in self.lux]
             settled = [v for age, v in self.lux if age >= self.settle_seconds] or values
@@ -517,13 +553,16 @@ def log_loop(cur, logged_at, action, returned, result, temp_c, pressure_hpa):
     voice = action.get("voice") or {}
     light = (result or {}).get("light") or {}
     sound = (result or {}).get("sound") or {}
+    vox = returned.get("vox") or {}
     cur.execute("""
     INSERT INTO loop_log (
         logged_at, tick, out_r, out_g, out_b, out_w, vox_freq, vox_ms, vox_vol,
         lux, lux_mean, lux_min, lux_max, lux_n, rms_mean, rms_max, rms_n,
         motion_mean, motion_max, temp_c, pressure_hpa,
-        lux_delta, lux_pred, lux_err, rms_excess, rms_pred, rms_err
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        lux_delta, lux_pred, lux_err, rms_excess, rms_pred, rms_err,
+        vox_heard, vox_room_heard, vox_level, vox_room
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?)
     """, (
         logged_at, action.get("tick"),
         r(rgbw[0], 4), r(rgbw[1], 4), r(rgbw[2], 4), r(rgbw[3], 4),
@@ -535,6 +574,7 @@ def log_loop(cur, logged_at, action, returned, result, temp_c, pressure_hpa):
         r(temp_c, 2), r(pressure_hpa, 1),
         light.get("delta"), light.get("pred"), light.get("err"),
         sound.get("excess"), sound.get("pred"), sound.get("err"),
+        vox.get("heard"), vox.get("room_heard"), vox.get("level"), vox.get("room"),
     ))
 
 
@@ -666,7 +706,8 @@ def should_log_cells(state, tick):
     return metabolism.get("mode") == "sleep" and tick % 5 == 0
 
 
-def log_tick(cur, logged_at, state, sound_norm, sound_linear, light_norm, sent_brightness, tick):
+def log_tick(cur, logged_at, state, sound_norm, sound_linear, light_norm, sent_brightness, tick,
+             motion_norm=None, weather_norm=None):
     metabolism = state.get("metabolism", {})
     counts = state.get("state_counts") or state.get("sleep_counts") or {}
 
@@ -675,8 +716,9 @@ def log_tick(cur, logged_at, state, sound_norm, sound_linear, light_norm, sent_b
         logged_at, tick, sound_norm, sound_linear, light_norm, emitter_activation, sent_brightness,
         energy_reserve, energy_avg, fatigue_avg, memory_pressure, sleep_mode,
         active_cells, resting_cells, dormant_cells, deep_sleep_cells,
-        live_connections, pruned_connections, events_count
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        live_connections, pruned_connections, events_count,
+        motion_norm, weather_norm
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         logged_at, tick,
         round(sound_norm, 4), round(sound_linear, 4), round(light_norm, 4),
@@ -693,6 +735,8 @@ def log_tick(cur, logged_at, state, sound_norm, sound_linear, light_norm, sent_b
         metabolism.get("live_connections"),
         metabolism.get("pruned_connections"),
         len(state.get("events") or []),
+        round(motion_norm, 4) if motion_norm is not None else None,
+        round(weather_norm, 4) if weather_norm is not None else None,
     ))
 
     if not should_log_cells(state, tick):
@@ -921,6 +965,10 @@ def main():
         now = monotonic()
 
         sample = parse_line(line)
+        if sample is None and forward is not None:
+            vox_report = parse_vox_line(line)
+            if vox_report is not None:
+                loop_window.add_vox(vox_report)
         if sample is not None:
             light_norm.add(float(sample["light_lux"]), now)
             sound_norm.add(float(sample["sound_rms"]), now)
@@ -1095,7 +1143,8 @@ def main():
         # History log. Commits are batched: WAL keeps readers happy, and a
         # power loss costs at most COMMIT_EVERY_TICKS seconds of observation
         # rows (the field state itself is saved separately).
-        log_tick(cur, logged_at, state, sound_value, sound_linear, light_value, sent_brightness, tick)
+        log_tick(cur, logged_at, state, sound_value, sound_linear, light_value, sent_brightness, tick,
+                 motion_value, weather_value)
         log_events(cur, logged_at, state)
         log_sleep_summary(cur, logged_at, state.get("sleep_summary"))
         if tick % WEIGHT_LOG_EVERY_TICKS == 0:

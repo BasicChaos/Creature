@@ -8,7 +8,9 @@ the answer is a number instead of a hope:
     light   switch the strip between dark and a known frame, read the lux both
             ways, repeat. Reports the lux each frame adds at the sensor and how
             that compares with the sensor's own noise.
-    sound   send known tones, compare the mic's peak with the room just before.
+    sound   send known tones. With v06.8 firmware the body reports what it heard
+            at each tone's own pitch, next to the room at that pitch just before.
+            Older firmware: compare the mic's peak with the room's own peaks.
 
 It talks to the body directly, so THE COLLECTOR MUST BE STOPPED FIRST: the body
 accepts one connection at a time. Stop the collector (Ctrl-C in its tmux
@@ -46,6 +48,7 @@ from collector.collector import (
     TransportError,
     open_esp_transport,
     parse_line,
+    parse_vox_line,
 )
 from common.paths import DB_DIR, MUTE_FLAG_PATH
 from mind.expression_v06 import pixels_to_pix_command
@@ -74,6 +77,7 @@ class Body:
 
     def __init__(self, target):
         self.transport = open_esp_transport(target)
+        self.reports = []   # the body's own reports of tones it played
 
     def send(self, command):
         self.transport.write(command.encode("utf-8"))
@@ -90,8 +94,12 @@ class Body:
             now = monotonic()
             if now - start >= seconds:
                 return out
-            sample = parse_line(self.transport.readline())
+            line = self.transport.readline()
+            sample = parse_line(line)
             if sample is None:
+                report = parse_vox_line(line)
+                if report is not None:
+                    self.reports.append(report)
                 continue
             lux = float(sample["light_lux"])
             out.append((now - start, lux if lux >= 0.0 else None, float(sample["sound_rms"])))
@@ -150,10 +158,28 @@ def probe_sound(body, tones, volume, ms, gap):
     results = []
     for freq in tones:
         room = [rms for _, _, rms in body.read(gap)]
+        body.reports = []
         body.send(f"VOX:{freq:.1f},{ms},{volume:.2f}\n")
         heard = [rms for _, _, rms in body.read(ms / 1000.0 + 1.5)]
         if not room or not heard:
             print(f"    {freq:6.0f} Hz  no mic readings")
+            continue
+        if body.reports:
+            # The body listened while it played. Its own measure, at the pitch.
+            report = body.reports[-1]
+            own, before = float(report["heard"]), float(report.get("room_heard", 0.0))
+            results.append({
+                "freq": freq,
+                "heard_at_pitch": round(own, 1),
+                "room_at_pitch": round(before, 1),
+                "times_room_at_pitch": round(own / before, 1) if before > 0 else None,
+                "level": report.get("level"),
+                "room_level": report.get("room"),
+            })
+            print(f"    {freq:6.0f} Hz  at its pitch: heard {own:9.0f}  room just before "
+                  f"{before:9.0f}  ({results[-1]['times_room_at_pitch']}x)   "
+                  f"overall level {float(report.get('level', 0)):9.0f} vs room "
+                  f"{float(report.get('room', 0)):9.0f}")
             continue
         level = statistics.median(room)
         # Judge the tone against the room's own peaks, not its usual level: a
@@ -244,8 +270,14 @@ def main():
                 tones = [float(x) for x in args.tones.split(",") if x.strip()]
                 sound = probe_sound(body, tones, args.volume, args.tone_ms, args.tone_gap)
                 report["sound"] = {"tones": sound, "volume": args.volume, "ms": args.tone_ms}
-                ratios = [t["times_room_peak"] for t in sound if t["times_room_peak"]]
-                if ratios:
+                pitch = [t["times_room_at_pitch"] for t in sound if t.get("times_room_at_pitch")]
+                ratios = [t["times_room_peak"] for t in sound if t.get("times_room_peak")]
+                if pitch:
+                    verdict = ("the mic hears the speaker clearly" if min(pitch) >= 5.0 else
+                               "the mic hears the speaker faintly" if min(pitch) >= 2.0 else
+                               "the mic does not hear the speaker above the room at that pitch")
+                    print(f"    reading: {verdict}.")
+                elif ratios:
                     verdict = ("the mic hears the speaker clearly" if min(ratios) >= 3.0 else
                                "the mic hears the speaker faintly" if min(ratios) >= 1.5 else
                                "the tones cannot be told from the room. If the room was "

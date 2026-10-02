@@ -36,7 +36,7 @@ from datetime import datetime
 
 CELL_COUNT = 12          # outer ring; six inner reservoir cells are separate
 SNAPSHOT_VERSION = 1
-FIELD_VERSION = "v06.7-predictive"
+FIELD_VERSION = "v06.8-predictive"
 
 # The ring, in design order (Creature v06.md, "The field: a ring of twelve").
 # Each entry: (label, cell_type, hardware_id). Cell ids are the list indices,
@@ -242,6 +242,25 @@ SIGNIFICANT_PRESSURE_THRESHOLD = 0.18
 SIGNIFICANT_DELTA_THRESHOLD = 0.16
 REPLAY_EVENTS_PER_TICK = 2
 
+# What counts as a significant event (v06.8).
+#   "surprise"  a tick is an event when its most surprised cell is several
+#               times more surprised than the field usually is, and above a
+#               small floor. "Usual" is a running median, so the rule follows
+#               the body and the room instead of going stale the way a fixed
+#               threshold does, and a loud spell does not drag it upward.
+#   "pressure"  the earlier rule, kept for control runs: a fixed threshold on
+#               raw pressure. On the twelve-cell body the weather anchor's
+#               steady pressure crossed it on every tick, so every tick was an
+#               event and sleep replayed the field's own background.
+EVENT_MODEL = "surprise"
+EVENT_SURPRISE_RATIO = 3.0    # times the usual peak surprise
+EVENT_SURPRISE_FLOOR = 0.15   # below this nothing is an event, however quiet "usual" is
+EVENT_USUAL_RATE = 0.02       # step of the running median, as a fraction of itself
+# Sleep turns the senses down and waking turns them back up. Both surprise the
+# cells, and neither is the world. No events while asleep, or for this many
+# ticks after waking while the predictions settle.
+EVENT_WAKE_SETTLE_TICKS = 30
+
 # --- homeostatic layer (unchanged) ----------------------------------------
 HOMEO_ENABLED = True
 HOMEO_TARGET = 0.06
@@ -412,6 +431,9 @@ class CellField:
         self.quiet_ticks = 0
         self.recent_events = []
         self.last_events = []
+        # The field's usual peak surprise: a running median. An event is a tick
+        # that stands well clear of it.
+        self.event_usual = None
         self.last_sleep_summary = None
         self.last_consolidation = {
             "links_pruned": 0,
@@ -672,32 +694,59 @@ class CellField:
         return max(1, int(base * energy_penalty))
 
     def _record_significant_event(self, sensed, deltas):
-        ranked = sorted(
-            self.cells.values(),
-            key=lambda c: c.pressure + abs(c.ripple) + c.activation,
-            reverse=True,
-        )
+        if EVENT_MODEL == "surprise" and (
+            self.sleep_mode == "sleep"
+            or self.tick_count - self.last_sleep_tick < EVENT_WAKE_SETTLE_TICKS
+        ):
+            return
+
+        if EVENT_MODEL == "surprise":
+            # Only a cell that updated this tick has a current surprise.
+            def score(c):
+                return c.surprise if c.last_tick == self.tick_count else 0.0
+        else:
+            def score(c):
+                return c.pressure + abs(c.ripple) + c.activation
+
+        ranked = sorted(self.cells.values(), key=score, reverse=True)
         top_cells = [
             {
                 "n": c.n,
                 "pressure": round(c.pressure, 4),
                 "activation": round(c.activation, 4),
                 "ripple": round(c.ripple, 4),
+                "surprise": round(c.surprise, 4),
             }
             for c in ranked[:5]
         ]
-        significance = max(
-            (c["pressure"] + abs(c["ripple"]) + c["activation"]) for c in top_cells
-        )
-        if (
-            significance < SIGNIFICANT_PRESSURE_THRESHOLD
-            and max(deltas.values()) < SIGNIFICANT_DELTA_THRESHOLD
-        ):
-            return
+        peak = score(ranked[0])
+
+        if EVENT_MODEL == "surprise":
+            if self.event_usual is None:
+                self.event_usual = max(peak, 1e-3)
+            threshold = max(EVENT_SURPRISE_FLOOR, EVENT_SURPRISE_RATIO * self.event_usual)
+            # Step the median after judging the tick, so an event is measured
+            # against what came before it. Up or down by the same fraction, so
+            # it settles where half the ticks sit above and half below.
+            self.event_usual *= (1.0 + EVENT_USUAL_RATE) if peak > self.event_usual else (1.0 - EVENT_USUAL_RATE)
+            self.event_usual = max(self.event_usual, 1e-4)
+            if peak <= threshold:
+                return
+            # 0.5 right at the threshold, 1.0 at twice it.
+            significance = clamp(0.5 * peak / threshold, 0.0, 2.0)
+            event_type = "surprise_spike"
+        else:
+            significance = peak
+            if (
+                significance < SIGNIFICANT_PRESSURE_THRESHOLD
+                and max(deltas.values()) < SIGNIFICANT_DELTA_THRESHOLD
+            ):
+                return
+            event_type = "pressure_spike"
 
         event = {
             "tick": self.tick_count,
-            "type": "pressure_spike",
+            "type": event_type,
             "significance": round(significance, 4),
             "senses": {s: round(sensed[s], 4) for s in SENSES},
             "deltas": {s: round(deltas[s], 4) for s in SENSES},
@@ -705,7 +754,15 @@ class CellField:
         }
         self.recent_events.append(event)
         if len(self.recent_events) > RECENT_EVENT_LIMIT:
-            self.recent_events = self.recent_events[-RECENT_EVENT_LIMIT:]
+            if EVENT_MODEL == "surprise":
+                # Full: let go of the least significant, oldest first, so the
+                # buffer holds the moments that stood out since the last sleep
+                # rather than whatever happened most recently.
+                weakest = min(range(len(self.recent_events)),
+                              key=lambda i: self.recent_events[i].get("significance", 0.0))
+                del self.recent_events[weakest]
+            else:
+                self.recent_events = self.recent_events[-RECENT_EVENT_LIMIT:]
         self.last_events.append(event)
 
     def _update_relevance(self):
@@ -1175,6 +1232,8 @@ class CellField:
                     "hardware_id": c.hardware_id,
                     "activation": round(c.activation, 4),
                     "pressure": round(c.pressure, 4),
+                    "prediction": round(c.prediction, 4),
+                    "surprise": round(c.surprise, 4),
                     "energy": round(c.energy, 4),
                     "fatigue": round(c.fatigue, 4),
                     "relevance": round(c.relevance, 4),
@@ -1226,6 +1285,7 @@ class CellField:
                     "health": round(c.health, 6),
                     "avg_activation": round(c.avg_activation, 6),
                     "homeo_gain": round(c.homeo_gain, 6),
+                    "prediction": round(c.prediction, 6),
                     "state": c.state,
                     "activation_threshold": round(c.activation_threshold, 6),
                     "last_active_tick": c.last_active_tick,
@@ -1268,6 +1328,12 @@ class CellField:
         self.sleep_mode = data.get("sleep_mode", "awake")
         self.last_sleep_tick = data.get("last_sleep_tick", self.last_sleep_tick)
         self.recent_events = data.get("recent_events", [])[-RECENT_EVENT_LIMIT:]
+        if EVENT_MODEL == "surprise":
+            # Events saved under the pressure rule are on a different scale and
+            # would outrank every real one in the first sleep. Leave them behind.
+            self.recent_events = [
+                e for e in self.recent_events if e.get("type") != "pressure_spike"
+            ]
 
         for key, cell_data in data.get("cells", {}).items():
             try:
@@ -1279,7 +1345,7 @@ class CellField:
             cell = self.cells[n]
             for attr in (
                 "energy", "fatigue", "relevance", "size", "age", "health",
-                "avg_activation", "homeo_gain", "activation_threshold",
+                "avg_activation", "homeo_gain", "prediction", "activation_threshold",
                 "last_active_tick", "last_impulse_tick", "last_tick",
                 "tick_interval", "wake_sensitivity",
             ):

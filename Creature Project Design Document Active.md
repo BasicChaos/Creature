@@ -1,6 +1,6 @@
 Creature Project Design Document
 
-Version: v06.7, October 2 2026
+Version: v06.8, October 2 2026
 Status: current. This document matches the running code in Code/. It supersedes the
 v05.4.1 edition, which described the 111-cell field, and the earlier editions that
 described the 3-cell arousal/fatigue/tonic network and the 11-cell ring. Those were
@@ -90,7 +90,9 @@ Emitters:
 - Onboard NeoPixel on GPIO 38. A status pixel, driven by the legacy `LED:` command.
 
 Sampling at about 10 Hz. One JSON line per sample over USB serial, and over a small
-WiFi TCP server on port 7777 with mDNS when WiFi is configured. WiFi credentials are
+WiFi TCP server on port 7777 with mDNS when WiFi is configured. After each `VOX:`
+tone the body also sends one `vox` line: what the mic heard while the tone played,
+measured at the tone's own pitch, next to the same measure of the room just before. WiFi credentials are
 kept out of git in an untracked `creature_wifi_secrets.h`. Full pin assignments,
 power, and gotchas are in `Hardware/Creature v06/WIRING v06.md`.
 
@@ -120,7 +122,7 @@ The ESP is the body. The Pi is the mind. The VPS is an observation surface only.
 
 ## The cell field: a ring of twelve
 
-File: `Code/Python/mind/cell_field_v06.py`. Version string `v06.7-predictive`. The
+File: `Code/Python/mind/cell_field_v06.py`. Version string `v06.8-predictive`. The
 field steps once per second. Every constant assumes that 1 Hz tick.
 
 The outer ring is twelve cells: six sense and emitter anchors alternating with six
@@ -258,6 +260,32 @@ v06.6 fixed a real bug here: sleep was never triggering because the quiet-pressu
 threshold that armed it was unreachable in the twelve-cell body. The threshold was
 corrected so consolidation can fire as designed.
 
+v06.8 fixed a second one of the same kind: what counts as a significant event. The
+old rule put a fixed threshold on raw pressure, and the weather anchor's steady
+pressure crossed it on every tick. Every tick was an event, the 80-slot buffer only
+ever held the last 80 seconds, and since sleep arrives after a quiet stretch, sleep
+replayed the quiet run-up to itself: the field's own background.
+
+The rule now reads surprise, the unit the predictive cell already speaks. A tick is
+an event when its most surprised cell is at least three times more surprised than
+the field usually is, and above a small floor. Usual is a running median, so the
+rule follows the body and the room instead of going stale. Sleep and waking change
+the sense levels and surprise the cells without the world doing anything, so no
+events are taken while asleep or for 30 ticks after. When the buffer is full it
+lets go of the least significant event, not the oldest, so it holds what stood out
+since the last sleep. The old rule is still there as `EVENT_MODEL = "pressure"` for
+control runs.
+
+On 260,000 ticks of the Creature's own recorded senses, replayed from its saved
+state: events fell from every tick to about 12% of ticks, the share that coincide
+with a real sense change rose from 42% to 83%, and the top cell moved from the
+weather anchor (56%) to the sound anchor (83%). The weather-to-speaker gap, the one
+link the ring design wants weak, fell from 0.63 to the scar floor. It had been held
+up by the background replay. One honest cost: with no background to replay, a long
+still night adds nothing, so structure thins overnight more than it used to (about
+83% of the day's differentiation held in simulation, against a figure above 100%
+that the old replay was manufacturing).
+
 ## Expression
 
 File: `Code/Python/mind/expression_v06.py`. The field is read once per tick,
@@ -332,8 +360,8 @@ unpredictable. Random bursts keep surprise alive.
 ## The loop record and forward model
 
 Files: `Code/Python/mind/forward_model_v06.py`, the loop block in the collector,
-and `Code/Python/tools/loop_probe.py`. This is the v06.7 layer. Passive: none of it
-changes the field or the body.
+and `Code/Python/tools/loop_probe.py`. This is the v06.7 layer, with the body's
+own hearing added in v06.8. Passive: none of it changes the field or the body.
 
 The loop above only matters if the Creature can tell its own output from the room.
 Three pieces make that measurable.
@@ -360,6 +388,17 @@ the part the Creature caused (the prediction) and the part it did not (the error
 A lamp switching on is error. Its own light, once learned, is not. The learned
 weights persist alongside the field slow-state, and the live snapshot carries a
 `loop` block that the dashboard shows under Loop.
+
+From v06.8 the body listens while it speaks. `playTone` used to block the main loop
+for the length of the tone, so nothing was measured while the speaker sounded. It
+now reads the mic between writes to the amp and measures the stretch that is
+certain to be inside the tone at the tone's own pitch, then sends one `vox` line
+with that level and the room's level at the same pitch just before. The Creature
+knows what pitch it played, so it can listen for exactly that and ignore the rest
+of the room. The forward model's sound half uses the report when there is one: a
+gain, and how that gain tilts with pitch, since a small speaker is not equally loud
+across its range. Without the report it falls back to how far the mic's peak rises
+after a tone, which a noisy room swamps.
 
 It is behind `CREATURE_LOOP` (default on). Feeding the error back into the ring is
 the next increment, and gets its own control-versus-variant run first.
@@ -416,7 +455,13 @@ machine and the runs reproduce exactly. Every gate uses a fixed seed.
 | bias | habit becomes memory, over-bias collapses | `--exprbias` | 2/2 |
 | novelty | adaptive novelty opens a temperament band | `--exprnov` | 2/2 |
 | dark-room | self-generated, bounded, learned activity | `--darkroom` | 5/5 |
-| forward | learns its own light and voice, leaves the room to the room | `--forward` | 6/6 |
+| forward | learns its own light and voice, leaves the room to the room | `--forward` | 7/7 |
+| events | surprise rule against the old pressure rule; `--replay` runs both on recorded senses | `--events` | 6/6 |
+
+The ring, reservoir and readout rows were measured before the predictive cell became
+the default. Under today's defaults they read 4/7, 3/4 and 1/2 (the ring row's own
+command, which sets the leaky cell, still gives 6/7). That is unchanged by v06.8 and
+is an open item, not a result.
 
 Rule: no tuning change ships without a control-versus-variant run. This is the
 difference between "I think it is emerging" and "here is the control run."
@@ -436,7 +481,7 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   temperature, and pressure as stable, versioned JSON so other apps and services
   can treat the Creature as ordinary sensors. Raw values come from a `sensors`
   block the collector adds to the live snapshot; missing sensors are `null`. See
-  `instructions.md` for the contract. Raw history is not logged yet.
+  `instructions.md` for the contract. Raw history is in the `loop_log` table.
 - Speaker mute: a button in the local dashboard header (hidden on the public
   mirror) toggles `POST /api/speaker {"muted": bool}`. It creates or removes a
   flag file, `creature_speaker_muted`, next to the database. The collector skips
@@ -498,7 +543,8 @@ the Creature evolve without rewriting hardware.
   measurable amount at the BH1750 (every frame within the 1.15 lux sensor noise).
   The sensor has to move or be shielded before the Creature can see its own light.
   The sound loop was inconclusive in the same run: the room was louder than the
-  tones, and the body stops streaming while it plays one.
+  tones, and the body stopped streaming while it played one. The v06.8 firmware
+  listens during the tone, at its pitch; that measurement is still to be taken.
 - The light-and-weather side stays weak by design, because slow steady signals
   produce no surprise. Only the loop keeps that side alive.
 - Bias and novelty steering are not wired to the body, so the live Creature records

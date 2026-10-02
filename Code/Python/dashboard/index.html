@@ -994,7 +994,7 @@
     }
 
     function renderReadout(f) {
-      const version = f.field_version || "v06.7";
+      const version = f.field_version || "v06.8";
       const title = `Creature ${version}`;
       document.getElementById("creatureTitle").textContent = title;
       document.title = `${title} — live`;
@@ -1054,7 +1054,8 @@
         " · missed by " + fmt(ll ? ll.err : null, 2) + " lux<br>" +
         "light explained: " + pct(li.explained) +
         " · over " + (li.acted ?? "--") + " changes<br>" +
-        "own voice: last tone predicted " + fmt(sv ? sv.pred : null, 0) +
+        "own voice (" + (so.mode === "pitch" ? "heard at its own pitch" : "by loudness after the tone") +
+        "): last tone predicted " + fmt(sv ? sv.pred : null, 0) +
         " · heard " + fmt(sv ? sv.excess : null, 0) + "<br>" +
         "voice explained: " + pct(so.explained) +
         " · over " + (so.voiced ?? "--") + " tones";

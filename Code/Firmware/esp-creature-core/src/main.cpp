@@ -28,6 +28,10 @@
 //   {"time_ms":<ms>,"sound_rms":<float>}
 // The Raspberry Pi collector normalizes raw values to 0-1.
 //
+// After each VOX tone it also sends one line saying what the mic heard while the
+// tone played, measured at the tone's own pitch:
+//   {"vox":{"freq":350.7,"ms":400,"vol":0.75,"heard":..,"level":..,"room":..,"room_heard":..,"n":..}}
+//
 // A temporary "status" line prints every 2 seconds for bring-up debugging.
 // Accepts "LED:<0-255>\n" for the onboard NeoPixel over USB or TCP, mirrored
 // to the SK6812 strip as a v06 fallback. The full strip output is PIX:.
@@ -147,6 +151,27 @@ String serialCommand = "";
 String wifiCommand = "";
 
 // Forward declarations
+// ---- Hearing its own tone --------------------------------------------------
+// A running measurement of mic samples: the plain level, and how much of it
+// sits at one pitch.
+struct EarSum
+{
+  double sum = 0.0, sumSq = 0.0;   // level
+  double i = 0.0, q = 0.0;         // correlation with the pitch
+  double c = 0.0, s = 0.0;         // sums of the reference, to take the mic's DC back out
+  long   n = 0;
+};
+
+// What playTone listens with while it writes to the amp.
+struct ToneListen
+{
+  float  freq;       // the pitch being played
+  long   index;      // mic samples seen since listening began
+  long   winStart;   // the stretch of mic samples that is safely inside the tone
+  long   winEnd;
+  EarSum tone;
+};
+
 void  setRgb(uint8_t red, uint8_t green, uint8_t blue);
 void  scanI2C();
 void  setupLight();
@@ -160,7 +185,7 @@ void  stripBootIdle();
 void  applyLegacyStripBrightness(uint8_t brightness);
 void  applyPixels(const String& csv);
 void  ampSetup();
-void  ampSilence(int ms);
+void  ampSilence(int ms, ToneListen* listen = NULL);
 void  playTone(float freq, int ms, float vol);
 void  setupI2SMic();
 float readSoundRms();
@@ -604,9 +629,79 @@ void ampSetup()
   i2s_zero_dma_buffer(AMP_PORT);
 }
 
+// Add mic samples to a running measurement. `index` is the position of the first
+// sample since listening began; it sets the phase of the pitch they are compared
+// with, so separate reads line up into one continuous measurement.
+static void earAdd(EarSum& e, const int32_t* raw, int count, long index, float freq)
+{
+  const float twoPi = 2.0f * (float)M_PI;
+  const float dphi = twoPi * freq / I2S_SAMPLE_RATE;
+  float phase = fmodf(dphi * (float)index, twoPi);
+  for (int k = 0; k < count; k++)
+  {
+    float v  = (float)(raw[k] >> 8);   // signed 24-bit sample
+    float cs = cosf(phase);
+    float sn = sinf(phase);
+    e.sum   += v;
+    e.sumSq += (double)v * v;
+    e.i     += v * cs;
+    e.q     += v * sn;
+    e.c     += cs;
+    e.s     += sn;
+    phase   += dphi;
+    if (phase > twoPi) phase -= twoPi;
+  }
+  e.n += count;
+}
+
+// DC-removed level, the same measure the 10 Hz stream reports as sound_rms.
+static float earLevel(const EarSum& e)
+{
+  if (e.n == 0) return 0.0f;
+  double mean = e.sum / e.n;
+  double variance = (e.sumSq / e.n) - (mean * mean);
+  return variance > 0.0 ? (float)sqrt(variance) : 0.0f;
+}
+
+// RMS of the part of the signal that sits at the pitch.
+static float earPitch(const EarSum& e)
+{
+  if (e.n == 0) return 0.0f;
+  double mean = e.sum / e.n;
+  double i = e.i - mean * e.c;
+  double q = e.q - mean * e.s;
+  return (float)(2.0 * sqrt(i * i + q * q) / e.n / sqrt(2.0));
+}
+
+// Read whatever the mic has ready, without waiting, and keep the samples that
+// fall inside the listening window.
+static void listenDrain(ToneListen* listen)
+{
+#if ENABLE_MIC
+  if (listen == NULL) return;
+  while (true)
+  {
+    size_t bytesRead = 0;
+    esp_err_t res = i2s_read(I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
+    if (res != ESP_OK || bytesRead == 0) break;
+    int count = bytesRead / sizeof(int32_t);
+    long from = max(listen->index, listen->winStart);
+    long to   = min(listen->index + count, listen->winEnd);
+    if (to > from)
+    {
+      earAdd(listen->tone, i2sSamples + (from - listen->index), (int)(to - from),
+             from, listen->freq);
+    }
+    listen->index += count;
+    if (bytesRead < sizeof(i2sSamples)) break;
+  }
+#endif
+}
+
 // Write `ms` of silence: settles the clock after driver churn and drains a
-// tone's tail so it is not chopped (a chop is an end click).
-void ampSilence(int ms)
+// tone's tail so it is not chopped (a chop is an end click). With `listen`, the
+// mic is read between writes, because the tone is still sounding during both.
+void ampSilence(int ms, ToneListen* listen)
 {
   int16_t z[256] = {0};
   int total = (AMP_SAMPLE_RATE * ms) / 1000;
@@ -617,6 +712,7 @@ void ampSilence(int ms)
     size_t written = 0;
     i2s_write(AMP_PORT, z, n * sizeof(int16_t), &written, portMAX_DELAY);
     done += n;
+    listenDrain(listen);
   }
 }
 
@@ -628,9 +724,46 @@ void ampSilence(int ms)
 // 3V3, fixed by moving VIN to 5V.
 void playTone(float freq, int ms, float vol)
 {
-  ampSilence(40);                        // warm the amp before the tone
-  const float dt = 2.0f * (float)M_PI * freq / AMP_SAMPLE_RATE;
+  const int warmMs = 40;
   const int total = (AMP_SAMPLE_RATE * ms) / 1000;
+
+  ToneListen* listen = NULL;
+#if ENABLE_MIC
+  // The room just before speaking: whatever the mic buffered since its last read.
+  EarSum room;
+  while (true)
+  {
+    size_t bytesRead = 0;
+    esp_err_t res = i2s_read(I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytesRead, 0);
+    if (res != ESP_OK || bytesRead == 0) break;
+    int count = bytesRead / sizeof(int32_t);
+    earAdd(room, i2sSamples, count, room.n, freq);
+    if (bytesRead < sizeof(i2sSamples)) break;
+  }
+
+  // Listen only where the tone is certain to be sounding. What is written to the
+  // amp comes out of the speaker up to its whole DMA ring later (8 x 256 samples),
+  // so the window starts that long after the warm-up and ends where the tone
+  // would end with no delay at all. Short tones leave no such stretch: for those,
+  // listen from the start of the tone to its latest possible end instead.
+  const long warm  = (AMP_SAMPLE_RATE * warmMs) / 1000;
+  const long ring  = 8 * 256;
+  const long guard = AMP_SAMPLE_RATE / 100;   // 10 ms, the length of the fades
+  ToneListen ear;
+  ear.freq = freq;
+  ear.index = 0;
+  ear.winStart = warm + ring + guard;
+  ear.winEnd = warm + total - guard;
+  if (ear.winEnd - ear.winStart < AMP_SAMPLE_RATE / 25)
+  {
+    ear.winStart = warm + guard;
+    ear.winEnd = warm + total + ring;
+  }
+  listen = &ear;
+#endif
+
+  ampSilence(warmMs, listen);            // warm the amp before the tone
+  const float dt = 2.0f * (float)M_PI * freq / AMP_SAMPLE_RATE;
   const int fade = AMP_SAMPLE_RATE / 100; // ~10 ms fade, from the clean bench test
   const float amp = TONE_AMP * constrain(vol, 0.0f, 1.0f);
   int16_t buf[256];
@@ -651,8 +784,32 @@ void playTone(float freq, int ms, float vol)
     size_t written = 0;
     i2s_write(AMP_PORT, buf, n * sizeof(int16_t), &written, portMAX_DELAY);
     done += n;
+    listenDrain(listen);
   }
-  ampSilence(150);                       // drain the faded tail (no end click)
+  ampSilence(150, listen);               // drain the faded tail (no end click)
+
+#if ENABLE_MIC
+  // What it heard of itself: the level at its own pitch while the tone played,
+  // next to the same two measures of the room just before.
+  String line = "{\"vox\":{\"freq\":";
+  line += String(freq, 1);
+  line += ",\"ms\":";
+  line += ms;
+  line += ",\"vol\":";
+  line += String(vol, 2);
+  line += ",\"heard\":";
+  line += String(earPitch(ear.tone), 1);
+  line += ",\"level\":";
+  line += String(earLevel(ear.tone), 1);
+  line += ",\"room\":";
+  line += String(earLevel(room), 1);
+  line += ",\"room_heard\":";
+  line += String(earPitch(room), 1);
+  line += ",\"n\":";
+  line += ear.tone.n;
+  line += "}}";
+  writeLineToTransports(line);
+#endif
 }
 
 // Configure the I2S peripheral for the INMP441 (receive, mono left channel).

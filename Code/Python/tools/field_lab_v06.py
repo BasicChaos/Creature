@@ -1194,12 +1194,16 @@ def darkroom_probe(args):
 FORWARD_COUPLING = (20.0, 35.0, 10.0, 60.0)   # lux at the sensor per RGBW channel at full
 FORWARD_ECHO = 120000.0                       # mic rms above the room per unit tone volume
 FORWARD_VOICE_GAP = 20                        # ticks between tones, as in the collector
+FORWARD_PITCH_ECHO = 40000.0                  # mic level at the tone's own pitch, per unit volume
+FORWARD_PITCH_TILT = 24000.0                  # how much louder an octave up comes back
 
 
-def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None):
+def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None, noisy=False, ear=False):
     """One life with the forward model watching. `coupling` is how much of each
     strip channel reaches the light sensor (all zero = the sensor cannot see the
-    strip). Returns the model and what it tracked along the way."""
+    strip). `noisy` fills the room with bursts louder than the creature's own
+    tones. `ear` gives the body the v06.8 firmware, which reports what it heard
+    at the tone's own pitch. Returns the model and what it tracked along the way."""
     random.seed(seed)
     rng = random.Random(seed + 1)
     room = random.Random(seed + 2)
@@ -1237,14 +1241,27 @@ def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None):
         lux = ambient + own + room.gauss(0.0, 0.5)
 
         rms_mean = 4000.0 + 800.0 * room.random()
-        burst = 30000.0 * room.random() if room.random() < 0.03 else 0.0
+        if noisy:
+            burst = 300000.0 * room.random() if room.random() < 0.3 else 0.0
+        else:
+            burst = 30000.0 * room.random() if room.random() < 0.03 else 0.0
         rms_max = rms_mean + 1500.0 * room.random() + burst
+        vox = None
         if voice:
-            rms_max += FORWARD_ECHO * voice["vol"] * (0.85 + 0.3 * room.random())
+            wobble = 0.85 + 0.3 * room.random()
+            rms_max += FORWARD_ECHO * voice["vol"] * wobble
+            if ear:
+                # Room noise is spread over every pitch, so only a sliver of a
+                # burst lands on the one the creature is listening for.
+                tilt = math.log2(voice["freq"] / 311.0)
+                room_heard = 150.0 + 0.004 * burst * room.random()
+                own = (FORWARD_PITCH_ECHO + FORWARD_PITCH_TILT * tilt) * voice["vol"] * wobble
+                vox = {"heard": own + room_heard * (0.5 + room.random()),
+                       "room_heard": room_heard}
 
         result = model.step(
             {"rgbw": u, "voice": voice},
-            {"lux": lux, "rms_mean": rms_mean, "rms_max": rms_max},
+            {"lux": lux, "rms_mean": rms_mean, "rms_max": rms_max, "vox": vox},
         )
         if result["light"]:
             (switch_err if switched else plain_err).append(abs(result["light"]["err"]))
@@ -1272,6 +1289,8 @@ def forward_probe(args):
     blind = _run_forward(args.seed, ticks, (0.0, 0.0, 0.0, 0.0))
     lamp = _run_forward(args.seed, ticks, FORWARD_COUPLING, lamp_every=1500)
     hand = _run_forward(args.seed, ticks, FORWARD_COUPLING, cover=cover)
+    loud = _run_forward(args.seed, ticks, FORWARD_COUPLING, noisy=True)
+    loud_ear = _run_forward(args.seed, ticks, FORWARD_COUPLING, noisy=True, ear=True)
 
     print(f"field {cf.FIELD_VERSION} | FORWARD MODEL | seed={args.seed} | ticks={ticks}")
     print(f"\n  the room: strip adds {truth:.0f} lux at full, a tone adds "
@@ -1286,6 +1305,10 @@ def forward_probe(args):
     sound = seen["model"].sound
     print(f"\n  sound: learned echo {sound.gain:.0f}, explained {sound.explained():.3f}, "
           f"{sound.voiced} tones")
+    by_peak, by_pitch = loud["model"].sound, loud_ear["model"].sound
+    print(f"  noisy room, listening for loudness: explained {by_peak.explained():.3f}")
+    print(f"  noisy room, listening at its own pitch: explained {by_pitch.explained():.3f}, "
+          f"gain {by_pitch.pitch_w[0]:.0f}, tilt {by_pitch.pitch_w[1]:.0f}")
     print(f"  lamp: error on a switch tick {lamp['switch_err']:.1f} lux, "
           f"on an ordinary tick {lamp['plain_err']:.2f} lux")
     at_start = hand["full"][cover[0] - 1]
@@ -1327,12 +1350,227 @@ def forward_probe(args):
           f"learned echo {sound.gain:.0f} vs {FORWARD_ECHO:.0f}, "
           f"explained {sound.explained():.3f}")
 
+    check("listening at its own pitch tells its voice from a noisy room",
+          by_pitch.explained() > 0.5 and by_pitch.explained() > by_peak.explained() + 0.2
+          and abs(by_pitch.pitch_w[0] - FORWARD_PITCH_ECHO) < 0.2 * FORWARD_PITCH_ECHO,
+          f"explained {by_pitch.explained():.3f} at its pitch vs {by_peak.explained():.3f} "
+          f"by loudness; gain {by_pitch.pitch_w[0]:.0f} vs {FORWARD_PITCH_ECHO:.0f}")
+
     ok = all(checks)
     print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
     print("  reading: from nothing but what it emits and what comes back, the\n"
           "  model separates its own light and voice from the room. Sim rehearsal:\n"
           "  the real coupling is whatever tools/loop_probe.py measures on the\n"
           "  body. Passive. Nothing here feeds the field yet.")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Significant events: what gets remembered for sleep (v06.8)
+# ---------------------------------------------------------------------------
+#
+# Sleep replays the field's "significant events". Under the pressure rule the
+# weather anchor's steady pressure crossed the fixed threshold on every tick, so
+# every tick was an event, the 80-slot buffer only ever held the last 80 seconds,
+# and sleep replayed the quiet run-up to itself. The surprise rule scores a tick
+# by its most surprised cell and fires only when that stands clear of the field's
+# own running baseline.
+#
+# Control (pressure) against variant (surprise), same seed, same input. With
+# --replay it runs both on the creature's own recorded senses instead.
+
+EVENT_WORLD_DELTA = 0.05     # a sense moved this much: the world did something
+
+
+def _read_replay(path):
+    """Recorded senses, one row per tick: tick, logged_at, sound, light, motion,
+    weather (extra columns ignored). Export from the Pi with:
+
+        sqlite3 -readonly -csv creature_raw_light.db "select tick, logged_at,
+          sound_norm, light_norm, motion_norm, weather_norm from field_tick_log
+          order by id" > senses.csv
+    """
+    rows = []
+    with open(path) as src:
+        for line in src:
+            parts = line.strip().split(",")
+            if len(parts) < 6:
+                continue
+            try:
+                rows.append({
+                    "sound": float(parts[2] or 0.0),
+                    "light": float(parts[3] or 0.0),
+                    "motion": float(parts[4] or 0.0),
+                    "weather": float(parts[5] or 0.0),
+                })
+            except ValueError:
+                continue
+    return rows
+
+
+def _still_night(ticks):
+    """A night as the live creature gets it: the fast senses read exactly zero
+    (the normalizer gates a still room to 0) and only the weather drifts. The
+    'quiet' scenario keeps a little jitter on every sense, which is enough to
+    stop the low-stimulation sleep from ever arming, so sleep needs this one."""
+    for t in range(ticks):
+        yield {"sound": 0.0, "light": 0.0, "motion": 0.0,
+               "weather": 0.45 + 0.05 * math.sin(t / 7200 * 2 * math.pi)}
+
+
+def _event_run(model, phases, seed, state_path=None):
+    """Run one life under one event rule. `phases` is a list of (name, inputs).
+    Returns the field and per-phase counts."""
+    cf.EVENT_MODEL = model
+    random.seed(seed)
+    field = cf.build_field()
+    if state_path:
+        cf.load_field(field, state_path)
+    out = {}
+    recent = [0.0, 0.0, 0.0]
+    last = None
+    was_sleeping = False
+    for name, inputs in phases:
+        st = {"ticks": 0, "events": 0, "world": 0, "top": {}, "sleeps": 0,
+              "reviewed": 0, "reinforced": 0, "fired": []}
+        for values in inputs:
+            field.step(values)
+            delta = 0.0 if last is None else max(
+                abs(values[k] - last[k]) for k in cf.SENSES)
+            last = values
+            recent = recent[1:] + [delta]
+            st["ticks"] += 1
+            fired = bool(field.last_events)
+            st["fired"].append(fired)
+            for event in field.last_events:
+                st["events"] += 1
+                if max(recent) >= EVENT_WORLD_DELTA:
+                    st["world"] += 1
+                n = event["cells"][0]["n"]
+                st["top"][n] = st["top"].get(n, 0) + 1
+            if field.sleep_mode == "sleep" and not was_sleeping:
+                st["sleeps"] += 1
+            was_sleeping = field.sleep_mode == "sleep"
+            summary = field.last_sleep_summary
+            if summary:
+                st["reviewed"] += summary.get("events_reviewed", 0) or 0
+                st["reinforced"] += summary.get("links_reinforced", 0) or 0
+        st["ring"] = ring_metrics(field)
+        out[name] = st
+    return field, out
+
+
+def _event_line(name, st):
+    rate = st["events"] / st["ticks"] if st["ticks"] else 0.0
+    world = st["world"] / st["events"] if st["events"] else 0.0
+    top = sorted(st["top"].items(), key=lambda kv: kv[1], reverse=True)[:3]
+    top_text = ", ".join(f"{cf.RING[n][0]} {c / st['events'] * 100:.0f}%" for n, c in top)
+    return (f"    {name:12s} events on {rate * 100:6.2f}% of ticks | "
+            f"{world * 100:5.1f}% with a sense change | sleeps {st['sleeps']:3d}, "
+            f"{st['reviewed']:5d} replayed | top: {top_text}")
+
+
+def events_probe(args):
+    """The significant-event gate: the pressure rule marks every tick, the
+    surprise rule stays quiet in a quiet room, still catches real changes, points
+    at the cell that changed, and leaves sleep and structure working."""
+    apply_overrides(args.set)
+    saved_model = cf.EVENT_MODEL
+    print(f"field {cf.FIELD_VERSION} | SIGNIFICANT EVENTS | seed={args.seed}")
+
+    if args.replay:
+        rows = _read_replay(args.replay)
+        print(f"\n  replay of {len(rows)} recorded ticks"
+              + (f", starting from {args.state}" if args.state else ""))
+        for model in ("pressure", "surprise"):
+            _field, out = _event_run(model, [("recorded", rows)], args.seed, args.state)
+            st = out["recorded"]
+            print(_event_line(model, st))
+            ring = st["ring"]
+            print(f"      replayed {st['reviewed']} events, reinforced {st['reinforced']} links"
+                  f" | differentiation {ring['differentiation']:.4f}"
+                  f" | loop cells {ring['loop_cells_mean']:.3f}"
+                  f" correlated {ring['correlated_cells_mean']:.3f}"
+                  f" weak gap {ring['weak_gap_mean']:.3f}")
+        cf.EVENT_MODEL = saved_model
+        return True
+
+    def day_night(model):
+        rng = random.Random(args.seed + 1)
+        phases = [("day", list(scenario_inputs("day", args.ticks, rng))),
+                  ("night", list(_still_night(args.night)))]
+        return _event_run(model, phases, args.seed)[1]
+
+    def bursts(model):
+        rng = random.Random(args.seed + 1)
+        return _event_run(model, [("bursts", list(scenario_inputs("bursts", args.ticks, rng)))],
+                          args.seed)[1]["bursts"]
+
+    control = day_night("pressure")
+    variant = day_night("surprise")
+    control_b = bursts("pressure")
+    variant_b = bursts("surprise")
+    cf.EVENT_MODEL = saved_model
+
+    print("\n  pressure rule (control)")
+    for name in ("day", "night"):
+        print(_event_line(name, control[name]))
+    print(_event_line("bursts", control_b))
+    print("  surprise rule (variant)")
+    for name in ("day", "night"):
+        print(_event_line(name, variant[name]))
+    print(_event_line("bursts", variant_b))
+
+    # A burst starts every 40 ticks. Skip the first few while the baseline settles.
+    onsets = [t for t in range(400, args.ticks - 3, 40)]
+    caught = sum(1 for t in onsets if any(variant_b["fired"][t:t + 3])) / len(onsets)
+    weather = cf.SENSE_ANCHOR["weather"]
+    weather_share = variant_b["top"].get(weather, 0) / max(1, variant_b["events"])
+    control_weather = control["night"]["top"].get(weather, 0) / max(1, control["night"]["events"])
+
+    def rate(st):
+        return st["events"] / st["ticks"]
+
+    def held(run_):
+        day, night = run_["day"]["ring"], run_["night"]["ring"]
+        return night["differentiation"] / day["differentiation"] if day["differentiation"] else 0.0
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("the pressure rule marks nearly every quiet tick",
+          rate(control["night"]) > 0.9,
+          f"events on {rate(control['night']) * 100:.1f}% of still-night ticks, "
+          f"{control_weather * 100:.0f}% of them topped by the weather anchor")
+    check("the surprise rule stays quiet in a quiet room",
+          rate(variant["night"]) < 0.02,
+          f"events on {rate(variant['night']) * 100:.2f}% of still-night ticks")
+    check("real changes are still caught",
+          caught >= 0.8,
+          f"{caught * 100:.0f}% of {len(onsets)} burst onsets get an event within 2 ticks")
+    check("events point at what changed, not at the steady anchor",
+          weather_share < 0.05,
+          f"weather anchor tops {weather_share * 100:.1f}% of burst events")
+    total_sleeps = variant["day"]["sleeps"] + variant["night"]["sleeps"]
+    total_reviewed = variant["day"]["reviewed"] + variant["night"]["reviewed"]
+    check("sleep still consolidates",
+          total_sleeps >= 1 and total_reviewed >= 1,
+          f"{total_sleeps} sleeps, {total_reviewed} events replayed "
+          f"(control: {control['day']['sleeps'] + control['night']['sleeps']} sleeps, "
+          f"{control['day']['reviewed'] + control['night']['reviewed']} replayed)")
+    # Same bar as the ring gate. The control number is shown but is not the bar:
+    # replaying its own background every sleep keeps adding weight at night.
+    check("structure survives the night",
+          held(variant) >= 0.60,
+          f"differentiation held {held(variant) * 100:.0f}% through the night "
+          f"(control {held(control) * 100:.0f}%, fed by replaying its own background)")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
     return ok
 
 
@@ -1395,6 +1633,12 @@ def main():
     p.add_argument("--forward", action="store_true",
                    help="run the forward-model gate (it learns its own light "
                         "and voice from what it emits and what returns)")
+    p.add_argument("--events", action="store_true",
+                   help="run the significant-event gate (pressure rule vs "
+                        "surprise rule); with --replay, on recorded senses")
+    p.add_argument("--replay", help="CSV of recorded senses for --events "
+                                    "(tick, logged_at, sound, light, motion, weather)")
+    p.add_argument("--state", help="saved field state to start --replay from")
     p.add_argument("--loop-gain", type=float, default=0.3,
                    help="how strongly the body's output returns as input "
                         "(dark-room probe; default 0.3, kept loose to avoid "
@@ -1422,6 +1666,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.forward:
         ok = forward_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.events:
+        ok = events_probe(args)
         sys.exit(0 if ok else 1)
     if args.predictive:
         ok = predictive_probe(args)

@@ -109,8 +109,12 @@ same on purpose so the field can change without rewriting hardware.
   predicts the Creature's own light and voice, compares, and learns. A probe tool
   measures how much of its output physically comes back. Passive so far: nothing
   feeds the field yet.
+- v06.8: what counts as a significant event now reads surprise against the
+  field's own running baseline, so sleep replays moments that stood out instead
+  of its own background. The body listens while it speaks and reports what it
+  heard at the pitch it played.
 
-The current running version string is `v06.7-predictive`.
+The current running version string is `v06.8-predictive`.
 
 ## Status
 
