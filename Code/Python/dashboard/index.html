@@ -19,6 +19,46 @@
       --emitter: #5ee08a;
       --free: #8b95ff;
       --fatigue: #f0625e;
+      --motion: #b98bff;
+      --weather: #6ee0c2;
+      /* field drawing: read into the script's palette, see loadPalette() */
+      --loop: #e0772b;
+      --reservoir: #5fa8e0;
+      --pos: #5fa8e0;
+      --neg: #e0709a;
+      --rel: #cfd8e3;
+      --link-ghost: #4b5563;
+      --ripple: #ffffff;
+      --cell-ink: #f5f8fc;
+      --cell-ink-stroke: #0b0e13;
+      color-scheme: dark;
+    }
+
+    /* Day mode: the same roles, darker so they hold up on a light surface. */
+    :root[data-theme="day"] {
+      --bg: #f1f3f6;
+      --panel: #ffffff;
+      --line: #dce1e7;
+      --text: #1c2430;
+      --muted: #5f6b7a;
+      --accent: #0b78b6;
+      --sound: #0b84c4;
+      --light: #c96a12;
+      --emitter: #1f9d4d;
+      --free: #5560d8;
+      --fatigue: #d43d3a;
+      --motion: #8a4fd6;
+      --weather: #0f9a80;
+      --loop: #c85f12;
+      --reservoir: #2f7fc0;
+      --pos: #2f7fc0;
+      --neg: #c7457a;
+      --rel: #55606e;
+      --link-ghost: #a9b2bd;
+      --ripple: #1c2430;
+      --cell-ink: #101820;
+      --cell-ink-stroke: #ffffff;
+      color-scheme: light;
     }
 
     * {
@@ -119,6 +159,11 @@
     .side-nav button.on { color: var(--text); background: var(--panel); border-color: var(--line); }
     .side-nav .nav-toggle { margin-bottom: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
     .nav-ico { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    /* Day / night / auto, at the foot of the menu. */
+    .theme-seg { margin-top: auto; display: flex; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+    .side-nav .theme-seg button { flex: 1; justify-content: center; gap: 5px; padding: 6px 4px; font-size: 11px; border: 0; }
+    .side-nav .theme-seg button.on { background: var(--line); }
+    .app.nav-collapsed .theme-seg { flex-direction: column; }
     .app.nav-collapsed .side-nav { width: auto; }
     .app.nav-collapsed .nav-label { display: none; }
     .app.nav-collapsed .nav-toggle .nav-ico { transform: rotate(180deg); }
@@ -184,7 +229,7 @@
       object-position: center;
       border-radius: 7px;
       border: 1px solid var(--line);
-      background: #0b0e13;
+      background: var(--bg);
     }
 
     /* learning panel: four small charts over one shared window of ticks */
@@ -212,6 +257,8 @@
       .app { grid-template-columns: 1fr; padding: 12px; }
       .side-nav { flex-direction: row; flex-wrap: wrap; width: auto; }
       .side-nav .nav-toggle { display: none; }
+      .theme-seg { margin-top: 0; margin-left: auto; }
+      .app.nav-collapsed .theme-seg { flex-direction: row; }
       .app.nav-collapsed .nav-label { display: inline; }
       .stage #field { flex: none; height: auto; max-height: 620px; }
       .view-area { overflow-y: visible; }
@@ -248,8 +295,8 @@
     }
 
     .clabel {
-      fill: #f5f8fc;
-      stroke: #0b0e13;
+      fill: var(--cell-ink);
+      stroke: var(--cell-ink-stroke);
       stroke-width: 0.5px;
       paint-order: stroke;
       font: 700 7px -apple-system, system-ui, sans-serif;
@@ -546,10 +593,10 @@
           style="color:var(--sound)">--</span></div>
       <div class="stat"><span class="label">Light</span><span id="rLight" class="val"
           style="color:var(--light)">--</span></div>
-      <div class="stat"><span class="label">Motion</span><span id="rMotion" class="val" style="color:#b98bff">--</span>
+      <div class="stat"><span class="label">Motion</span><span id="rMotion" class="val" style="color:var(--motion)">--</span>
       </div>
       <div class="stat"><span class="label">Weather</span><span id="rWeather" class="val"
-          style="color:#6ee0c2">--</span></div>
+          style="color:var(--weather)">--</span></div>
       <div class="stat"><span class="label">Energy</span><span id="rEnergy" class="val">--</span></div>
       <div class="stat"><span class="label">Memory</span><span id="rMemory" class="val">--</span></div>
       <div class="stat"><span class="label">Emit</span><span id="rEmit" class="val"
@@ -569,6 +616,11 @@
       <button type="button" data-view="learning" title="Learning"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5l3.5-4 3 2.5 4.5-6.5"/><path d="M10.5 4.5h3v3"/></svg><span class="nav-label">Learning</span></button>
       <button type="button" data-view="legend" title="Legend"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4.5" r="1.5"/><circle cx="4" cy="11.5" r="1.5"/><path d="M8 4.5h5.5M8 11.5h5.5"/></svg><span class="nav-label">Legend</span></button>
       <button type="button" data-view="metabolism" title="Metabolism"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8.5h3l1.5-4 3 8 1.5-4h4"/></svg><span class="nav-label">Metabolism</span></button>
+      <div class="theme-seg" id="themeSeg" role="group" aria-label="Colour mode">
+        <button type="button" data-theme-mode="day" title="Day mode"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></svg><span class="nav-label">Day</span></button>
+        <button type="button" data-theme-mode="night" title="Night mode"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 9.6A5.5 5.5 0 0 1 6.4 3a5.5 5.5 0 1 0 6.6 6.6z"/></svg><span class="nav-label">Night</span></button>
+        <button type="button" data-theme-mode="auto" title="Follow this device's light or dark setting"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11"/><path d="M8 5l3.8-1.2M8 8h5.5M8 11l3.8 1.2"/></svg><span class="nav-label">Auto</span></button>
+      </div>
     </nav>
 
     <div class="panel stage">
@@ -823,15 +875,32 @@
     const W_MAX = 2.0;             // weight ceiling (for scaling line thickness)
     const NS = "http://www.w3.org/2000/svg";
 
-    // Hex (not var()) because SVG presentation attributes set via setAttribute
-    // do not resolve CSS custom properties in all browsers.
-    const C = {
-      sound: "#5ec8f8", light: "#f0a35e", emitter: "#5ee08a", free: "#8b95ff",
-      fatigue: "#f0625e", line: "#232a33", accent: "#5ec8f8", rel: "#cfd8e3",
-      linkGhost: "#4b5563",
-      motion: "#b98bff", weather: "#6ee0c2", loop: "#e0772b", reservoir: "#5fa8e0",
-      pos: "#5fa8e0", neg: "#e0709a",   // sign of a fixed reservoir weight
+    // ---- colour mode ----
+    // Day, night, or auto (follow this device's light/dark setting). The choice
+    // is kept per browser. Set before the palette is read.
+    function recall(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+    function remember(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* private window */ } }
+    const prefersLight = window.matchMedia("(prefers-color-scheme: light)");
+    let themeMode = ["day", "night", "auto"].includes(recall("creature.theme")) ? recall("creature.theme") : "auto";
+    function resolveTheme() { return themeMode === "auto" ? (prefersLight.matches ? "day" : "night") : themeMode; }
+    document.documentElement.dataset.theme = resolveTheme();
+
+    // The drawing's colours live in the stylesheet, one set per mode. They are
+    // read into plain hex here because SVG presentation attributes set via
+    // setAttribute do not resolve CSS custom properties in all browsers.
+    const C = {};
+    const PALETTE_VARS = {
+      sound: "--sound", light: "--light", emitter: "--emitter", free: "--free",
+      fatigue: "--fatigue", line: "--line", accent: "--accent", rel: "--rel",
+      linkGhost: "--link-ghost", motion: "--motion", weather: "--weather",
+      loop: "--loop", reservoir: "--reservoir", pos: "--pos", neg: "--neg",
+      ripple: "--ripple", bg: "--bg",
     };
+    function loadPalette() {
+      const css = getComputedStyle(document.documentElement);
+      for (const k in PALETTE_VARS) C[k] = css.getPropertyValue(PALETTE_VARS[k]).trim();
+    }
+    loadPalette();
     const ROLE = {
       sound: { color: C.sound, label: "Sound anchor", hw: "INMP441" },
       light: { color: C.light, label: "Light anchor", hw: "BH1750" },
@@ -840,6 +909,8 @@
       emitter: { color: C.emitter, label: "Emitter anchor", hw: "NeoPixel" },
       free: { color: C.free, label: "Free cell", hw: null },
     };
+
+    function loadRoleColors() { for (const k in ROLE) ROLE[k].color = C[k]; }
 
     function roleOf(c) {
       if (c.type === "anchor_sensor") {
@@ -866,8 +937,11 @@
     // ---- build the static SVG scene once ----
     const svg = document.getElementById("field");
     const defs = el("defs", {});
-    defs.innerHTML = '<filter id="halo" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="7" /></filter>' +
+    function buildDefs() {
+      defs.innerHTML = '<filter id="halo" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="7" /></filter>' +
       ["pos", "neg"].map(k => '<marker id="arrow-' + k + '" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="' + C[k] + '" /></marker>').join("");
+    }
+    buildDefs();
     svg.appendChild(defs);
 
     const gGuide = el("g", {});      // faint body-plan ring
@@ -917,7 +991,7 @@
 
       const g = el("g", { class: "cell", tabindex: 0 });
       const rel = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 5, fill: "none", stroke: C.rel, "stroke-width": 1, "stroke-opacity": 0.1 });
-      const ripple = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 2, fill: "none", stroke: "#ffffff", "stroke-width": 1, "stroke-opacity": 0 });
+      const ripple = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 2, fill: "none", stroke: C.ripple, "stroke-width": 1, "stroke-opacity": 0 });
       const fatigue = el("circle", { cx: p.x, cy: p.y, r: BASE_R + 10, fill: "none", stroke: C.fatigue, "stroke-width": 1.5, "stroke-opacity": 0 });
       const body = el("circle", { cx: p.x, cy: p.y, r: BASE_R, fill: C.free, "fill-opacity": 0.16, stroke: C.free, "stroke-width": 1.6, "stroke-opacity": 0.85 });
       const label = el("text", { x: p.x, y: p.y + 4, "text-anchor": "middle", class: "clabel" });
@@ -1160,7 +1234,7 @@
         const tr = document.createElement("tr");
         tr.dataset.cell = c.n;
         tr.innerHTML =
-          `<td><span class="cell-role-dot" style="background:${role.color}"></span><span class="cell-name">${c.name}</span></td>` +
+          `<td><span class="cell-role-dot" style="background:var(--${roleOf(c)})"></span><span class="cell-name">${c.name}</span></td>` +
           `<td>${role.label}</td><td>${c.hardware_id || "—"}</td>` +
           "<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>";
         body.appendChild(tr);
@@ -1242,7 +1316,7 @@
         ${bar("fatigue", c.fatigue, 1, C.fatigue, 3)}
         ${bar("relevance", c.relevance ?? c.memory, 1, C.rel, 3)}
         ${bar("pressure", c.pressure, 2, C.accent, 3)}
-        ${bar("ripple", Math.abs(c.ripple || 0), 0.75, "#ffffff", 3)}
+        ${bar("ripple", Math.abs(c.ripple || 0), 0.75, C.ripple, 3)}
         <div class="insp-meta">state <b>${c.state || c.sleep_state || "active"}</b> · tick interval <b>${c.tick_interval ?? "--"}</b>${c.size != null ? " · size <b>" + fmt(c.size, 2) + "</b>" : ""} · homeo gain <b>${fmt(c.homeo_gain, 2)}</b></div>
         ${v06Mode ? ringWiringHtml(c) : ""}
         ${pinned === sel ? '<div class="pinned-note">pinned — click again to release</div>' : ''}
@@ -1414,7 +1488,7 @@
         gHalo.appendChild(halo);
         const g = el("g", { class: "cell", tabindex: 0 });
         const rel = el("circle", { cx: p.x, cy: p.y, r: baseR + 5, fill: "none", stroke: C.rel, "stroke-width": 1, "stroke-opacity": 0.1 });
-        const ripple = el("circle", { cx: p.x, cy: p.y, r: baseR + 2, fill: "none", stroke: "#fff", "stroke-width": 1, "stroke-opacity": 0 });
+        const ripple = el("circle", { cx: p.x, cy: p.y, r: baseR + 2, fill: "none", stroke: C.ripple, "stroke-width": 1, "stroke-opacity": 0 });
         const fatigue = el("circle", { cx: p.x, cy: p.y, r: baseR + 9, fill: "none", stroke: C.fatigue, "stroke-width": 1.5, "stroke-opacity": 0 });
         const body = el("circle", { cx: p.x, cy: p.y, r: baseR, fill: col, "fill-opacity": 0.16, stroke: col, "stroke-width": 2.4, "stroke-opacity": 0.85 });
         const label = el("text", { x: p.x, y: p.y + 4.5, "text-anchor": "middle", class: "clabel" });
@@ -1444,9 +1518,9 @@
       v06.built = true;
     }
 
-    function renderV06(f) {
-      if (latest && latest.reservoir) prevRes = { tick: latest.tick, state: latest.reservoir.state || [] };
-      if (f.reservoir && f.reservoir.state) {
+    function renderV06(f, repaint) {
+      if (!repaint && latest && latest.reservoir) prevRes = { tick: latest.tick, state: latest.reservoir.state || [] };
+      if (!repaint && f.reservoir && f.reservoir.state) {
         resHistory.push(f.reservoir.state);
         if (resHistory.length > RES_HISTORY_MAX) resHistory.shift();
       }
@@ -1738,8 +1812,6 @@
     // One section is open beside the field at a time. The choice and the
     // collapsed state are remembered per browser.
     const VIEWS = ["inspector", "raw", "learning", "legend", "metabolism"];
-    function recall(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
-    function remember(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* private window */ } }
     function showView(name) {
       if (!VIEWS.includes(name)) name = "inspector";
       document.querySelectorAll("#viewArea .view").forEach(v => { v.hidden = v.dataset.view !== name; });
@@ -1755,8 +1827,28 @@
       const b = e.target.closest("button");
       if (!b) return;
       if (b.id === "navToggle") setNavCollapsed(!document.getElementById("app").classList.contains("nav-collapsed"));
+      else if (b.dataset.themeMode) setThemeMode(b.dataset.themeMode);
       else showView(b.dataset.view);
     });
+
+    // Switching mode re-reads the palette and redraws everything that was
+    // painted with it: the field, the legend, the inspector and the charts.
+    function applyTheme() {
+      document.documentElement.dataset.theme = resolveTheme();
+      loadPalette();
+      loadRoleColors();
+      buildDefs();
+      document.querySelectorAll("#themeSeg button").forEach(b => b.classList.toggle("on", b.dataset.themeMode === themeMode));
+      if (v06Mode && latest) { buildV06(latest); renderV06(latest, true); }
+      else if (latest) renderInspector();
+      if (learnDoc && learnDoc.tick_to != null) renderLearning();
+    }
+    function setThemeMode(mode) {
+      themeMode = mode;
+      remember("creature.theme", mode);
+      applyTheme();
+    }
+    prefersLight.addEventListener("change", () => { if (themeMode === "auto") applyTheme(); });
     showView(recall("creature.view") || "inspector");
     setNavCollapsed(recall("creature.nav") === "collapsed");
 
@@ -1795,7 +1887,7 @@
       cfg.series.forEach((s, si) => {
         const op = s.opacity ?? 1;
         if (cfg.dots || s.pts.length === 1) {
-          s.pts.forEach(p => { g += `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3.5" fill="${s.color}" fill-opacity="${op}" stroke="#0e1116" stroke-width="1" />`; });
+          s.pts.forEach(p => { g += `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3.5" fill="${s.color}" fill-opacity="${op}" stroke="${C.bg}" stroke-width="1" />`; });
         } else {
           let d = "", prev = null;
           s.pts.forEach(p => {
@@ -1808,7 +1900,7 @@
       });
       if (!flat.length) g += `<text x="${(L + W - R) / 2}" y="${H / 2}" text-anchor="middle" class="learn-tick">no record in this window</text>`;
       g += `<line class="hair" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="${C.rel}" stroke-opacity="0.5" stroke-width="1" visibility="hidden" />` +
-        `<circle class="mark" r="5" fill="none" stroke="#fff" stroke-width="1.5" visibility="hidden" />`;
+        `<circle class="mark" r="5" fill="none" stroke="${C.ripple}" stroke-width="1.5" visibility="hidden" />`;
       card.innerHTML = `<div class="learn-title">${cfg.title}</div><div class="learn-value">${cfg.value}</div>` +
         `<div class="learn-sub">${cfg.sub}</div><svg viewBox="0 0 ${W} ${H}">${g}</svg><div class="learn-tip" hidden></div>`;
 
@@ -1995,6 +2087,7 @@
       } catch (err) { /* leave as is */ }
     });
 
+    applyTheme();
     pullField(); pullHealth(); pullSensors(); pullSpeaker(); pullLearning();
     setInterval(pullLearning, 120000);
     setInterval(pullSpeaker, 10000);
