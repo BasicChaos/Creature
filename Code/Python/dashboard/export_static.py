@@ -2,6 +2,7 @@ import json
 import shutil
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -144,6 +145,11 @@ write_json("history.json", read_history())
 write_json("events.json", read_events())
 write_json("sleep_summaries.json", read_sleep_summaries())
 write_json("health.json", read_health())
-write_json("learning.json", read_learning(DB_PATH))
+# The learning history barely changes minute to minute and costs a database
+# read, while this export runs every few seconds: refresh it only now and then.
+LEARNING_REFRESH_SECONDS = 300
+learning_path = EXPORT_DIR / "learning.json"
+if not learning_path.exists() or time.time() - learning_path.stat().st_mtime > LEARNING_REFRESH_SECONDS:
+    write_json("learning.json", read_learning(DB_PATH))
 
 print(f"Exported dashboard to {EXPORT_DIR}")
