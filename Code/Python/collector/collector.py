@@ -61,6 +61,11 @@ DEFAULT_TCP_PORT = 7777
 TCP_CONNECT_TIMEOUT_SECONDS = 5.0
 TCP_READ_TIMEOUT_SECONDS = 0.2
 TCP_RECONNECT_SECONDS = 2.0
+# A body that resets (a flash, a brown-out, a USB plug-in) leaves the old TCP
+# connection open but silent. The body streams ten samples a second, so this
+# much silence means the link is dead: reconnect instead of waiting for a send
+# to time out, which took about four minutes when it happened.
+TCP_SILENCE_RECONNECT_SECONDS = float(os.environ.get("CREATURE_ESP_SILENCE_SECONDS", "8"))
 
 # --- Field tick ---
 TICK_SECONDS = 1.0          # the field steps once per second (decay/memory assume this)
@@ -943,6 +948,7 @@ def main():
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
 
     next_tick = monotonic()
+    heard_at = monotonic()   # when the body last sent a sample, or the link last opened
 
     while not stop["requested"]:
         try:
@@ -960,6 +966,7 @@ def main():
             if esp is None:
                 break
             body_send = make_body_sender(esp)
+            heard_at = monotonic()
             continue
 
         now = monotonic()
@@ -982,8 +989,22 @@ def main():
                 if raw_key in sample:
                     latest_raw[raw_key] = float(sample[raw_key])
             last_sample_at = now
+            heard_at = now
             if forward is not None:
                 loop_window.add(now, sample)
+
+        if is_tcp_target(transport_target) and now - heard_at > TCP_SILENCE_RECONNECT_SECONDS:
+            print(f"ESP silent for {now - heard_at:.0f}s. Reconnecting...")
+            try:
+                esp.close()
+            except OSError:
+                pass
+            esp = reconnect_esp_transport(transport_target, stop)
+            if esp is None:
+                break
+            body_send = make_body_sender(esp)
+            heard_at = monotonic()
+            continue
 
         if now < next_tick:
             continue
@@ -1039,6 +1060,7 @@ def main():
             if esp is None:
                 break
             body_send = make_body_sender(esp)
+            heard_at = monotonic()
 
         # Record what the body expressed into the lasting autobiography. Passive:
         # this reads the expression already computed, it does not change output.
