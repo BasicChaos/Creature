@@ -994,7 +994,7 @@
     }
 
     function renderReadout(f) {
-      const version = f.field_version || "v06.8";
+      const version = f.field_version || "v06.9";
       const title = `Creature ${version}`;
       document.getElementById("creatureTitle").textContent = title;
       document.title = `${title} — live`;
@@ -1038,6 +1038,18 @@
     // The forward model: what the creature predicted its own light and voice
     // would do to its senses, against what they did. Shown as the model's own
     // numbers (its share of the light, its miss), not the room's raw readings.
+    // What the two loop cells were just given, and whether it is bored enough to
+    // probe. Absent on snapshots from before v06.9.
+    function renderFelt(f) {
+      const feel = f.loop_feel, cur = f.curiosity;
+      if (!feel && !cur) return "";
+      let out = "";
+      if (feel) out += "<br>felt this tick: voice " + fmt(feel.voice, 2) + " · light " + fmt(feel.light, 2);
+      if (cur) out += "<br>bored: " + Math.round((cur.bored || 0) * 100) + "% · probes so far: " +
+        (cur.voice_probes ?? "--") + " tones, " + (cur.light_probes ?? "--") + " lifts of white";
+      return out;
+    }
+
     function renderLoop(f) {
       const box = document.getElementById("loop");
       if (!box) return;
@@ -1058,7 +1070,7 @@
         "): last tone predicted " + fmt(sv ? sv.pred : null, 0) +
         " · heard " + fmt(sv ? sv.excess : null, 0) + "<br>" +
         "voice explained: " + pct(so.explained) +
-        " · over " + (so.voiced ?? "--") + " tones";
+        " · over " + (so.voiced ?? "--") + " tones" + renderFelt(f);
     }
 
     function bar(label, value, max, color, dec) {

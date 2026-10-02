@@ -26,12 +26,18 @@ Two small models, both learned online by a delta rule, plain Python, no numpy:
          and pitch. With v06.8 firmware the body listens while it plays and
          reports the mic level at the tone's own pitch, next to the same
          measure of the room just before, so room noise at other pitches does
-         not count. Without that report it falls back to how far the mic's
-         peak rises above the room in the second after a tone.
+         not count. A small speaker is far from equally loud across its range
+         (the real one peaks near 330 and 400 Hz and dips between), so the
+         model keeps one gain per band of pitch. Without the body's report it
+         falls back to how far the mic's peak rises above the room in the
+         second after a tone.
 
-Passive: it reads what the body emitted and what the sensors returned. It does
-not change the field or the body. Feeding the error back into the ring is a
-later step, and gets its own control-versus-variant run first.
+The model itself only predicts, compares and learns. From v06.9 each step also
+returns a `feel` value for each loop, 0 to 1: how strongly the creature just
+sensed its own output, weighted up by how wrong it was about it. The collector
+passes that to the two loop cells in the ring. A well-predicted echo is felt
+faintly, a surprising one strongly, and with no physical loop there is nothing
+to feel.
 
 This is the runtime home of the logic. `tools/field_lab_v06.py --forward`
 imports it, so the offline gate and the live collector share one source.
@@ -62,7 +68,15 @@ LIGHT_ACTED_THRESHOLD = 0.004
 SOUND_MU = 0.1
 SOUND_EPS = 1e-3
 SOUND_AMBIENT_ALPHA = 0.05  # room level, tracked only while not speaking
-SOUND_PITCH_CENTER = 311.0  # Hz, the middle of the voice's 220-440 range
+SOUND_PITCH_LOW = 220.0     # Hz, the bottom of the voice's range
+SOUND_PITCH_BINS = 8        # bands across the octave above that
+SOUND_BIN_ERR_ALPHA = 0.2   # per-band memory of how wrong the last few tones were
+
+# How a loop is felt. A sensed echo always registers a little; the rest of the
+# feeling is the share of it that was not predicted.
+FEEL_BASE = 0.3
+LIGHT_PROVEN_AT = 0.3       # explained fraction at which its own light is fully felt
+FEEL_SCALE_ALPHA = 0.05     # the usual size of an echo, for "how strong was this one"
 
 SKILL_ALPHA = 0.01          # slow average for the explained fraction
 SOUND_SKILL_ALPHA = 0.05    # tones are rare (one per 20 s at most), so average faster
@@ -77,6 +91,26 @@ def frame_rgbw(pixels):
     return tuple(
         sum(pixel[ch] for pixel in pixels) / (255.0 * count) for ch in range(4)
     )
+
+
+def pitch_bin(freq):
+    """Which band of the voice's range a pitch falls in, 0 to SOUND_PITCH_BINS-1."""
+    if freq <= SOUND_PITCH_LOW:
+        return 0
+    return min(SOUND_PITCH_BINS - 1, int(math.log2(freq / SOUND_PITCH_LOW) * SOUND_PITCH_BINS))
+
+
+def pitch_bin_center(index):
+    """The pitch in the middle of a band, in Hz."""
+    return SOUND_PITCH_LOW * 2.0 ** ((index + 0.5) / SOUND_PITCH_BINS)
+
+
+def _feel(strength, error_fraction):
+    """How much of its own output the creature feels, 0 to 1: the strength of
+    what came back, mostly weighted by how unexpected it was."""
+    strength = max(0.0, min(1.0, strength))
+    error_fraction = max(0.0, min(1.0, error_fraction))
+    return strength * (FEEL_BASE + (1.0 - FEEL_BASE) * error_fraction)
 
 
 def _explained(err_ema, null_ema):
@@ -142,14 +176,32 @@ class LightModel:
             self.err_ema += SKILL_ALPHA * (abs(err) - self.err_ema)
             self.null_ema += SKILL_ALPHA * (abs(dlux - self.trend) - self.null_ema)
 
+        # Felt only as far as it expected to see itself, and only once the
+        # model has shown it can predict its own light at all. A blind sensor
+        # leaves small random weights behind; without the second condition their
+        # noise would trickle into the loop cell as if it were seeing something.
+        expected = abs(pred)
+        seeing = expected / (expected + 2.0 * self.noise)
+        proven = max(0.0, min(1.0, self.explained() / LIGHT_PROVEN_AT))
+        feel = proven * _feel(seeing, abs(err) / (expected + self.noise))
+
         self.prev_u, self.prev_lux = u, lux
         self.last = {
             "delta": round(dlux, 3),
             "pred": round(pred, 3),
             "err": round(err, 3),
             "strip_lux": round(sum(self.w[i] * u[i] for i in range(4)), 3),
+            "feel": round(feel, 4),
         }
         return self.last
+
+    def own_lux(self, u):
+        """Lux at the sensor that the model attributes to the strip frame `u`,
+        once it has shown it can predict its own light. Zero until then, so a
+        blind sensor's noise weights never touch the room's reading."""
+        if u is None or self.explained() < 0.1:
+            return 0.0
+        return max(0.0, sum(self.w[i] * u[i] for i in range(4)))
 
     def explained(self):
         return _explained(self.err_ema, self.null_ema)
@@ -195,35 +247,57 @@ class SoundModel:
         self.err_ema = 0.0
         self.null_ema = 0.0
         self.voiced = 0
-        # The pitch path: what the body heard at the tone's own pitch. Two
-        # weights, a gain and how that gain tilts with pitch, since a small
-        # speaker is not equally loud across its range.
-        self.pitch_w = [0.0, 0.0]
+        # The pitch path: what the body heard at the tone's own pitch. One gain
+        # per band of pitch, since the speaker is not equally loud across them.
+        self.pitch_gain = [0.0] * SOUND_PITCH_BINS   # own level per unit volume
+        self.pitch_n = [0] * SOUND_PITCH_BINS        # tones heard in each band
+        self.pitch_err = [0.0] * SOUND_PITCH_BINS    # recent error fraction in each band
         self.pitch_err_ema = 0.0
         self.pitch_null_ema = 0.0
         self.pitch_voiced = 0
+        self.echo_scale = None    # the usual size of its own echo
         self.last = None
         self.last_voiced = None
+
+    def predict_pitch(self, freq, vol):
+        """Expected own level for a tone. A band it has never tried borrows the
+        average of the bands it has."""
+        index = pitch_bin(freq)
+        if self.pitch_n[index]:
+            return self.pitch_gain[index] * vol
+        known = [g for g, n in zip(self.pitch_gain, self.pitch_n) if n]
+        return (sum(known) / len(known)) * vol if known else 0.0
 
     def _step_pitch(self, voice, heard):
         """A tone the body listened to while playing. `heard` is its report."""
         vol = float(voice.get("vol", 0.0) or 0.0)
-        freq = float(voice.get("freq", SOUND_PITCH_CENTER) or SOUND_PITCH_CENTER)
-        tilt = max(-1.0, min(1.0, math.log2(freq / SOUND_PITCH_CENTER)))
-        x = (vol, vol * tilt)
+        freq = float(voice.get("freq", SOUND_PITCH_LOW) or SOUND_PITCH_LOW)
+        index = pitch_bin(freq)
         own = float(heard.get("heard", 0.0) or 0.0) - float(heard.get("room_heard", 0.0) or 0.0)
-        pred = self.pitch_w[0] * x[0] + self.pitch_w[1] * x[1]
+        pred = self.predict_pitch(freq, vol)
         err = own - pred
-        step = SOUND_MU * err / (SOUND_EPS + x[0] * x[0] + x[1] * x[1])
-        self.pitch_w[0] += step * x[0]
-        self.pitch_w[1] += step * x[1]
+
+        size = max(abs(own), abs(pred), 1e-6)
+        error_fraction = min(1.0, abs(err) / size)
+        if self.echo_scale is None:
+            self.echo_scale = size
+        feel = _feel(size / max(self.echo_scale, 1e-6), error_fraction)
+        self.echo_scale += FEEL_SCALE_ALPHA * (size - self.echo_scale)
+
+        if vol > 0.0:
+            # The first tones in a band set its gain outright; after that it
+            # follows slowly, so one odd tone does not rewrite it.
+            rate = max(SOUND_MU, 1.0 / (self.pitch_n[index] + 1))
+            self.pitch_gain[index] += rate * (own / vol - self.pitch_gain[index])
+        self.pitch_n[index] += 1
+        self.pitch_err[index] += SOUND_BIN_ERR_ALPHA * (error_fraction - self.pitch_err[index])
 
         self.pitch_voiced += 1
         self.pitch_err_ema += SOUND_SKILL_ALPHA * (abs(err) - self.pitch_err_ema)
         self.pitch_null_ema += SOUND_SKILL_ALPHA * (abs(own) - self.pitch_null_ema)
 
-        self.last = {"voiced": True, "excess": round(own, 1),
-                     "pred": round(pred, 1), "err": round(err, 1)}
+        self.last = {"voiced": True, "excess": round(own, 1), "pred": round(pred, 1),
+                     "err": round(err, 1), "feel": round(feel, 4)}
         self.last_voiced = dict(self.last, freq=freq, vol=vol, mode="pitch")
         return self.last
 
@@ -273,10 +347,15 @@ class SoundModel:
 
     def snapshot(self):
         pitch = self.pitch_voiced > 0
+        known = [g for g, n in zip(self.pitch_gain, self.pitch_n) if n]
         return {
             "mode": "pitch" if pitch else "peak",
-            "gain": round(self.pitch_w[0] if pitch else self.gain, 1),
-            "tilt": round(self.pitch_w[1], 1) if pitch else None,
+            "gain": round(sum(known) / len(known) if pitch and known else self.gain, 1),
+            "bins": [
+                {"hz": round(pitch_bin_center(i)), "gain": round(self.pitch_gain[i], 1),
+                 "n": self.pitch_n[i], "err": round(self.pitch_err[i], 3)}
+                for i in range(SOUND_PITCH_BINS)
+            ] if pitch else None,
             "ambient": round(self.ambient, 1) if self.ambient is not None else None,
             "explained": round(self.explained(), 4),
             "voiced": self.pitch_voiced if pitch else self.voiced,
@@ -289,8 +368,10 @@ class SoundModel:
             "gain": self.gain, "ambient": self.ambient,
             "quiet_excess": self.quiet_excess, "err_ema": self.err_ema,
             "null_ema": self.null_ema, "voiced": self.voiced,
-            "pitch_w": self.pitch_w, "pitch_err_ema": self.pitch_err_ema,
+            "pitch_gain": self.pitch_gain, "pitch_n": self.pitch_n,
+            "pitch_err": self.pitch_err, "pitch_err_ema": self.pitch_err_ema,
             "pitch_null_ema": self.pitch_null_ema, "pitch_voiced": self.pitch_voiced,
+            "echo_scale": self.echo_scale,
         }
 
     def load_dict(self, data):
@@ -301,12 +382,18 @@ class SoundModel:
         self.err_ema = float(data.get("err_ema", 0.0))
         self.null_ema = float(data.get("null_ema", 0.0))
         self.voiced = int(data.get("voiced", 0))
-        pitch_w = [float(x) for x in data.get("pitch_w", [])]
-        if len(pitch_w) == 2:
-            self.pitch_w = pitch_w
-        self.pitch_err_ema = float(data.get("pitch_err_ema", 0.0))
-        self.pitch_null_ema = float(data.get("pitch_null_ema", 0.0))
-        self.pitch_voiced = int(data.get("pitch_voiced", 0))
+        # A v06.8 file holds the earlier two-weight pitch fit ("pitch_w") and no
+        # bands. There is nothing to carry over: the bands start fresh.
+        gains = [float(x) for x in data.get("pitch_gain", [])]
+        counts = [int(x) for x in data.get("pitch_n", [])]
+        errors = [float(x) for x in data.get("pitch_err", [])]
+        if len(gains) == len(counts) == len(errors) == SOUND_PITCH_BINS:
+            self.pitch_gain, self.pitch_n, self.pitch_err = gains, counts, errors
+            self.pitch_err_ema = float(data.get("pitch_err_ema", 0.0))
+            self.pitch_null_ema = float(data.get("pitch_null_ema", 0.0))
+            self.pitch_voiced = int(data.get("pitch_voiced", 0))
+            scale = data.get("echo_scale")
+            self.echo_scale = float(scale) if scale is not None else None
 
 
 class ForwardModel:
@@ -317,6 +404,7 @@ class ForwardModel:
         self.light = LightModel()
         self.sound = SoundModel()
         self.ticks = 0
+        self._unheard = None   # the last tone sent whose report has not arrived
 
     def step(self, action, returned):
         """Compare one emitted action with what came back while it was on the
@@ -325,16 +413,36 @@ class ForwardModel:
         action:   {"rgbw": frame_rgbw(...) or None, "voice": {...} or None}
         returned: {"lux": ..., "rms_mean": ..., "rms_max": ..., "vox": ...}, any
                   may be None. "vox" is the body's own report of a tone.
+
+        Returns this tick's light and sound numbers, plus `feel`: how strongly
+        each loop was just felt, 0 to 1, for the two loop cells.
         """
         self.ticks += 1
         action = action or {}
         returned = returned or {}
+        voice = action.get("voice")
+        vox = returned.get("vox")
+
+        # A report can land just after its window closes (a long tone over
+        # WiFi). It still belongs to the tone before it: match it by pitch.
+        late = None
+        if vox and not voice and self._unheard is not None:
+            if abs(float(vox.get("freq", 0.0) or 0.0) - self._unheard["freq"]) < 1.0:
+                late = self._unheard
+        self._unheard = voice if (voice and not vox) else None
+
+        light = self.light.step(action.get("rgbw"), returned.get("lux"))
+        sound = self.sound.step(
+            late or voice, returned.get("rms_mean"), returned.get("rms_max"),
+            vox if (voice or late) else None,
+        )
         return {
-            "light": self.light.step(action.get("rgbw"), returned.get("lux")),
-            "sound": self.sound.step(
-                action.get("voice"), returned.get("rms_mean"), returned.get("rms_max"),
-                returned.get("vox"),
-            ),
+            "light": light,
+            "sound": sound,
+            "feel": {
+                "voice": (sound or {}).get("feel", 0.0),
+                "light": (light or {}).get("feel", 0.0),
+            },
         }
 
     def snapshot(self):

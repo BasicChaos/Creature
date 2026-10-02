@@ -1,6 +1,6 @@
 Creature Project Design Document
 
-Version: v06.8, October 2 2026
+Version: v06.9, October 2 2026
 Status: current. This document matches the running code in Code/. It supersedes the
 v05.4.1 edition, which described the 111-cell field, and the earlier editions that
 described the 3-cell arousal/fatigue/tonic network and the 11-cell ring. Those were
@@ -122,7 +122,7 @@ The ESP is the body. The Pi is the mind. The VPS is an observation surface only.
 
 ## The cell field: a ring of twelve
 
-File: `Code/Python/mind/cell_field_v06.py`. Version string `v06.8-predictive`. The
+File: `Code/Python/mind/cell_field_v06.py`. Version string `v06.9-predictive`. The
 field steps once per second. Every constant assumes that 1 Hz tick.
 
 The outer ring is twelve cells: six sense and emitter anchors alternating with six
@@ -304,6 +304,27 @@ and synthesizes the voice. It proved the map reads the field correctly. It also
 showed the field going quiet, which is the problem the loop and the reservoir exist
 to answer.
 
+When the voice speaks changed in v06.9. The old rule voiced a tone whenever arousal
+was at or above 0.45. On the twelve-cell body that is true about half the time, so
+with a 20-second minimum between tones the voice ran as a metronome: over 1.8 hours
+on 2 October 2026 the live Creature sent 242 tones, 192 of them exactly at the
+minimum spacing. It was the same kind of stale fixed threshold as the sleep and
+event ones.
+
+The voice now speaks when three things hold: arousal stands at least 0.20 above its
+own usual level (a running median), something surprised the field in the last few
+ticks, and arousal has come back down since it last spoke, so one rise gets one
+tone. It never speaks while the field sleeps or in the 30 ticks after waking. The
+pitch and length of the tone come from balance and tempo as before. On 260,000
+ticks of the Creature's recorded senses that is about 20 tones an hour against 109,
+with 1% of them at the minimum spacing against 67%. In a still room it is silent.
+`CREATURE_VOICE_MARGIN` sets the 0.20; 0.30 gives about 13 an hour.
+`CREATURE_VOICE_MODEL=fixed` brings the old rule back for control runs.
+
+One consequence for the autobiography: its fourth dimension records whether the
+body would voice a tone, so from v06.9 that bit is set far less often than in the
+graph built so far.
+
 ## Expression as memory
 
 File: `Code/Python/mind/expression_memory_v06.py`. This is the v06.5/v06.6 layer.
@@ -361,7 +382,8 @@ unpredictable. Random bursts keep surprise alive.
 
 Files: `Code/Python/mind/forward_model_v06.py`, the loop block in the collector,
 and `Code/Python/tools/loop_probe.py`. This is the v06.7 layer, with the body's
-own hearing added in v06.8. Passive: none of it changes the field or the body.
+own hearing added in v06.8. On its own it is passive: it watches, predicts and
+learns. What it learns reaches the field in the next section.
 
 The loop above only matters if the Creature can tell its own output from the room.
 Three pieces make that measurable.
@@ -395,13 +417,77 @@ now reads the mic between writes to the amp and measures the stretch that is
 certain to be inside the tone at the tone's own pitch, then sends one `vox` line
 with that level and the room's level at the same pitch just before. The Creature
 knows what pitch it played, so it can listen for exactly that and ignore the rest
-of the room. The forward model's sound half uses the report when there is one: a
-gain, and how that gain tilts with pitch, since a small speaker is not equally loud
-across its range. Without the report it falls back to how far the mic's peak rises
-after a tone, which a noisy room swamps.
+of the room. The forward model's sound half uses the report when there is one. It
+keeps one gain for each of eight bands of pitch across the voice's octave, because
+the real speaker is far from even: measured on 2 October 2026 it peaks near 330 and
+400 Hz, dips between them, and is weak below 300. Without the report it falls back
+to how far the mic's peak rises after a tone, which a noisy room swamps.
 
-It is behind `CREATURE_LOOP` (default on). Feeding the error back into the ring is
-the next increment, and gets its own control-versus-variant run first.
+It is behind `CREATURE_LOOP` (default on).
+
+## The loop reaches the field
+
+v06.9. Until here the forward model only watched. Now what it finds is felt.
+
+Each tick the model also returns a `feel` value for each loop, 0 to 1: how strongly
+the Creature just sensed its own output come back, weighted by how wrong it was
+about it. A sensed echo always registers a little, 30% of its strength. The rest is
+the share of it that was not predicted. The collector hands the two values to
+`field.step(senses, loop=...)`, and they press on the two loop cells the ring was
+drawn around: the voice on Speaker x Sound, the light on LED x Light. The pressure
+is on the same scale as a sense at its anchor and starts a ripple the same way, so a
+fully surprising echo lands like a loud sound.
+
+Three things follow from that definition, and each is a check in the `--feel` gate.
+A learned echo is felt faintly and a surprising one strongly: in simulation an
+ordinary tone is felt at about 0.43, and the first tones through a covered speaker
+at about 0.65. It then gets used to being covered, as the gain for that band drops.
+A loop that does not physically exist is not felt at all: the light value is scaled
+by how well the model has shown it can predict its own light, so the small random
+weights a blind sensor leaves behind do not trickle into the cell. And it does not
+run away: in the gate's run mean arousal is about 11% above the control, it voices no
+more tones than the control, and it spends no more time at full arousal.
+
+On the real body today the light loop is open, so only the voice is felt. The light
+side is ready for the sensor to move: once the model can predict its own light, the
+light sense is given the room alone (lux minus what the model credits to the strip)
+and the strip's own light is felt at the loop cell instead.
+
+It is behind `CREATURE_LOOP_FEEL` (default on). `LOOP_FEEL_GAIN = 0` in the field is
+the control.
+
+## Curiosity
+
+File: `Code/Python/mind/curiosity_v06.py`. v06.9. This is the curiosity drive from
+the dark-room probe, on the real body. There the probe was a number added to the
+senses. Here it is something the Creature does, and what comes back is predicted by
+the forward model and felt through the loop cells like any other echo.
+
+Boredom is measured in the field's own terms: the number of ticks since its last
+significant event. It is zero for the first 120, full after another 300, and back to
+zero the moment anything surprises it, its own echo included.
+
+Two probes. The light probe is a lift in white on every pixel, sized by boredom:
+mostly faint, with an occasional larger burst so the predictive field cannot settle
+into it. The voice probe is a short tone, kept rare: in a room where nothing else
+happens it comes to roughly six probe tones an hour, never within 120 ticks of the
+last tone. Its pitch comes from the band of its range it has tried least, or the one
+it has recently been most wrong about, so it explores its voice instead of repeating
+one note. The drive only proposes. Nothing goes out while the field sleeps, and no
+tone goes out while the speaker is muted.
+
+In simulation, alone in a still dark room (`--curious`): with no loop and no probes
+nothing surprises it. With both, it tries all eight bands of its voice, comes to
+explain about 70% of what it hears of itself, and each probe tone is felt. With a sensor that can see the strip it is livelier still, mean arousal about
+0.30 against 0.10, and never pinned; hide the strip and the feeling fades within
+fifteen minutes as the model stops crediting itself with the light.
+
+An honest limit: on today's body the light probe comes back as nothing, because the
+sensor cannot see the strip. It confirms that every time, and that is all it does
+until the sensor moves. So the live effect of curiosity today is the voice probe.
+
+It is behind `CREATURE_PROBE` (default on). `CREATURE_PROBE_VOICE=0` keeps the light
+probe and drops the tone.
 
 ## The stance on going quiet
 
@@ -457,6 +543,9 @@ machine and the runs reproduce exactly. Every gate uses a fixed seed.
 | dark-room | self-generated, bounded, learned activity | `--darkroom` | 5/5 |
 | forward | learns its own light and voice, leaves the room to the room | `--forward` | 7/7 |
 | events | surprise rule against the old pressure rule; `--replay` runs both on recorded senses | `--events` | 6/6 |
+| feel | the loop is felt: faintly when predicted, strongly when not, not at all with no loop | `--feel` | 7/7 |
+| curious | bored in a still dark room, it probes, explores its voice, and learns it | `--curious` | 9/9 |
+| voice | the fixed threshold is a metronome; the relative rule speaks rarely, when surprised; `--replay` too | `--voice` | 6/6 |
 
 The ring, reservoir and readout rows were measured before the predictive cell became
 the default. Under today's defaults they read 4/7, 3/4 and 1/2 (the ring row's own
@@ -508,7 +597,8 @@ Creature/
       mind/cell_field_v06.py          the ring, reservoir, predictive cell, readout
       mind/expression_v06.py          the decoder (field -> PIX/VOX)
       mind/expression_memory_v06.py   the autobiography layer
-      mind/forward_model_v06.py       predicts its own light and voice (passive)
+      mind/forward_model_v06.py       predicts its own light and voice
+      mind/curiosity_v06.py           probes when nothing has surprised it for a while
       mind/normalize.py               rolling 0..1 normalization
       mind/cell_field.py              the retired 111-cell field, kept for reference
       dashboard/                      server.py, index.html, static export, sync

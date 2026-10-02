@@ -113,8 +113,14 @@ same on purpose so the field can change without rewriting hardware.
   field's own running baseline, so sleep replays moments that stood out instead
   of its own background. The body listens while it speaks and reports what it
   heard at the pitch it played.
+- v06.9: the loop reaches the field. How strongly the Creature just sensed its own
+  voice or light, weighted by how wrong it was about it, presses on the two loop
+  cells. When nothing has surprised it for a while it probes, with a lift in the
+  strip's white and, rarely, a short tone at a pitch it knows least. The voice no
+  longer runs as a metronome: it speaks when arousal stands clear of its own usual
+  level just after something surprised it.
 
-The current running version string is `v06.8-predictive`.
+The current running version string is `v06.9-predictive`.
 
 ## Status
 

@@ -42,11 +42,20 @@ if str(PROJECT_PYTHON_ROOT) not in sys.path:
 from mind import cell_field_v06 as cf
 from mind.expression_v06 import (
     ExpressionDecoderV06,
+    lift_white,
     voice_command_from_signal,
     voice_params_from_signal,
 )
-# The forward model also lives in the runtime module, for the same reason.
-from mind.forward_model_v06 import ForwardModel, frame_rgbw
+# The forward model and the curiosity drive also live in the runtime modules,
+# for the same reason.
+from mind.forward_model_v06 import (
+    ForwardModel,
+    frame_rgbw,
+    pitch_bin,
+    pitch_bin_center,
+    SOUND_PITCH_BINS,
+)
+from mind.curiosity_v06 import Curiosity
 # Expression-memory primitives live in the runtime module; field_lab imports them
 # so the offline gates and the live collector share one source of truth.
 from mind.expression_memory_v06 import (
@@ -1194,8 +1203,33 @@ def darkroom_probe(args):
 FORWARD_COUPLING = (20.0, 35.0, 10.0, 60.0)   # lux at the sensor per RGBW channel at full
 FORWARD_ECHO = 120000.0                       # mic rms above the room per unit tone volume
 FORWARD_VOICE_GAP = 20                        # ticks between tones, as in the collector
-FORWARD_PITCH_ECHO = 40000.0                  # mic level at the tone's own pitch, per unit volume
-FORWARD_PITCH_TILT = 24000.0                  # how much louder an octave up comes back
+FORWARD_PITCH_ECHO = 15000.0                  # mic level at the tone's own pitch, per unit volume
+# How loud the speaker is across its range, shaped like the real one measured on
+# 2 October 2026: weak at the bottom, peaks near 330 and 400 Hz, a dip between.
+FORWARD_VOICE_RESPONSE = [(220.0, 0.15), (250.0, 0.20), (290.0, 0.25), (325.0, 1.00),
+                          (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00)]
+
+
+def _voice_response(freq):
+    """The simulated speaker's loudness at a pitch, relative to its usual echo."""
+    points = FORWARD_VOICE_RESPONSE
+    if freq <= points[0][0]:
+        return points[0][1]
+    for (f0, r0), (f1, r1) in zip(points, points[1:]):
+        if freq <= f1:
+            return r0 + (r1 - r0) * (freq - f0) / (f1 - f0)
+    return points[-1][1]
+
+
+def _heard(voice, room, burst=0.0, muffle=1.0):
+    """What the v06.8 body would report for a tone in the simulated room."""
+    # Room noise is spread over every pitch, so only a sliver of a burst lands
+    # on the one the creature is listening for.
+    room_heard = 150.0 + 100.0 * room.random() + 0.004 * burst * room.random()
+    own = (FORWARD_PITCH_ECHO * _voice_response(voice["freq"]) * voice["vol"]
+           * (0.85 + 0.3 * room.random()) * muffle)
+    return {"freq": voice["freq"], "heard": own + room_heard * (0.5 + room.random()),
+            "room_heard": room_heard}
 
 
 def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None, noisy=False, ear=False):
@@ -1217,6 +1251,7 @@ def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None, noisy=False, e
     switch_err = []
     plain_err = []
     full = []
+    voice_miss = []   # per tone: how far off the prediction was, as a share of the echo
 
     for t, values in enumerate(scenario_inputs("day", ticks, rng)):
         state = field.step(values)
@@ -1251,13 +1286,7 @@ def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None, noisy=False, e
             wobble = 0.85 + 0.3 * room.random()
             rms_max += FORWARD_ECHO * voice["vol"] * wobble
             if ear:
-                # Room noise is spread over every pitch, so only a sliver of a
-                # burst lands on the one the creature is listening for.
-                tilt = math.log2(voice["freq"] / 311.0)
-                room_heard = 150.0 + 0.004 * burst * room.random()
-                own = (FORWARD_PITCH_ECHO + FORWARD_PITCH_TILT * tilt) * voice["vol"] * wobble
-                vox = {"heard": own + room_heard * (0.5 + room.random()),
-                       "room_heard": room_heard}
+                vox = _heard(voice, room, burst)
 
         result = model.step(
             {"rgbw": u, "voice": voice},
@@ -1266,9 +1295,14 @@ def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None, noisy=False, e
         if result["light"]:
             (switch_err if switched else plain_err).append(abs(result["light"]["err"]))
         full.append(model.light.lux_at_full())
+        sound = result["sound"]
+        if sound and sound.get("voiced"):
+            size = max(abs(sound["excess"]), abs(sound["pred"]), 1e-6)
+            voice_miss.append(min(1.0, abs(sound["err"]) / size))
 
     return {
         "model": model,
+        "voice_miss": voice_miss,
         "full": full,
         "switch_err": statistics.mean(switch_err) if switch_err else 0.0,
         "plain_err": statistics.mean(plain_err) if plain_err else 0.0,
@@ -1307,8 +1341,11 @@ def forward_probe(args):
           f"{sound.voiced} tones")
     by_peak, by_pitch = loud["model"].sound, loud_ear["model"].sound
     print(f"  noisy room, listening for loudness: explained {by_peak.explained():.3f}")
+    late = loud_ear["voice_miss"][len(loud_ear["voice_miss"]) * 2 // 3:]
+    late_miss = statistics.mean(late) if late else 1.0
+    bands = sum(1 for n in by_pitch.pitch_n if n)
     print(f"  noisy room, listening at its own pitch: explained {by_pitch.explained():.3f}, "
-          f"gain {by_pitch.pitch_w[0]:.0f}, tilt {by_pitch.pitch_w[1]:.0f}")
+          f"{bands} bands of its voice tried, late tones off by {late_miss * 100:.0f}%")
     print(f"  lamp: error on a switch tick {lamp['switch_err']:.1f} lux, "
           f"on an ordinary tick {lamp['plain_err']:.2f} lux")
     at_start = hand["full"][cover[0] - 1]
@@ -1352,9 +1389,9 @@ def forward_probe(args):
 
     check("listening at its own pitch tells its voice from a noisy room",
           by_pitch.explained() > 0.5 and by_pitch.explained() > by_peak.explained() + 0.2
-          and abs(by_pitch.pitch_w[0] - FORWARD_PITCH_ECHO) < 0.2 * FORWARD_PITCH_ECHO,
+          and late_miss < 0.3,
           f"explained {by_pitch.explained():.3f} at its pitch vs {by_peak.explained():.3f} "
-          f"by loudness; gain {by_pitch.pitch_w[0]:.0f} vs {FORWARD_PITCH_ECHO:.0f}")
+          f"by loudness; late tones predicted to within {late_miss * 100:.0f}%")
 
     ok = all(checks)
     print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
@@ -1362,6 +1399,471 @@ def forward_probe(args):
           "  model separates its own light and voice from the room. Sim rehearsal:\n"
           "  the real coupling is whatever tools/loop_probe.py measures on the\n"
           "  body. Passive. Nothing here feeds the field yet.")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# The loop reaches the field, and curiosity (v06.9)
+# ---------------------------------------------------------------------------
+#
+# Until here the forward model only watched. Now what it reports is felt: the
+# two loop cells get how strongly the creature just sensed its own voice or
+# light, weighted by how wrong it was. And when nothing has surprised it for a
+# while it probes, with a lift in the strip's white and, rarely, a short tone.
+#
+# _run_body steps the field, the decoder, the forward model and the curiosity
+# drive in the same order the collector does, against a simulated room. Control
+# and variant differ only in whether the loop is felt and whether it may probe.
+
+def _run_body(seed, ticks, inputs, coupling, feel=True, probes=True, muffle=None, cover=None,
+              daylight=False):
+    """One life on a simulated body. `inputs` yields the room's senses, `coupling`
+    is how much of each strip channel reaches the light sensor. `muffle` and
+    `cover` are (start, end) tick ranges where the speaker is covered or the
+    strip is hidden from the sensor. `daylight` gives the room the same smooth
+    sun as the forward gate; without it the room is dark. Returns per-tick
+    tracks and the models."""
+    saved_gain = cf.LOOP_FEEL_GAIN
+    if not feel:
+        cf.LOOP_FEEL_GAIN = 0.0
+    random.seed(seed)
+    room = random.Random(seed + 2)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06()
+    model = ForwardModel()
+    curiosity = Curiosity(seed + 3) if probes else None
+
+    last_voice = -FORWARD_VOICE_GAP
+    action = None
+    returned = None
+    out = {"arousal": [], "c1": [], "c7": [], "events": [], "tones": [], "feel_light": [],
+           "probe_light": [], "hidden": [], "full_light": []}
+
+    for t, values in enumerate(inputs):
+        result = model.step(action, returned) if action is not None else None
+        state = field.step(values, loop=(result or {}).get("feel"))
+
+        probe = None
+        asleep = state["metabolism"]["mode"] == "sleep"
+        if curiosity is not None:
+            probe = curiosity.step(state["metabolism"]["ticks_since_event"], model.sound)
+            if asleep:
+                probe = None
+
+        signal = decoder.read(state)
+        pixels = signal["pixels"]
+        if probe and probe["light"]:
+            pixels = lift_white(pixels, probe["light"], 200)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        voice = voice_params_from_signal(signal, speaker)
+        probe_tone = False
+        previous_voice = last_voice
+        if voice and t - last_voice < FORWARD_VOICE_GAP:
+            voice = None
+        elif not voice and probe and probe["voice"] and t - last_voice >= FORWARD_VOICE_GAP:
+            voice = dict(probe["voice"])
+            probe_tone = True
+        if voice:
+            last_voice = t
+            if curiosity is not None:
+                curiosity.note_voice()
+
+        u = frame_rgbw(pixels)
+        covered = bool(cover and cover[0] <= t < cover[1])
+        muffled = bool(muffle and muffle[0] <= t < muffle[1])
+        own_light = 0.0 if covered else sum(coupling[i] * u[i] for i in range(4))
+        sun = max(0.0, math.sin((t % 7200) / 7200 * 2 * math.pi)) if daylight else 0.0
+        lux = 20.0 * daylight + 600.0 * sun + own_light + room.gauss(0.0, 0.5)
+        rms_mean = 4000.0 + 800.0 * room.random()
+        returned = {"lux": lux, "rms_mean": rms_mean, "rms_max": rms_mean + 1500.0 * room.random(),
+                    "vox": _heard(voice, room, muffle=0.1 if muffled else 1.0) if voice else None}
+        action = {"rgbw": u, "voice": voice}
+
+        out["arousal"].append(float(signal.get("A", 0.0) or 0.0))
+        out["c1"].append(field.cells[1].activation)
+        out["c7"].append(field.cells[7].activation)
+        out["events"].append(bool(field.last_events))
+        if result is not None and result["sound"] and result["sound"].get("voiced"):
+            sound = result["sound"]
+            size = max(abs(sound["excess"]), abs(sound["pred"]), 1e-6)
+            out["tones"][-1].update(feel=sound.get("feel", 0.0),
+                                    miss=min(1.0, abs(sound["err"]) / size))
+        if voice:
+            out["tones"].append({"tick": t, "freq": voice["freq"], "probe": probe_tone,
+                                 "muffled": muffled, "feel": None, "miss": None,
+                                 "since": t - previous_voice})
+        out["feel_light"].append((result or {}).get("feel", {}).get("light", 0.0))
+        out["probe_light"].append(probe["light"] if probe else 0.0)
+        out["hidden"].append(covered)
+        out["full_light"].append(model.light.lux_at_full())
+
+    cf.LOOP_FEEL_GAIN = saved_gain
+    out["model"] = model
+    out["ring"] = ring_metrics(field)
+    out["curiosity"] = curiosity
+    return out
+
+
+def _rise_after_tones(track, tones, span=3):
+    """How much a per-tick track rises over the few ticks after each tone is
+    heard, against the few ticks before it was sent."""
+    rises = []
+    for tone in tones:
+        t = tone["tick"]
+        before = track[max(0, t - span):t]
+        after = track[t + 1:t + 1 + span]
+        if before and after:
+            rises.append(statistics.mean(after) - statistics.mean(before))
+    return statistics.mean(rises) if rises else 0.0
+
+
+def feel_probe(args):
+    """The step-6 gate: the loop is felt. A learned echo presses on its loop
+    cell faintly, a surprising one strongly, a loop that does not physically
+    exist is not felt at all, and none of it runs away."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    muffle = (int(ticks * 0.6), int(ticks * 0.7))
+
+    def life():
+        return scenario_inputs("day", ticks, random.Random(args.seed + 1))
+
+    control = _run_body(args.seed, ticks, life(), FORWARD_COUPLING, feel=False, probes=False,
+                        muffle=muffle, daylight=True)
+    variant = _run_body(args.seed, ticks, life(), FORWARD_COUPLING, feel=True, probes=False,
+                        muffle=muffle, daylight=True)
+    blind = _run_body(args.seed, ticks, life(), (0.0, 0.0, 0.0, 0.0), feel=True, probes=False,
+                      daylight=True)
+    blind_control = _run_body(args.seed, ticks, life(), (0.0, 0.0, 0.0, 0.0), feel=False,
+                              probes=False, daylight=True)
+
+    def tones(run_, muffled, settled=True):
+        return [x for x in run_["tones"] if x["feel"] is not None and x["muffled"] == muffled
+                and (not settled or x["tick"] > ticks * 0.25)]
+
+    plain = tones(variant, False)
+    # The first tones after the cover goes on, before it has got used to it.
+    covered = tones(variant, True)[:5]
+    feel_plain = statistics.mean(x["feel"] for x in plain) if plain else 0.0
+    feel_covered = statistics.mean(x["feel"] for x in covered) if covered else 0.0
+    c1_variant = _rise_after_tones(variant["c1"], plain)
+    c1_control = _rise_after_tones(control["c1"], tones(control, False))
+
+    def saturated(run_):
+        tail = run_["arousal"][ticks // 2:]
+        return sum(1 for a in tail if a > 0.99) / len(tail)
+    half = ticks // 2
+    c7_blind = statistics.mean(blind["c7"][half:])
+    c7_blind_control = statistics.mean(blind_control["c7"][half:])
+    light_feel_blind = statistics.mean(blind["feel_light"][half:])
+    light_feel_seen = statistics.mean(variant["feel_light"][half:])
+
+    print(f"field {cf.FIELD_VERSION} | THE LOOP IS FELT | seed={args.seed} | ticks={ticks}")
+    print(f"\n  voice: {len(plain)} tones heard normally, felt {feel_plain:.3f} on average; "
+          f"the first {len(covered)} with the speaker covered, felt {feel_covered:.3f}")
+    print(f"  speaker x sound cell, rise after a tone: {c1_variant:+.4f} (loop felt) vs "
+          f"{c1_control:+.4f} (control)")
+    print(f"  light: felt {light_feel_seen:.4f} per tick when the sensor sees the strip, "
+          f"{light_feel_blind:.4f} when the sensor is blind")
+    print(f"  led x light cell, blind sensor: {c7_blind:.4f} (loop felt) vs "
+          f"{c7_blind_control:.4f} (control)")
+    mean_variant = statistics.mean(variant["arousal"][half:])
+    mean_control = statistics.mean(control["arousal"][half:])
+    print(f"  tones: {len(variant['tones'])} (loop felt) vs {len(control['tones'])} (control); "
+          f"mean arousal {mean_variant:.3f} vs {mean_control:.3f}; "
+          f"at full arousal {saturated(variant) * 100:.1f}% vs {saturated(control) * 100:.1f}% of ticks")
+    print(f"  differentiation: {variant['ring']['differentiation']:.4f} vs "
+          f"{control['ring']['differentiation']:.4f}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("a learned echo is felt, faintly",
+          0.05 < feel_plain < 0.6,
+          f"felt {feel_plain:.3f} of 1 on {len(plain)} ordinary tones")
+    check("a covered speaker is felt strongly",
+          len(covered) >= 3 and feel_covered > 1.5 * feel_plain,
+          f"felt {feel_covered:.3f} on the first {len(covered)} muffled tones vs {feel_plain:.3f}")
+    # The cell rises after a tone in the control too, since the voice speaks
+    # just after a surprise. What is tested is what the felt echo adds to that.
+    check("the loop cell answers its own voice",
+          c1_variant > c1_control + 0.02,
+          f"speaker x sound cell rises {c1_variant:+.4f} after a tone vs "
+          f"{c1_control:+.4f} in control")
+    check("a strip the sensor can see is felt",
+          light_feel_seen > 0.05,
+          f"felt {light_feel_seen:.3f} per tick seeing its own light")
+    check("no loop, nothing felt",
+          light_feel_blind < 0.02 and abs(c7_blind - c7_blind_control) <= 0.15 * max(c7_blind_control, 1e-6),
+          f"blind sensor: light felt {light_feel_blind:.4f}, led x light cell "
+          f"{c7_blind:.4f} vs {c7_blind_control:.4f} in control")
+    check("it does not run away",
+          mean_variant <= 1.25 * mean_control
+          and saturated(variant) <= saturated(control) + 0.05
+          and len(variant["tones"]) <= 1.5 * max(1, len(control["tones"])),
+          f"mean arousal {mean_variant:.3f} vs {mean_control:.3f}, at full arousal "
+          f"{saturated(variant) * 100:.1f}% vs {saturated(control) * 100:.1f}% of ticks, "
+          f"{len(variant['tones'])} tones vs {len(control['tones'])}")
+    check("structure holds",
+          variant["ring"]["differentiation"] >= 0.7 * control["ring"]["differentiation"],
+          f"differentiation {variant['ring']['differentiation']:.4f} vs "
+          f"{control['ring']['differentiation']:.4f} in control")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
+def curious_probe(args):
+    """The step-7 gate: alone in a still dark room, the creature that may probe
+    keeps finding out about itself, at a pace it sets, without running away."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    blind_eye = (0.0, 0.0, 0.0, 0.0)
+
+    def still():
+        return _still_night(ticks)
+
+    hide = (int(ticks * 0.75), int(ticks * 0.75) + 900)
+    control = _run_body(args.seed, ticks, still(), blind_eye, feel=False, probes=False)
+    variant = _run_body(args.seed, ticks, still(), blind_eye, feel=True, probes=True)
+    seeing = _run_body(args.seed, ticks, still(), FORWARD_COUPLING, feel=True, probes=True,
+                       cover=hide)
+
+    half = ticks // 2
+    hours = ticks / 3600.0
+
+    def rate(run_):
+        return sum(run_["events"][half:]) / (ticks - half)
+
+    probes = [x for x in variant["tones"] if x["probe"]]
+    heard = [x for x in variant["tones"] if x["miss"] is not None]
+    third = max(1, len(heard) // 3)
+    early = statistics.mean(x["miss"] for x in heard[:8]) if heard else 1.0
+    late = statistics.mean(x["miss"] for x in heard[-third:]) if heard else 1.0
+    probe_gap = min((x["since"] for x in probes), default=0)
+    late_tones = [x for x in variant["tones"] if x["tick"] >= half]
+    control_late_tones = [x for x in control["tones"] if x["tick"] >= half]
+    bands = len({pitch_bin(x["freq"]) for x in variant["tones"]})
+    truth = sum(FORWARD_COUPLING)
+    blind_lux = variant["model"].light.lux_at_full()
+    # What the seeing creature learned before its strip was hidden.
+    seeing_lux = statistics.mean(seeing["full_light"][hide[0] - 300:hide[0]])
+
+    # The seeing creature feels its own light all the time. Hide the strip and
+    # that should fade as the model stops crediting itself with it.
+    felt_before = statistics.mean(seeing["feel_light"][hide[0] - 300:hide[0]])
+    felt_hidden = statistics.mean(seeing["feel_light"][hide[1] - 300:hide[1]])
+    seeing_tail = seeing["arousal"][half:hide[0]]
+    seeing_pinned = sum(1 for a in seeing_tail if a > 0.99) / len(seeing_tail)
+    probe_feel = statistics.mean(x["feel"] for x in probes if x["feel"] is not None) if probes else 0.0
+    variant_events = sum(variant["events"][half:])
+
+    print(f"field {cf.FIELD_VERSION} | CURIOSITY | seed={args.seed} | ticks={ticks} "
+          f"(a still dark room)")
+    print("\n                      events/tick   mean arousal   peak   tones per hour")
+    for name, run_ in (("no loop, no probes        ", control),
+                       ("loop felt + probes        ", variant),
+                       ("the same, sensor sees strip", seeing)):
+        tail_tones = [x for x in run_["tones"] if x["tick"] >= half]
+        print(f"    {name}  {rate(run_) * 100:7.2f}%      {statistics.mean(run_['arousal'][half:]):.3f}"
+              f"        {max(run_['arousal'][half:]):.3f}     {len(tail_tones) / (hours / 2):5.1f}")
+    print(f"\n  probe tones: {len(probes)}, across {bands} of {SOUND_PITCH_BINS} bands of its voice, "
+          f"never sooner than {probe_gap} ticks after the tone before")
+    print(f"  how far off it was about its own voice: {early * 100:.0f}% on its first tones, "
+          f"{late * 100:.0f}% on its last")
+    print(f"  light it credits to itself at full: {blind_lux:.1f} lux with a blind sensor, "
+          f"{seeing_lux:.1f} with one that sees the strip (room has {truth:.0f})")
+    print(f"  its own light, felt per tick: {felt_before:.3f} while the sensor sees the strip, "
+          f"{felt_hidden:.3f} after 15 minutes with it hidden")
+    print(f"  seeing its own light: mean arousal {statistics.mean(seeing_tail):.3f}, "
+          f"at full arousal {seeing_pinned * 100:.1f}% of ticks")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("alone and unprobed, nothing surprises it",
+          rate(control) < 0.002,
+          f"once settled: events on {rate(control) * 100:.2f}% of ticks "
+          f"(it still voices {len(control_late_tones)} tones of its own)")
+    check("bored, it probes, and feels the answer",
+          len(probes) >= 5 and probe_feel > 0.1 and variant_events >= 5
+          and variant_events > sum(control["events"][half:]),
+          f"{len(probes)} probe tones, felt {probe_feel:.3f} on average, "
+          f"{variant_events} events once settled against {sum(control['events'][half:])}")
+    check("the probing is paced",
+          len(late_tones) / (hours / 2) <= 15.0 and probe_gap >= 120,
+          f"{len(late_tones) / (hours / 2):.1f} tones an hour once settled, no probe sooner "
+          f"than {probe_gap} ticks after the last tone")
+    check("it explores its whole voice",
+          bands >= 6,
+          f"{bands} of {SOUND_PITCH_BINS} bands tried")
+    # Judged against predicting nothing, not against its own first tones: how
+    # wrong those are depends on which pitches it happens to try first.
+    voice_explained = variant["model"].sound.explained()
+    check("it learns its own voice",
+          voice_explained > 0.6 and late < 0.25,
+          f"explains {voice_explained:.3f} of what it hears of itself; off by "
+          f"{early * 100:.0f}% on its first tones, {late * 100:.0f}% on its last")
+    check("it does not run away",
+          max(variant["arousal"][half:]) < 0.99,
+          f"peak arousal {max(variant['arousal'][half:]):.3f}")
+    check("the light probe finds its own light only where there is some",
+          abs(blind_lux) < 0.1 * truth and abs(seeing_lux - truth) < 0.25 * truth,
+          f"{blind_lux:.1f} lux credited with a blind sensor, {seeing_lux:.1f} of {truth:.0f} "
+          f"with a seeing one")
+    check("seeing its own light keeps it lively without pinning it",
+          statistics.mean(seeing_tail) > 1.5 * statistics.mean(variant["arousal"][half:])
+          and seeing_pinned < 0.1,
+          f"mean arousal {statistics.mean(seeing_tail):.3f} against "
+          f"{statistics.mean(variant['arousal'][half:]):.3f} blind, at full arousal "
+          f"{seeing_pinned * 100:.1f}% of ticks")
+    check("when its light stops coming back, the feeling fades",
+          felt_before > 0.05 and felt_hidden < 0.5 * felt_before,
+          f"felt {felt_before:.3f} per tick seeing the strip, {felt_hidden:.3f} after "
+          f"15 minutes with it hidden")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# When the voice speaks (v06.9)
+# ---------------------------------------------------------------------------
+#
+# The fixed rule voices a tone whenever arousal is at or above 0.45. On the
+# twelve-cell body that is true about half the time, so with a 20-second minimum
+# between tones the voice ran as a metronome: over 1.8 hours on 2 October 2026 the
+# live creature sent 242 tones, 192 of them exactly at the minimum spacing.
+#
+# The relative rule speaks when arousal stands clear of its own usual level,
+# something has just surprised the field, and it has come back down since it last
+# spoke. Control (fixed) against variant (relative), same seed, same input. With
+# --replay it runs both on the creature's own recorded senses instead.
+
+def _voice_run(model, inputs, seed, state_path=None):
+    """One life under one voice rule. Tones respect the collector's 20-tick
+    minimum spacing. Returns tone ticks and per-tick arousal and events."""
+    random.seed(seed)
+    field = cf.build_field()
+    if state_path:
+        cf.load_field(field, state_path)
+    decoder = ExpressionDecoderV06(knobs={"VOICE_MODEL": model})
+    tones, arousal, events = [], [], []
+    last = -FORWARD_VOICE_GAP
+    for t, values in enumerate(inputs):
+        state = field.step(values)
+        signal = decoder.read(state)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        arousal.append(max(float(signal.get("A", 0.0) or 0.0), speaker))
+        events.append(bool(field.last_events))
+        if voice_params_from_signal(signal, speaker) and t - last >= FORWARD_VOICE_GAP:
+            tones.append(t)
+            last = t
+    return {"tones": tones, "arousal": arousal, "events": events, "ticks": len(arousal)}
+
+
+def _voice_stats(run_, skip=0):
+    tones = [t for t in run_["tones"] if t >= skip]
+    hours = (run_["ticks"] - skip) / 3600.0
+    gaps = [b - a for a, b in zip(tones, tones[1:])]
+    back = sum(1 for g in gaps if g <= FORWARD_VOICE_GAP + 4) / len(gaps) if gaps else 0.0
+    at_tone = statistics.mean(run_["arousal"][t] for t in tones) if tones else 0.0
+    return {
+        "per_hour": len(tones) / hours if hours else 0.0,
+        "back_to_back": back,
+        "arousal_at_tone": at_tone,
+        "arousal": statistics.mean(run_["arousal"][skip:]),
+        "count": len(tones),
+    }
+
+
+def _voice_line(name, st):
+    return (f"    {name:10s} {st['per_hour']:6.1f} tones an hour | "
+            f"{st['back_to_back'] * 100:3.0f}% at the minimum spacing | arousal "
+            f"{st['arousal_at_tone']:.2f} when it speaks, {st['arousal']:.2f} on average")
+
+
+def voice_probe(args):
+    """The voice gate: the fixed rule is a metronome, the relative rule speaks far
+    less, at moments that stand out, never back to back, not at all in a still
+    room, and still answers a loud regular world."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | WHEN THE VOICE SPEAKS | seed={args.seed}")
+
+    if args.replay:
+        rows = _read_replay(args.replay)
+        print(f"\n  replay of {len(rows)} recorded ticks"
+              + (f", starting from {args.state}" if args.state else ""))
+        for model in ("fixed", "relative"):
+            print(_voice_line(model, _voice_stats(_voice_run(model, rows, args.seed, args.state))))
+        return True
+
+    ticks = args.ticks
+    settle = 600   # past the decoder's warm-up and the field's first minutes
+
+    def run(model, name):
+        if name == "still":
+            inputs = _still_night(ticks)
+        else:
+            inputs = scenario_inputs(name, ticks, random.Random(args.seed + 1))
+        return _voice_run(model, inputs, args.seed)
+
+    stats = {}
+    runs = {}
+    for model in ("fixed", "relative"):
+        print(f"\n  {model} rule" + (" (control)" if model == "fixed" else " (variant)"))
+        for name in ("day", "bursts", "still"):
+            runs[(model, name)] = run(model, name)
+            stats[(model, name)] = _voice_stats(runs[(model, name)], settle)
+            print(_voice_line(name, stats[(model, name)]))
+
+    # A burst starts every 40 ticks. How many does the relative rule answer?
+    burst_tones = set(runs[("relative", "bursts")]["tones"])
+    onsets = list(range(settle - settle % 40 + 40, ticks - 6, 40))
+    answered = sum(1 for t in onsets if any((t + k) in burst_tones for k in range(6))) / len(onsets)
+
+    fixed_day, rel_day = stats[("fixed", "day")], stats[("relative", "day")]
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("the fixed rule is a metronome",
+          fixed_day["back_to_back"] > 0.5,
+          f"{fixed_day['per_hour']:.0f} tones an hour, {fixed_day['back_to_back'] * 100:.0f}% "
+          f"of them at the minimum spacing")
+    check("the relative rule speaks far less",
+          1.0 <= rel_day["per_hour"] <= 0.5 * fixed_day["per_hour"],
+          f"{rel_day['per_hour']:.0f} tones an hour against {fixed_day['per_hour']:.0f}")
+    check("never back to back",
+          rel_day["back_to_back"] < 0.1,
+          f"{rel_day['back_to_back'] * 100:.0f}% of its tones at the minimum spacing")
+    check("it speaks at moments that stand out",
+          rel_day["arousal_at_tone"] > rel_day["arousal"] + 0.1,
+          f"arousal {rel_day['arousal_at_tone']:.2f} when it speaks, "
+          f"{rel_day['arousal']:.2f} on average")
+    check("silent in a still room",
+          stats[("relative", "still")]["count"] == 0,
+          f"{stats[('relative', 'still')]['count']} tones once settled "
+          f"(the fixed rule: {stats[('fixed', 'still')]['count']})")
+    check("a loud regular world is still answered",
+          answered >= 0.5,
+          f"it speaks at {answered * 100:.0f}% of {len(onsets)} bursts")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
     return ok
 
 
@@ -1633,10 +2135,19 @@ def main():
     p.add_argument("--forward", action="store_true",
                    help="run the forward-model gate (it learns its own light "
                         "and voice from what it emits and what returns)")
+    p.add_argument("--feel", action="store_true",
+                   help="run the loop-is-felt gate (the forward model's result "
+                        "reaches the two loop cells; control vs variant)")
+    p.add_argument("--curious", action="store_true",
+                   help="run the curiosity gate (bored in a still dark room, it "
+                        "probes and learns its own voice)")
+    p.add_argument("--voice", action="store_true",
+                   help="run the voice gate (fixed threshold vs the relative "
+                        "rule); with --replay, on recorded senses")
     p.add_argument("--events", action="store_true",
                    help="run the significant-event gate (pressure rule vs "
                         "surprise rule); with --replay, on recorded senses")
-    p.add_argument("--replay", help="CSV of recorded senses for --events "
+    p.add_argument("--replay", help="CSV of recorded senses for --events or --voice "
                                     "(tick, logged_at, sound, light, motion, weather)")
     p.add_argument("--state", help="saved field state to start --replay from")
     p.add_argument("--loop-gain", type=float, default=0.3,
@@ -1669,6 +2180,15 @@ def main():
         sys.exit(0 if ok else 1)
     if args.events:
         ok = events_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.voice:
+        ok = voice_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.feel:
+        ok = feel_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.curious:
+        ok = curious_probe(args)
         sys.exit(0 if ok else 1)
     if args.predictive:
         ok = predictive_probe(args)

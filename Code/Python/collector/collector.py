@@ -44,12 +44,14 @@ from mind.cell_field_v06 import (
 )
 from mind.expression_v06 import (
     ExpressionDecoderV06,
+    lift_white,
     pixels_to_pix_command,
     voice_command_from_signal,
     voice_params_from_signal,
 )
 from mind.expression_memory_v06 import ExpressionMemory
 from mind.forward_model_v06 import ForwardModel, frame_rgbw
+from mind.curiosity_v06 import Curiosity
 from mind.normalize import RollingNormalizer
 
 # --- Serial ---
@@ -146,6 +148,15 @@ ENABLE_LOOP = os.environ.get("CREATURE_LOOP", "1") == "1"
 # frame. Lux is taken from samples at least this long after the frame went out.
 LOOP_SETTLE_SECONDS = float(os.environ.get("CREATURE_LOOP_SETTLE_SECONDS", "0.3"))
 LOOP_SAVE_EVERY_TICKS = int(os.environ.get("CREATURE_LOOP_SAVE_EVERY_TICKS", "100"))
+# v06.9: the loop reaches the field. How strongly the creature just felt its own
+# voice or light return goes to the two loop cells. Set CREATURE_LOOP_FEEL=0 to
+# go back to a forward model that only watches.
+ENABLE_LOOP_FEEL = ENABLE_LOOP and os.environ.get("CREATURE_LOOP_FEEL", "1") == "1"
+# v06.9: curiosity. When nothing has surprised it for a while it probes with a
+# lift in the strip's white and, rarely, a short tone. CREATURE_PROBE=0 turns
+# both off; CREATURE_PROBE_VOICE=0 keeps the light probe and drops the tone.
+ENABLE_PROBE = ENABLE_LOOP and os.environ.get("CREATURE_PROBE", "1") == "1"
+ENABLE_PROBE_VOICE = os.environ.get("CREATURE_PROBE_VOICE", "1") == "1"
 
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
@@ -380,6 +391,11 @@ def setup_database(db_path):
         ("vox_room_heard", "REAL"),
         ("vox_level", "REAL"),
         ("vox_room", "REAL"),
+        # v06.9: what the loop cells were given, and whether this action was a probe.
+        ("feel_voice", "REAL"),
+        ("feel_light", "REAL"),
+        ("probe_light", "REAL"),
+        ("probe_voice", "INTEGER"),
     ])
 
     ensure_columns(cur, "field_tick_log", [
@@ -450,13 +466,16 @@ def make_body_sender(transport):
         last[kind] = command
         return True
 
-    def send(state, brightness, now):
+    def send(state, brightness, now, probe=None):
         brightness = clamp(int(brightness), 0, 255)
         sent_brightness = None
         expression = None
         strip_sent = False
         voice_sent = False
         voice = None
+        probe = probe or {}
+        probe_light = 0.0
+        probe_voice = False
 
         if ENABLE_ONBOARD_LED:
             command = f"LED:{brightness}\n"
@@ -465,6 +484,11 @@ def make_body_sender(transport):
 
         if ENABLE_STRIP:
             expression = decoder.read(state)
+            if probe.get("light"):
+                # The probe's lift goes into the frame itself, so what is
+                # recorded as emitted is what the strip showed.
+                probe_light = float(probe["light"])
+                expression["pixels"] = lift_white(expression["pixels"], probe_light, STRIP_VALUE_CAP)
             pix_command = pixels_to_pix_command(expression["pixels"])
             strip_sent = write_changed("pix", pix_command)
             if sent_brightness is None:
@@ -481,6 +505,19 @@ def make_body_sender(transport):
                 last["voice_at"] = now
                 voice_sent = True
                 voice = voice_params_from_signal(expression, speaker)
+            elif (
+                not voice_command
+                and probe.get("voice")
+                and now - last["voice_at"] >= VOICE_MIN_INTERVAL_SECONDS
+            ):
+                # A probe tone, only when the field itself has nothing to say.
+                tone = probe["voice"]
+                transport.write(
+                    f"VOX:{tone['freq']:.1f},{tone['ms']},{tone['vol']:.2f}\n".encode("utf-8"))
+                last["voice_at"] = now
+                voice_sent = True
+                voice = dict(tone)
+                probe_voice = True
 
         return {
             "sent_brightness": sent_brightness,
@@ -488,6 +525,8 @@ def make_body_sender(transport):
             "strip_sent": strip_sent,
             "voice_sent": voice_sent,
             "voice": voice,
+            "probe_light": probe_light,
+            "probe_voice": probe_voice,
         }
 
     return send
@@ -559,15 +598,17 @@ def log_loop(cur, logged_at, action, returned, result, temp_c, pressure_hpa):
     light = (result or {}).get("light") or {}
     sound = (result or {}).get("sound") or {}
     vox = returned.get("vox") or {}
+    feel = (result or {}).get("feel") or {}
     cur.execute("""
     INSERT INTO loop_log (
         logged_at, tick, out_r, out_g, out_b, out_w, vox_freq, vox_ms, vox_vol,
         lux, lux_mean, lux_min, lux_max, lux_n, rms_mean, rms_max, rms_n,
         motion_mean, motion_max, temp_c, pressure_hpa,
         lux_delta, lux_pred, lux_err, rms_excess, rms_pred, rms_err,
-        vox_heard, vox_room_heard, vox_level, vox_room
+        vox_heard, vox_room_heard, vox_level, vox_room,
+        feel_voice, feel_light, probe_light, probe_voice
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-              ?, ?, ?, ?)
+              ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         logged_at, action.get("tick"),
         r(rgbw[0], 4), r(rgbw[1], 4), r(rgbw[2], 4), r(rgbw[3], 4),
@@ -580,6 +621,8 @@ def log_loop(cur, logged_at, action, returned, result, temp_c, pressure_hpa):
         light.get("delta"), light.get("pred"), light.get("err"),
         sound.get("excess"), sound.get("pred"), sound.get("err"),
         vox.get("heard"), vox.get("room_heard"), vox.get("level"), vox.get("room"),
+        feel.get("voice"), feel.get("light"),
+        action.get("probe_light"), 1 if action.get("probe_voice") else 0,
     ))
 
 
@@ -894,6 +937,7 @@ def main():
             print("No saved forward model. Starting a fresh one.")
     loop_window = ReturnWindow(LOOP_SETTLE_SECONDS)
     last_action = None
+    curiosity = Curiosity() if ENABLE_PROBE else None
 
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
@@ -943,6 +987,9 @@ def main():
           f"voice_VOX={ENABLE_VOICE}")
     print(f"Expression memory (autobiography): {'on' if ENABLE_EXPR_MEMORY else 'off'}")
     print(f"Loop record + forward model: {'on' if ENABLE_LOOP else 'off'}")
+    print(f"Loop felt by the field: {'on' if ENABLE_LOOP_FEEL else 'off'}; "
+          f"curiosity probes: {'on' if ENABLE_PROBE else 'off'}"
+          f"{'' if ENABLE_PROBE_VOICE or not ENABLE_PROBE else ' (light only)'}")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -977,7 +1024,14 @@ def main():
             if vox_report is not None:
                 loop_window.add_vox(vox_report)
         if sample is not None:
-            light_norm.add(float(sample["light_lux"]), now)
+            lux = float(sample["light_lux"])
+            if ENABLE_LOOP_FEEL and last_action is not None and lux >= 0.0:
+                # The light sense is for the room. Whatever the model can
+                # account for as the strip's own light is taken out first (and
+                # felt at the loop cell instead). Zero while the sensor cannot
+                # see the strip.
+                lux = max(0.0, lux - forward.light.own_lux(last_action.get("rgbw")))
+            light_norm.add(lux, now)
             sound_norm.add(float(sample["sound_rms"]), now)
             if "motion" in sample:
                 motion_norm.add(float(sample["motion"]), now)
@@ -1032,19 +1086,45 @@ def main():
             0.0, 1.0,
         )
 
-        state = field.step({
-            "sound": sound_value,
-            "light": light_value,
-            "motion": motion_value,
-            "weather": weather_value,
-        })
+        # The loop record, first half. The window that just ended holds what the
+        # sensors returned while the previous frame was on the body: compare it
+        # with that frame now, so the field can feel the result on this tick.
+        returned = None
+        loop_result = None
+        closed_action = last_action
+        if forward is not None:
+            returned = loop_window.close()
+            if closed_action is not None:
+                loop_result = forward.step(closed_action, returned)
+
+        state = field.step(
+            {
+                "sound": sound_value,
+                "light": light_value,
+                "motion": motion_value,
+                "weather": weather_value,
+            },
+            loop=(loop_result or {}).get("feel") if ENABLE_LOOP_FEEL else None,
+        )
+
+        # Curiosity proposes; nothing goes out while the field sleeps.
+        probe = None
+        if curiosity is not None:
+            metabolism_now = state.get("metabolism") or {}
+            probe = curiosity.step(
+                metabolism_now.get("ticks_since_event", 0),
+                forward.sound,
+                voice_allowed=ENABLE_PROBE_VOICE,
+            )
+            if metabolism_now.get("mode") == "sleep":
+                probe = None
 
         emitter_values = state.get("emitter_activations") or {}
         led_activation = emitter_values.get("led", field.emitter_activation)
         brightness = emitter_to_brightness(led_activation, LED_MAX_BRIGHTNESS)
         output_info = {}
         try:
-            output_info = body_send(state, brightness, now)
+            output_info = body_send(state, brightness, now, probe)
             sent_brightness = output_info["sent_brightness"]
         except TransportError as error:
             if not is_tcp_target(transport_target):
@@ -1073,14 +1153,11 @@ def main():
         logged_at = datetime.now().isoformat()
         tick = field.tick_count
 
-        # The loop record. The window that just ended holds what the sensors
-        # returned while the previous frame was on the body: compare it with
-        # that frame, then start a new window for the one that just went out.
+        # The loop record, second half: log the window that closed, then start
+        # a new one for the frame that just went out.
         if forward is not None:
-            returned = loop_window.close()
-            if last_action is not None:
-                loop_result = forward.step(last_action, returned)
-                log_loop(cur, logged_at, last_action, returned, loop_result,
+            if closed_action is not None:
+                log_loop(cur, logged_at, closed_action, returned, loop_result,
                          weather_temp_c, weather_pressure_hpa)
             expression = output_info.get("expression")
             if expression is not None:
@@ -1088,10 +1165,17 @@ def main():
                     "tick": tick,
                     "rgbw": frame_rgbw(expression.get("pixels")) if ENABLE_STRIP else None,
                     "voice": output_info.get("voice"),
+                    "probe_light": output_info.get("probe_light") or None,
+                    "probe_voice": bool(output_info.get("probe_voice")),
                 }
             else:
                 last_action = None
             loop_window.open(monotonic())
+            if curiosity is not None:
+                if output_info.get("voice_sent"):
+                    curiosity.note_voice()
+                curiosity.note_probe(light=bool(output_info.get("probe_light")),
+                                     voice=bool(output_info.get("probe_voice")))
 
         if tick % STATUS_PRINT_EVERY_TICKS == 0:
             metabolism = state.get("metabolism", {})
@@ -1159,6 +1243,8 @@ def main():
             "expression": output_info.get("expression"),
             "expression_memory": expr_memory.stats() if expr_memory is not None else None,
             "loop": forward.snapshot() if forward is not None else None,
+            "loop_feel": state.get("loop_feel"),
+            "curiosity": curiosity.snapshot() if curiosity is not None else None,
         }
         write_json_atomic(STATE_JSON_PATH, snapshot)
 

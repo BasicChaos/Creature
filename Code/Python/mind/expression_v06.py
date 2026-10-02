@@ -7,8 +7,10 @@ state into the body protocol:
     PIX:r,g,b,w,...     one RGBW frame for the SK6812 strip
     VOX:freq,ms,vol     optional short speaker tone
 
-The decoder keeps no memory except a travelling pulse phase for the strip. It
-does not feed back into the field.
+The decoder keeps no memory except a travelling pulse phase for the strip and,
+from v06.9, the little the voice needs to know when to speak: its usual level of
+arousal, how long since something surprised the field, and whether it has
+already spoken on this rise. It does not feed back into the field.
 """
 
 import math
@@ -39,6 +41,20 @@ KNOBS = {
     "LED_CAP": 200,
     "F_LOW": 220.0,
     "F_HIGH": 440.0,
+    # When the voice speaks (v06.9).
+    #   "relative"  arousal stands at least VOICE_MARGIN above its own usual
+    #               level, something surprised the field in the last few ticks,
+    #               and it has come back down since it last spoke. Never while
+    #               the field sleeps or is still settling after waking.
+    #   "fixed"     the earlier rule, kept for control runs: arousal at or above
+    #               0.45. On the twelve-cell body that is nearly always true, so
+    #               the voice ran as a metronome at its minimum spacing.
+    "VOICE_MODEL": os.environ.get("CREATURE_VOICE_MODEL", "relative"),
+    "VOICE_MARGIN": float(os.environ.get("CREATURE_VOICE_MARGIN", "0.20")),
+    "VOICE_USUAL_RATE": 0.02,     # step of the running median of arousal
+    "VOICE_EVENT_TICKS": 3,       # how recent "just surprised" is
+    "VOICE_WAKE_SETTLE": 30,      # ticks after waking with no voice
+    "VOICE_WARMUP": 60,           # ticks after start before "usual" means anything
 }
 
 
@@ -91,6 +107,41 @@ class ExpressionDecoderV06:
         if knobs:
             self.knobs.update(knobs)
         self.pulse_pos = 0.0
+        self.voice_usual = None       # running median of arousal
+        self.voice_armed = True       # False from a tone until arousal settles again
+        self.ticks_since_event = 10 ** 6
+        self.reads = 0
+
+    def _voice(self, state, arousal, balance, tempo):
+        """Whether to speak this tick, and with what tone. Called once per read."""
+        k = self.knobs
+        self.reads += 1
+        self.ticks_since_event = 0 if state.get("events") else self.ticks_since_event + 1
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        level = max(arousal, float(speaker or 0.0))
+
+        if self.voice_usual is None:
+            self.voice_usual = max(level, 1e-3)
+        above = level - self.voice_usual
+        # Step the median after judging the tick, as the event rule does.
+        rate = k["VOICE_USUAL_RATE"]
+        self.voice_usual *= (1.0 + rate) if level > self.voice_usual else (1.0 - rate)
+        self.voice_usual = max(self.voice_usual, 1e-3)
+        if above < 0.5 * k["VOICE_MARGIN"]:
+            self.voice_armed = True
+
+        meta = state.get("metabolism") or {}
+        tick = int(state.get("tick", 0) or 0)
+        last_sleep = meta.get("last_sleep_tick")
+        waking = last_sleep is not None and tick - int(last_sleep) < k["VOICE_WAKE_SETTLE"]
+        if meta.get("mode") == "sleep" or waking or self.reads <= k["VOICE_WARMUP"]:
+            return None
+        if above <= k["VOICE_MARGIN"] or not self.voice_armed:
+            return None
+        if self.ticks_since_event > k["VOICE_EVENT_TICKS"]:
+            return None
+        self.voice_armed = False
+        return voice_tone(balance, tempo)
 
     def read(self, state):
         cells = sorted(state.get("cells") or [], key=lambda c: c.get("n", 0))
@@ -153,13 +204,18 @@ class ExpressionDecoderV06:
             int(state.get("tick", 0) or 0),
         )
 
-        return {
+        out = {
             "A": round(arousal, 4),
             "B": round(balance, 4),
             "T": round(tempo, 4),
             "pixels": pixels,
             "event": event_flag,
         }
+        if self.knobs["VOICE_MODEL"] == "relative":
+            # The decision is made here, once per tick, and carried in the
+            # signal. voice_params_from_signal reads it instead of re-deciding.
+            out["voice"] = self._voice(state, arousal, balance, tempo)
+        return out
 
     def _event_origin(self, state, count):
         threshold = self.knobs["EVENT_SIG_MIN"]
@@ -236,6 +292,17 @@ class ExpressionDecoderV06:
         return out
 
 
+def lift_white(pixels, level, cap):
+    """Add a probe's lift to the white channel of every pixel. `level` is the
+    share of the channel cap to add (0-1). Returns a new frame; white never goes
+    past the cap. The decoder stays read-only: this is the one place something
+    other than the field's own state reaches the strip."""
+    add = int(round(clamp(level, 0.0, 1.0) * cap))
+    if add <= 0:
+        return pixels
+    return [(r, g, b, int(min(cap, w + add))) for r, g, b, w in pixels]
+
+
 def pixels_to_pix_command(pixels):
     values = []
     for red, green, blue, white in pixels:
@@ -248,15 +315,10 @@ def pixels_to_pix_command(pixels):
     return "PIX:" + ",".join(values) + "\n"
 
 
-def voice_params_from_signal(signal, speaker_activation):
-    """The tone the body would voice this tick as {"freq","ms","vol"}, or None
-    when it stays silent. The forward model records these as what was emitted."""
-    arousal = max(float(signal.get("A", 0.0) or 0.0), float(speaker_activation or 0.0))
-    if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.45")):
-        return None
-
-    balance = clamp(float(signal.get("B", 0.0) or 0.0), -1.0, 1.0)
-    tempo = clamp(float(signal.get("T", 0.0) or 0.0), 0.0, 1.0)
+def voice_tone(balance, tempo):
+    """The tone for a given expression: pitch from balance, length from tempo."""
+    balance = clamp(float(balance or 0.0), -1.0, 1.0)
+    tempo = clamp(float(tempo or 0.0), 0.0, 1.0)
     k = KNOBS
     mix = (balance + 1.0) * 0.5
     freq = k["F_LOW"] * ((k["F_HIGH"] / k["F_LOW"]) ** mix)
@@ -265,6 +327,21 @@ def voice_params_from_signal(signal, speaker_activation):
     # the clean range from the bench notes; use the amp GAIN pin for quiet.
     vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "0.75")), 0.65, 0.9)
     return {"freq": round(freq, 1), "ms": ms, "vol": round(vol, 2)}
+
+
+def voice_params_from_signal(signal, speaker_activation):
+    """The tone the body would voice this tick as {"freq","ms","vol"}, or None
+    when it stays silent. The forward model records these as what was emitted.
+
+    A signal from the decoder under the relative rule already carries the
+    decision. Anything else (the fixed rule, or a signal built by hand) falls
+    back to the fixed threshold on arousal."""
+    if "voice" in signal:
+        return signal["voice"]
+    arousal = max(float(signal.get("A", 0.0) or 0.0), float(speaker_activation or 0.0))
+    if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.45")):
+        return None
+    return voice_tone(signal.get("B", 0.0), signal.get("T", 0.0))
 
 
 def voice_command_from_signal(signal, speaker_activation):

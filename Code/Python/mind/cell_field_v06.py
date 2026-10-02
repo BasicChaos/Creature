@@ -36,7 +36,7 @@ from datetime import datetime
 
 CELL_COUNT = 12          # outer ring; six inner reservoir cells are separate
 SNAPSHOT_VERSION = 1
-FIELD_VERSION = "v06.8-predictive"
+FIELD_VERSION = "v06.9-predictive"
 
 # The ring, in design order (Creature v06.md, "The field: a ring of twelve").
 # Each entry: (label, cell_type, hardware_id). Cell ids are the list indices,
@@ -78,6 +78,14 @@ EMITTER_ANCHORS = [n for n, (_l, t, _h) in enumerate(RING) if t == "anchor_emitt
 
 # Named in-between cells, used by the build gate and the dashboard.
 LOOP_CELLS = [1, 7]          # Speaker x Sound, LED x Light
+# Which loop cell feels which of the creature's own outputs coming back.
+LOOP_CELL_FOR = {"voice": 1, "light": 7}
+# The loop made real (v06.9). The forward model reports how strongly the
+# creature just sensed its own voice or light, 0 to 1, weighted by how wrong it
+# was about it. That enters the loop cell as pressure, on the same scale as a
+# sense at its anchor: a fully surprising echo presses as hard as a loud sound.
+# 0.0 turns it off (the control run).
+LOOP_FEEL_GAIN = 1.0
 CORRELATED_CELLS = [3, 9]    # Sound x Motion, Light x Weather
 WEAK_GAP_CELL = 11           # Weather x Speaker
 
@@ -434,6 +442,8 @@ class CellField:
         # The field's usual peak surprise: a running median. An event is a tick
         # that stands well clear of it.
         self.event_usual = None
+        self.last_event_tick = 0
+        self.last_loop_feel = {name: 0.0 for name in LOOP_CELL_FOR}
         self.last_sleep_summary = None
         self.last_consolidation = {
             "links_pruned": 0,
@@ -574,6 +584,7 @@ class CellField:
             "sleep_ticks_remaining": self.sleep_ticks_remaining,
             "last_sleep_tick": self.last_sleep_tick,
             "recent_event_count": len(self.recent_events),
+            "ticks_since_event": self.tick_count - self.last_event_tick,
             "live_connections": live_links,
             "pruned_connections": pruned_links,
             "total_connections": len(self.weights),
@@ -764,6 +775,7 @@ class CellField:
             else:
                 self.recent_events = self.recent_events[-RECENT_EVENT_LIMIT:]
         self.last_events.append(event)
+        self.last_event_tick = self.tick_count
 
     def _update_relevance(self):
         weight_total = {n: 0.0 for n in self.cells}
@@ -962,18 +974,28 @@ class CellField:
                 reverse=True,
             )[:keep]
 
-    def step(self, senses=None, **kw):
+    def step(self, senses=None, loop=None, **kw):
         """
         Advance the field one tick on normalized sensor values (0-1).
 
         `senses` is a dict with keys sound, light, motion, weather. Missing
         senses default to 0.0. Keyword form also works: step(sound=.5, light=.2).
+
+        `loop` is how strongly the creature just felt its own output return,
+        {"voice": 0-1, "light": 0-1}, from the forward model. It presses on the
+        two loop cells. None, or LOOP_FEEL_GAIN = 0, leaves them as they were.
         """
         values = {s: 0.0 for s in SENSES}
         if senses:
             values.update({k: v for k, v in senses.items() if k in values})
         if kw:
             values.update({k: v for k, v in kw.items() if k in values})
+
+        feel = {n: 0.0 for n in LOOP_CELLS}
+        if loop and LOOP_FEEL_GAIN > 0.0:
+            for name, n in LOOP_CELL_FOR.items():
+                feel[n] = clamp(float(loop.get(name, 0.0) or 0.0), 0.0, 1.0) * LOOP_FEEL_GAIN
+        self.last_loop_feel = {name: round(feel[n], 4) for name, n in LOOP_CELL_FOR.items()}
 
         self.last_events = []
         self.last_sleep_summary = None
@@ -1030,6 +1052,12 @@ class CellField:
             for s in SENSES:
                 if n == SENSE_ANCHOR[s]:
                     sensor_impulse += sensed[s] * ANCHOR_RIPPLE_DRIVE
+            # Its own echo arrives at the loop cell the way a sensed change
+            # arrives at an anchor: pressure, and a ripple that travels on.
+            own = feel.get(n, 0.0) * sensor_scale
+            if own > 0.0:
+                direct += own
+                sensor_impulse += own * SENSOR_RIPPLE_GAIN
 
             velocity = (
                 prev_velocity[n] * RIPPLE_VELOCITY_DECAY
@@ -1220,6 +1248,7 @@ class CellField:
             },
             "emitter_activation": round(self.emitter_activation, 4),
             "emitter_activations": self.emitter_activations(),
+            "loop_feel": self.last_loop_feel,
             "events": self.last_events,
             "recent_events": self.recent_events[-12:],
             "sleep_summary": self.last_sleep_summary,
@@ -1373,6 +1402,7 @@ class CellField:
             )
 
         self.tick_count = data.get("tick", 0)
+        self.last_event_tick = self.tick_count
         return True
 
 
