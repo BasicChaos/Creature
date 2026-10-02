@@ -96,16 +96,39 @@
       line-height: 1.1;
     }
 
-    .viewer {
+    /* One screen: the header, then menu | field | the chosen section. Nothing
+       here needs scrolling; "What is Creature?" sits below the fold. */
+    .screen { height: 100vh; min-height: 560px; display: flex; flex-direction: column; }
+    .app {
+      flex: 1;
+      min-height: 0;
       display: grid;
-      grid-template-columns: minmax(340px, 2.6fr) minmax(240px, 1fr) 240px;
-      /* Row 1 is the photo (fixed 4:3, see .hardware-photo); row 2 is fixed. Nothing
-         inside a panel can change the row heights, so the field never resizes. */
-      grid-template-rows: auto 400px;
+      grid-template-columns: auto minmax(0, 1.2fr) minmax(0, 1fr);
       gap: 14px;
-      padding: 16px 20px;
-      align-items: stretch;
+      padding: 14px 20px;
     }
+
+    .side-nav { display: flex; flex-direction: column; gap: 4px; width: 168px; }
+    .side-nav button {
+      display: flex; align-items: center; gap: 10px;
+      background: none; border: 1px solid transparent; border-radius: 8px;
+      color: var(--muted); font: inherit; font-size: 13px; text-align: left;
+      padding: 9px 10px; cursor: pointer; white-space: nowrap;
+    }
+    .side-nav button:hover { color: var(--text); border-color: var(--line); }
+    .side-nav button.on { color: var(--text); background: var(--panel); border-color: var(--line); }
+    .side-nav .nav-toggle { margin-bottom: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .nav-ico { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .app.nav-collapsed .side-nav { width: auto; }
+    .app.nav-collapsed .nav-label { display: none; }
+    .app.nav-collapsed .nav-toggle .nav-ico { transform: rotate(180deg); }
+
+    .view-area { min-height: 0; overflow-y: auto; }
+    .view[hidden] { display: none; }
+    .view-area .cell-table { font-size: 11px; }
+    .view-area .cell-table th, .view-area .cell-table td { padding: 5px 3px; }
+    /* The type column already names the hardware; drop the repeat so the table fits. */
+    .view-area .cell-table th:nth-child(3), .view-area .cell-table td:nth-child(3) { display: none; }
 
     .panel {
       background: var(--panel);
@@ -119,7 +142,7 @@
     .mute-btn:hover { border-color: var(--accent); }
     .mute-btn.muted { color: var(--fatigue); border-color: var(--fatigue); }
 
-    .sensor-grid { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 8px; flex: 1; min-height: 0; }
+    .sensor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
     .sensor { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
     .sensor .s-label { color: var(--muted); font-size: 11px; }
     .sensor .s-value { font-size: 20px; font-variant-numeric: tabular-nums; }
@@ -128,16 +151,9 @@
     .sensor-foot { margin-top: 8px; color: var(--muted); font-size: 11px; }
     .sensor-foot code { color: var(--accent); }
 
-    .stage { grid-column: 1; grid-row: 1 / span 2; overflow: hidden; }
-    #sensorPanel { grid-column: 3; grid-row: 2; display: flex; flex-direction: column; }
+    .stage { overflow: hidden; min-height: 0; }
     #sensorPanel[hidden] { display: none; }
-    .hardware-panel { grid-column: 3; grid-row: 1; align-self: start; }
-    .inspector-panel { grid-column: 2; grid-row: 1 / span 2; min-height: 0; overflow: hidden; display: flex; flex-direction: column;
-      /* Its content never sizes the grid: the panel takes the height the rows
-         give it and scrolls inside, so choosing a cell cannot move the field. */
-      contain: size; }
-    .inspector-panel #inspector { flex: 1; min-height: 0; overflow-y: auto; }
-    #sensorPanel { min-height: 0; overflow: hidden; }
+    #sensorPanel { margin-bottom: 16px; }
 
     /* inspector: one narrow column, always open */
     #inspector { display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; align-content: start; }
@@ -147,7 +163,6 @@
     .insp-meta b { color: var(--text); font-weight: 600; }
 
     .stage {
-      min-width: 320px;
       display: flex;
       flex-direction: column;
     }
@@ -159,13 +174,10 @@
       gap: 14px;
     }
 
-    .hardware-panel {
-      padding: 10px;
-    }
-
     .hardware-photo {
-      display: block;
-      width: 100%;
+      float: right;
+      width: min(280px, 40%);
+      margin: 0 0 12px 18px;
       height: auto;
       aspect-ratio: 4 / 3;
       object-fit: cover;
@@ -173,10 +185,6 @@
       border-radius: 7px;
       border: 1px solid var(--line);
       background: #0b0e13;
-    }
-
-    .cell-list-panel, .learning-panel {
-      grid-column: 1 / -1;
     }
 
     /* learning panel: four small charts over one shared window of ticks */
@@ -197,44 +205,17 @@
     .learn-tip[hidden] { display: none; }
     .learn-foot { color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 10px; }
 
-    .bottom-panels {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-
+    /* Narrow screens: the menu becomes a row of tabs, the field and the chosen
+       section stack, and the page scrolls. */
     @media (max-width: 980px) {
-      .viewer {
-        grid-template-columns: 1fr;
-        padding: 12px;
-      }
-
-      .stage,
-      .side {
-        min-width: 0;
-      }
-
-      .viewer { grid-template-rows: none; }
-      .inspector-panel { overflow: visible; contain: none; }
-      .inspector-panel #inspector { overflow-y: visible; }
-      .stage, #sensorPanel, .hardware-panel, .inspector-panel {
-        grid-column: auto;
-        grid-row: auto;
-      }
+      .screen { height: auto; min-height: 0; }
+      .app { grid-template-columns: 1fr; padding: 12px; }
+      .side-nav { flex-direction: row; flex-wrap: wrap; width: auto; }
+      .side-nav .nav-toggle { display: none; }
+      .app.nav-collapsed .nav-label { display: inline; }
       .stage #field { flex: none; height: auto; max-height: 620px; }
-
-      .cell-list-panel, .learning-panel {
-        grid-column: auto;
-      }
-
-      .bottom-panels {
-        grid-template-columns: 1fr;
-      }
-
-      .about-panel {
-        margin: 0 12px 16px;
-      }
+      .view-area { overflow-y: visible; }
+      .about-panel { margin: 0 12px 16px; }
     }
 
     .panel h2 {
@@ -553,6 +534,7 @@
 </head>
 
 <body>
+  <div class="screen">
   <header>
     <span id="dot" class="dot"></span>
     <h1 id="creatureTitle">Creature</h1>
@@ -579,46 +561,37 @@
     </div>
   </header>
 
-  <div class="viewer">
+  <div class="app" id="app">
+    <nav class="side-nav" id="sideNav" aria-label="Dashboard sections">
+      <button type="button" class="nav-toggle" id="navToggle" title="Collapse or expand the menu" aria-expanded="true"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg><span class="nav-label">Menu</span></button>
+      <button type="button" data-view="inspector" title="Cell inspector"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.5"/></svg><span class="nav-label">Cell inspector</span></button>
+      <button type="button" data-view="raw" title="Raw data"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span class="nav-label">Raw data</span></button>
+      <button type="button" data-view="learning" title="Learning"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5l3.5-4 3 2.5 4.5-6.5"/><path d="M10.5 4.5h3v3"/></svg><span class="nav-label">Learning</span></button>
+      <button type="button" data-view="legend" title="Legend"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4.5" r="1.5"/><circle cx="4" cy="11.5" r="1.5"/><path d="M8 4.5h5.5M8 11.5h5.5"/></svg><span class="nav-label">Legend</span></button>
+      <button type="button" data-view="metabolism" title="Metabolism"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8.5h3l1.5-4 3 8 1.5-4h4"/></svg><span class="nav-label">Metabolism</span></button>
+    </nav>
+
     <div class="panel stage">
       <h2 id="fieldHeading">Live field</h2>
       <svg id="field" viewBox="0 0 760 660" xmlns="http://www.w3.org/2000/svg" aria-label="Creature cell field"></svg>
     </div>
 
-    <div class="panel" id="sensorPanel" hidden>
+    <div class="panel view-area" id="viewArea">
+    <section class="view" data-view="inspector">
+      <h2>Cell inspector</h2>
+      <div id="inspector">
+        <div class="hint">Waiting for data…</div>
+      </div>
+    </section>
+
+      <section class="view" data-view="raw" hidden>
+    <div id="sensorPanel" hidden>
       <h2>Sensors</h2>
       <div class="sensor-grid" id="sensors"></div>
       <div class="sensor-foot" id="sensorFoot">API: <code>/api/sensors</code></div>
     </div>
 
-    <div class="panel hardware-panel">
-      <img class="hardware-photo" src="creature-v07-battery.png" alt="Current Creature hardware on a breadboard with its battery" />
-    </div>
-
-    <div class="panel inspector-panel">
-      <h2>Cell inspector</h2>
-      <div id="inspector">
-        <div class="hint">Waiting for data…</div>
-      </div>
-    </div>
-
-    <div class="panel learning-panel">
-      <div class="learn-head">
-        <h2>Learning — is it predicting better over time?</h2>
-        <div class="seg" id="learnWindow">
-          <button data-w="6h">6 h</button><button data-w="24h" class="on">24 h</button><button data-w="7d">7 d</button>
-        </div>
-      </div>
-      <div class="learn-grid">
-        <div class="learn-card" id="learnLight"></div>
-        <div class="learn-card" id="learnVoice"></div>
-        <div class="learn-card" id="learnSurprise"></div>
-        <div class="learn-card" id="learnLinks"></div>
-      </div>
-      <div class="learn-foot" id="learnFoot">Waiting for history…</div>
-    </div>
-
-    <div class="panel cell-list-panel">
+    <div class="cell-list">
       <h2>All cells</h2>
       <div class="cell-table-wrap">
         <table class="cell-table" aria-label="All cell data">
@@ -647,8 +620,27 @@
       </div>
     </div>
 
-    <div class="bottom-panels">
-      <div class="panel" id="legendPanel">
+        <h2 style="margin-top:16px">System health</h2>
+        <div class="meta" id="health">--</div>
+      </section>
+
+    <section class="view" data-view="learning" hidden>
+      <div class="learn-head">
+        <h2>Learning — is it predicting better over time?</h2>
+        <div class="seg" id="learnWindow">
+          <button data-w="6h">6 h</button><button data-w="24h" class="on">24 h</button><button data-w="7d">7 d</button>
+        </div>
+      </div>
+      <div class="learn-grid">
+        <div class="learn-card" id="learnLight"></div>
+        <div class="learn-card" id="learnVoice"></div>
+        <div class="learn-card" id="learnSurprise"></div>
+        <div class="learn-card" id="learnLinks"></div>
+      </div>
+      <div class="learn-foot" id="learnFoot">Waiting for history…</div>
+    </section>
+
+      <section class="view" data-view="legend" id="legendPanel" hidden>
         <h2>Legend</h2>
         <div class="legend-item"><span class="swatch" style="background:var(--sound)"></span> Sound anchor <span
             class="muted">· C5 · INMP441</span></div>
@@ -664,21 +656,21 @@
           Active cells are solid, resting cells are dim, dormant and deep-sleep cells are faint.
           Connections are local; thicker/brighter lines have more pathway history.
         </div>
-      </div>
+      </section>
 
-      <div class="panel">
+      <section class="view" data-view="metabolism" hidden>
         <h2>Metabolism</h2>
         <div class="meta" id="metabolism">--</div>
         <h2 style="margin-top:16px">Loop</h2>
         <div class="meta" id="loop">--</div>
-        <h2 style="margin-top:16px">System health</h2>
-        <div class="meta" id="health">--</div>
-      </div>
+      </section>
     </div>
+  </div>
   </div>
 
   <div class="panel about-panel">
     <h2>What is Creature?</h2>
+    <img class="hardware-photo" src="creature-v07-battery.png" alt="Current Creature hardware on a breadboard with its battery" />
     <p class="about-intro">
       Creature is a small homemade life form built from sensors, an ESP32 chip, and a Raspberry Pi.
       It senses sound, light, motion, and weather, and expresses itself through an RGB LED strip and
@@ -1344,7 +1336,7 @@
         g.addEventListener("mouseenter", () => setHover(id));
         g.addEventListener("mouseleave", () => setHover(null));
         g.addEventListener("focus", () => setHover(id));
-        g.addEventListener("click", () => { pinned = (pinned === id) ? null : id; renderInspector(); applySelectionV06(); });
+        g.addEventListener("click", () => { pinned = (pinned === id) ? null : id; if (pinned != null) showView("inspector"); renderInspector(); applySelectionV06(); });
         if (!v06.hasWiring) {
           // Older snapshot without the wiring: keep the schematic single line.
           const a = ringPos(2 * j + 1);
@@ -1430,7 +1422,7 @@
         g.addEventListener("mouseenter", () => setHover(i));
         g.addEventListener("mouseleave", () => setHover(null));
         g.addEventListener("focus", () => setHover(i));
-        g.addEventListener("click", () => { pinned = (pinned === i) ? null : i; renderInspector(); applySelectionV06(); });
+        g.addEventListener("click", () => { pinned = (pinned === i) ? null : i; if (pinned != null) showView("inspector"); renderInspector(); applySelectionV06(); });
 
         if (c.type === "anchor_emitter" || c.type === "anchor_sensor") {
           const lp = radialLabelPos(i, baseR + 24);
@@ -1738,6 +1730,32 @@
         '<div class="legend-sub">Click any cell to pin it: its own wires light up, the cells it connects to stay bright, and the inspector lists every weight with what it is carrying this tick.</div>' +
         '<div class="legend-sub">Cell fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
     }
+
+    // ---- menu ----
+    // One section is open beside the field at a time. The choice and the
+    // collapsed state are remembered per browser.
+    const VIEWS = ["inspector", "raw", "learning", "legend", "metabolism"];
+    function recall(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+    function remember(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* private window */ } }
+    function showView(name) {
+      if (!VIEWS.includes(name)) name = "inspector";
+      document.querySelectorAll("#viewArea .view").forEach(v => { v.hidden = v.dataset.view !== name; });
+      document.querySelectorAll("#sideNav button[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === name));
+      remember("creature.view", name);
+    }
+    function setNavCollapsed(collapsed) {
+      document.getElementById("app").classList.toggle("nav-collapsed", collapsed);
+      document.getElementById("navToggle").setAttribute("aria-expanded", String(!collapsed));
+      remember("creature.nav", collapsed ? "collapsed" : "open");
+    }
+    document.getElementById("sideNav").addEventListener("click", e => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.id === "navToggle") setNavCollapsed(!document.getElementById("app").classList.contains("nav-collapsed"));
+      else showView(b.dataset.view);
+    });
+    showView(recall("creature.view") || "inspector");
+    setNavCollapsed(recall("creature.nav") === "collapsed");
 
     // ---- learning panel ----
     // Slow numbers from the database (dashboard/learning.py): whether its

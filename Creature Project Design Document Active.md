@@ -571,6 +571,12 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   links between reservoir cells as arrows, coloured by sign. Clicking any cell
   pins it, lifts its own wires, dims the rest, and lists each weight in the
   inspector with what it carries this tick.
+- Page layout: one screen with no scrolling. A collapsible menu on the left, the
+  field always in the middle, and one chosen section beside it: cell inspector,
+  raw data (sensors, all cells, system health), learning, legend, or metabolism
+  (with the loop). Clicking a cell opens the inspector. "What is Creature?" and
+  the hardware photo sit below the fold. On a narrow screen the menu becomes a
+  row of tabs and the page stacks.
 - `learning.py`: reads the slow numbers that show whether it is predicting
   better, over a window of its own ticks (6 h, 24 h or 7 d): how much of its own
   light's effect the forward model explained, how far each heard tone was from
