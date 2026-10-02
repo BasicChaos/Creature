@@ -104,8 +104,13 @@ same on purpose so the field can change without rewriting hardware.
   autobiography of what it expressed, and that graph can tell two different lives
   apart. A closed-loop dark-room probe showed the looped, curious Creature staying
   active in a silent, dark room where the same Creature without the loop goes flat.
+- v06.7: the start of the predict cycle. Each tick the collector records what the
+  body emitted next to what the raw sensors returned, and a small forward model
+  predicts the Creature's own light and voice, compares, and learns. A probe tool
+  measures how much of its output physically comes back. Passive so far: nothing
+  feeds the field yet.
 
-The current running version string is `v06.6-predictive`.
+The current running version string is `v06.7-predictive`.
 
 ## Status
 

@@ -1,6 +1,6 @@
 Creature Project Design Document
 
-Version: v06.6, June 28 2026
+Version: v06.7, October 2 2026
 Status: current. This document matches the running code in Code/. It supersedes the
 v05.4.1 edition, which described the 111-cell field, and the earlier editions that
 described the 3-cell arousal/fatigue/tonic network and the 11-cell ring. Those were
@@ -120,7 +120,7 @@ The ESP is the body. The Pi is the mind. The VPS is an observation surface only.
 
 ## The cell field: a ring of twelve
 
-File: `Code/Python/mind/cell_field_v06.py`. Version string `v06.6-predictive`. The
+File: `Code/Python/mind/cell_field_v06.py`. Version string `v06.7-predictive`. The
 field steps once per second. Every constant assumes that 1 Hz tick.
 
 The outer ring is twelve cells: six sense and emitter anchors alternating with six
@@ -329,6 +329,41 @@ from the same runs: a steady self-loop is as predictable as a steady room, so th
 predictive field habituates to it and goes quiet unless the probe stays
 unpredictable. Random bursts keep surprise alive.
 
+## The loop record and forward model
+
+Files: `Code/Python/mind/forward_model_v06.py`, the loop block in the collector,
+and `Code/Python/tools/loop_probe.py`. This is the v06.7 layer. Passive: none of it
+changes the field or the body.
+
+The loop above only matters if the Creature can tell its own output from the room.
+Three pieces make that measurable.
+
+The loop probe measures the physical coupling. With the collector stopped, it
+switches the strip between dark and known frames and reads the lux each one adds,
+then sends known tones and compares the mic with the room just before. The answer
+is a number: how many lux the strip adds at the sensor, how many times louder than
+the room a tone is.
+
+The loop record sets action next to return. Each tick the collector keeps what the
+body emitted (the strip frame as four channel means, any tone's pitch, length and
+volume) and the raw senses gathered while that frame was on the body (lux, mic
+level and peak, motion). One row per tick goes to the `loop_log` table. These are
+raw values, not the adaptive 0 to 1 ones, so this is also the raw history the
+normalizer section asks for.
+
+The forward model predicts the return. Each tick it predicts the change in lux
+from the change in the strip frame, and the mic's rise above the room from the
+tone it sent, compares that with what happened, and learns from the miss by a
+delta rule. It works on changes, not levels, so the room's baseline drops out and
+daylight is not mistaken for the strip. Every change in the room is split in two:
+the part the Creature caused (the prediction) and the part it did not (the error).
+A lamp switching on is error. Its own light, once learned, is not. The learned
+weights persist alongside the field slow-state, and the live snapshot carries a
+`loop` block that the dashboard shows under Loop.
+
+It is behind `CREATURE_LOOP` (default on). Feeding the error back into the ring is
+the next increment, and gets its own control-versus-variant run first.
+
 ## The stance on going quiet
 
 The field is built to stop reacting once nothing changes. That is correct for a
@@ -381,6 +416,7 @@ machine and the runs reproduce exactly. Every gate uses a fixed seed.
 | bias | habit becomes memory, over-bias collapses | `--exprbias` | 2/2 |
 | novelty | adaptive novelty opens a temperament band | `--exprnov` | 2/2 |
 | dark-room | self-generated, bounded, learned activity | `--darkroom` | 5/5 |
+| forward | learns its own light and voice, leaves the room to the room | `--forward` | 6/6 |
 
 Rule: no tuning change ships without a control-versus-variant run. This is the
 difference between "I think it is emerging" and "here is the control run."
@@ -427,11 +463,13 @@ Creature/
       mind/cell_field_v06.py          the ring, reservoir, predictive cell, readout
       mind/expression_v06.py          the decoder (field -> PIX/VOX)
       mind/expression_memory_v06.py   the autobiography layer
+      mind/forward_model_v06.py       predicts its own light and voice (passive)
       mind/normalize.py               rolling 0..1 normalization
       mind/cell_field.py              the retired 111-cell field, kept for reference
       dashboard/                      server.py, index.html, static export, sync
       tools/field_lab_v06.py          offline replay and gate harness
       tools/expression_preview.py     renders the decoder offline
+      tools/loop_probe.py             measures the light and sound loops on the body
       data/                           SQLite history + field snapshot (gitignored)
   Hardware/                          KiCad schematics, wiring, bench notes, photos
   Archive/                           earlier experiments and versions (gitignored)

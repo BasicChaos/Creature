@@ -604,6 +604,8 @@
       <div class="panel">
         <h2>Metabolism</h2>
         <div class="meta" id="metabolism">--</div>
+        <h2 style="margin-top:16px">Loop</h2>
+        <div class="meta" id="loop">--</div>
         <h2 style="margin-top:16px">System health</h2>
         <div class="meta" id="health">--</div>
       </div>
@@ -992,7 +994,7 @@
     }
 
     function renderReadout(f) {
-      const version = f.field_version || "v06.6";
+      const version = f.field_version || "v06.7";
       const title = `Creature ${version}`;
       document.getElementById("creatureTitle").textContent = title;
       document.title = `${title} — live`;
@@ -1031,6 +1033,31 @@
         " · railed gains: " + (m.homeo_gain_railed ?? "--") + "<br>" +
         "sleep remaining: " + (m.sleep_ticks_remaining ?? "--") +
         " · reviewed: " + (m.events_reviewed ?? "--") + lastSleep;
+    }
+
+    // The forward model: what the creature predicted its own light and voice
+    // would do to its senses, against what they did. Shown as the model's own
+    // numbers (its share of the light, its miss), not the room's raw readings.
+    function renderLoop(f) {
+      const box = document.getElementById("loop");
+      if (!box) return;
+      const loop = f.loop;
+      if (!loop) { box.innerHTML = "not running"; return; }
+      const pct = v => (v === null || v === undefined) ? "--" : Math.round(Math.max(0, v) * 100) + "%";
+      const li = loop.light || {}, so = loop.sound || {};
+      const ll = li.last, sv = so.last_voiced;
+      box.innerHTML =
+        "own light: " + fmt(ll ? ll.strip_lux : null, 1) + " lux now · " +
+        fmt(li.lux_at_full, 1) + " lux at full<br>" +
+        "last change: predicted " + fmt(ll ? ll.pred : null, 2) +
+        " · seen " + fmt(ll ? ll.delta : null, 2) +
+        " · missed by " + fmt(ll ? ll.err : null, 2) + " lux<br>" +
+        "light explained: " + pct(li.explained) +
+        " · over " + (li.acted ?? "--") + " changes<br>" +
+        "own voice: last tone predicted " + fmt(sv ? sv.pred : null, 0) +
+        " · heard " + fmt(sv ? sv.excess : null, 0) + "<br>" +
+        "voice explained: " + pct(so.explained) +
+        " · over " + (so.voiced ?? "--") + " tones";
     }
 
     function bar(label, value, max, color, dec) {
@@ -1388,6 +1415,7 @@
         if (latest && f.tick === latest.tick) return;
         renderReadout(f);
         renderMetabolism(f);
+        renderLoop(f);
         if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built) buildV06(f); renderV06(f); }
         else { v06Mode = false; render(f); }
       } catch (err) {

@@ -248,7 +248,9 @@ def pixels_to_pix_command(pixels):
     return "PIX:" + ",".join(values) + "\n"
 
 
-def voice_command_from_signal(signal, speaker_activation):
+def voice_params_from_signal(signal, speaker_activation):
+    """The tone the body would voice this tick as {"freq","ms","vol"}, or None
+    when it stays silent. The forward model records these as what was emitted."""
     arousal = max(float(signal.get("A", 0.0) or 0.0), float(speaker_activation or 0.0))
     if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.45")):
         return None
@@ -262,4 +264,11 @@ def voice_command_from_signal(signal, speaker_activation):
     # MAX98357A gets fuzzy with tiny digital samples. Keep the digital signal in
     # the clean range from the bench notes; use the amp GAIN pin for quiet.
     vol = clamp(float(os.environ.get("CREATURE_VOICE_VOLUME", "0.75")), 0.65, 0.9)
-    return f"VOX:{freq:.1f},{ms},{vol:.2f}\n"
+    return {"freq": round(freq, 1), "ms": ms, "vol": round(vol, 2)}
+
+
+def voice_command_from_signal(signal, speaker_activation):
+    params = voice_params_from_signal(signal, speaker_activation)
+    if params is None:
+        return None
+    return f"VOX:{params['freq']:.1f},{params['ms']},{params['vol']:.2f}\n"

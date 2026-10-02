@@ -46,8 +46,10 @@ from mind.expression_v06 import (
     ExpressionDecoderV06,
     pixels_to_pix_command,
     voice_command_from_signal,
+    voice_params_from_signal,
 )
 from mind.expression_memory_v06 import ExpressionMemory
+from mind.forward_model_v06 import ForwardModel, frame_rgbw
 from mind.normalize import RollingNormalizer
 
 # --- Serial ---
@@ -128,6 +130,18 @@ VOICE_MIN_INTERVAL_SECONDS = float(os.environ.get("CREATURE_VOICE_MIN_INTERVAL_S
 ENABLE_EXPR_MEMORY = os.environ.get("CREATURE_EXPR_MEMORY", "1") == "1"
 EXPR_MEMORY_SAVE_EVERY_TICKS = int(os.environ.get("CREATURE_EXPR_MEMORY_SAVE_EVERY_TICKS", "100"))
 
+# --- Loop record and forward model ---
+# Passive by default: each tick it sets what the body emitted next to what the
+# raw sensors returned, lets the forward model predict and learn its own echo,
+# and logs the pair. It does not change the body output. Set CREATURE_LOOP=0 to
+# skip.
+ENABLE_LOOP = os.environ.get("CREATURE_LOOP", "1") == "1"
+# A frame needs a moment to show in the light reading: the BH1750 integrates
+# for ~120 ms, so readings from the first part of a window still hold the last
+# frame. Lux is taken from samples at least this long after the frame went out.
+LOOP_SETTLE_SECONDS = float(os.environ.get("CREATURE_LOOP_SETTLE_SECONDS", "0.3"))
+LOOP_SAVE_EVERY_TICKS = int(os.environ.get("CREATURE_LOOP_SAVE_EVERY_TICKS", "100"))
+
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
 # STATE_JSON_PATH lands on tmpfs on the Pi, so the per-tick live snapshot
@@ -146,6 +160,12 @@ if FIELD_STATE_PATH.endswith("_v06.json"):
     EXPR_MEMORY_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_autobiography_v06.json"
 else:
     EXPR_MEMORY_PATH = FIELD_STATE_PATH + ".autobiography"
+
+# The forward model's learned weights persist the same way.
+if FIELD_STATE_PATH.endswith("_v06.json"):
+    FORWARD_MODEL_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_forward_model_v06.json"
+else:
+    FORWARD_MODEL_PATH = FIELD_STATE_PATH + ".forward_model"
 
 
 def clamp(value, low, high):
@@ -311,6 +331,27 @@ def setup_database(db_path):
     )
     """)
 
+    # The loop record: one row per tick setting what the body emitted (the strip
+    # frame, any tone) next to what the raw sensors returned while it was on the
+    # body, plus the forward model's prediction and miss. `tick` is the tick the
+    # action went out; the row is written one tick later, when its window closes.
+    # Raw values, not the adaptive 0-1 ones, so this is the durable raw history.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS loop_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        logged_at TEXT NOT NULL,
+        tick INTEGER NOT NULL,
+        out_r REAL, out_g REAL, out_b REAL, out_w REAL,
+        vox_freq REAL, vox_ms INTEGER, vox_vol REAL,
+        lux REAL, lux_mean REAL, lux_min REAL, lux_max REAL, lux_n INTEGER,
+        rms_mean REAL, rms_max REAL, rms_n INTEGER,
+        motion_mean REAL, motion_max REAL,
+        temp_c REAL, pressure_hpa REAL,
+        lux_delta REAL, lux_pred REAL, lux_err REAL,
+        rms_excess REAL, rms_pred REAL, rms_err REAL
+    )
+    """)
+
     ensure_columns(cur, "field_tick_log", [
         ("sound_linear", "REAL"),
         ("energy_reserve", "REAL"),
@@ -381,6 +422,7 @@ def make_body_sender(transport):
         expression = None
         strip_sent = False
         voice_sent = False
+        voice = None
 
         if ENABLE_ONBOARD_LED:
             command = f"LED:{brightness}\n"
@@ -404,15 +446,96 @@ def make_body_sender(transport):
                 transport.write(voice_command.encode("utf-8"))
                 last["voice_at"] = now
                 voice_sent = True
+                voice = voice_params_from_signal(expression, speaker)
 
         return {
             "sent_brightness": sent_brightness,
             "expression": expression,
             "strip_sent": strip_sent,
             "voice_sent": voice_sent,
+            "voice": voice,
         }
 
     return send
+
+
+class ReturnWindow:
+    """Raw senses gathered while one emitted frame was on the body, so what the
+    creature did can be set next to what came back."""
+
+    def __init__(self, settle_seconds):
+        self.settle_seconds = settle_seconds
+        self.opened_at = None
+        self.lux = []      # (seconds since the frame went out, lux)
+        self.rms = []
+        self.motion = []
+
+    def open(self, now):
+        self.opened_at = now
+        self.lux = []
+        self.rms = []
+        self.motion = []
+
+    def add(self, now, sample):
+        if self.opened_at is None:
+            return
+        lux = float(sample["light_lux"])
+        if lux >= 0.0:      # the body reports -1 when the light read failed
+            self.lux.append((now - self.opened_at, lux))
+        self.rms.append(float(sample["sound_rms"]))
+        if "motion" in sample:
+            self.motion.append(float(sample["motion"]))
+
+    def close(self):
+        """Summarize the window. `lux` is the settled reading the forward model
+        uses: the mean of samples taken after the frame had time to show, or of
+        all of them if none are that late. Empty senses come back as None."""
+        out = {"lux": None, "lux_mean": None, "lux_min": None, "lux_max": None,
+               "lux_n": len(self.lux), "rms_mean": None, "rms_max": None,
+               "rms_n": len(self.rms), "motion_mean": None, "motion_max": None}
+        if self.lux:
+            values = [v for _, v in self.lux]
+            settled = [v for age, v in self.lux if age >= self.settle_seconds] or values
+            out["lux"] = sum(settled) / len(settled)
+            out["lux_mean"] = sum(values) / len(values)
+            out["lux_min"] = min(values)
+            out["lux_max"] = max(values)
+        if self.rms:
+            out["rms_mean"] = sum(self.rms) / len(self.rms)
+            out["rms_max"] = max(self.rms)
+        if self.motion:
+            out["motion_mean"] = sum(self.motion) / len(self.motion)
+            out["motion_max"] = max(self.motion)
+        return out
+
+
+def log_loop(cur, logged_at, action, returned, result, temp_c, pressure_hpa):
+    def r(value, digits):
+        return round(value, digits) if value is not None else None
+
+    rgbw = action.get("rgbw") or (None, None, None, None)
+    voice = action.get("voice") or {}
+    light = (result or {}).get("light") or {}
+    sound = (result or {}).get("sound") or {}
+    cur.execute("""
+    INSERT INTO loop_log (
+        logged_at, tick, out_r, out_g, out_b, out_w, vox_freq, vox_ms, vox_vol,
+        lux, lux_mean, lux_min, lux_max, lux_n, rms_mean, rms_max, rms_n,
+        motion_mean, motion_max, temp_c, pressure_hpa,
+        lux_delta, lux_pred, lux_err, rms_excess, rms_pred, rms_err
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        logged_at, action.get("tick"),
+        r(rgbw[0], 4), r(rgbw[1], 4), r(rgbw[2], 4), r(rgbw[3], 4),
+        voice.get("freq"), voice.get("ms"), voice.get("vol"),
+        r(returned["lux"], 2), r(returned["lux_mean"], 2),
+        returned["lux_min"], returned["lux_max"], returned["lux_n"],
+        r(returned["rms_mean"], 1), returned["rms_max"], returned["rms_n"],
+        r(returned["motion_mean"], 4), returned["motion_max"],
+        r(temp_c, 2), r(pressure_hpa, 1),
+        light.get("delta"), light.get("pred"), light.get("err"),
+        sound.get("excess"), sound.get("pred"), sound.get("err"),
+    ))
 
 
 class TransportError(Exception):
@@ -714,6 +837,15 @@ def main():
         else:
             print("No saved autobiography. Starting a fresh one.")
 
+    forward = ForwardModel() if ENABLE_LOOP else None
+    if forward is not None:
+        if forward.load(FORWARD_MODEL_PATH):
+            print(f"Loaded forward model ({forward.ticks} ticks).")
+        else:
+            print("No saved forward model. Starting a fresh one.")
+    loop_window = ReturnWindow(LOOP_SETTLE_SECONDS)
+    last_action = None
+
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
     motion_norm = RollingNormalizer(MOTION_WINDOW_SECONDS, MOTION_EMA_ALPHA, MOTION_MIN_RANGE)
@@ -750,6 +882,8 @@ def main():
     atexit.register(lambda: save_field(field, FIELD_STATE_PATH))
     if expr_memory is not None:
         atexit.register(lambda: expr_memory.save(EXPR_MEMORY_PATH))
+    if forward is not None:
+        atexit.register(lambda: forward.save(FORWARD_MODEL_PATH))
 
     print(f"Collector running ({FIELD_VERSION} metabolism + structural memory).")
     print(f"ESP transport: {esp.description}")
@@ -759,6 +893,7 @@ def main():
     print(f"Outputs: onboard_led={ENABLE_ONBOARD_LED} strip_PIX={ENABLE_STRIP} "
           f"voice_VOX={ENABLE_VOICE}")
     print(f"Expression memory (autobiography): {'on' if ENABLE_EXPR_MEMORY else 'off'}")
+    print(f"Loop record + forward model: {'on' if ENABLE_LOOP else 'off'}")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -799,6 +934,8 @@ def main():
                 if raw_key in sample:
                     latest_raw[raw_key] = float(sample[raw_key])
             last_sample_at = now
+            if forward is not None:
+                loop_window.add(now, sample)
 
         if now < next_tick:
             continue
@@ -866,6 +1003,26 @@ def main():
         logged_at = datetime.now().isoformat()
         tick = field.tick_count
 
+        # The loop record. The window that just ended holds what the sensors
+        # returned while the previous frame was on the body: compare it with
+        # that frame, then start a new window for the one that just went out.
+        if forward is not None:
+            returned = loop_window.close()
+            if last_action is not None:
+                loop_result = forward.step(last_action, returned)
+                log_loop(cur, logged_at, last_action, returned, loop_result,
+                         weather_temp_c, weather_pressure_hpa)
+            expression = output_info.get("expression")
+            if expression is not None:
+                last_action = {
+                    "tick": tick,
+                    "rgbw": frame_rgbw(expression.get("pixels")) if ENABLE_STRIP else None,
+                    "voice": output_info.get("voice"),
+                }
+            else:
+                last_action = None
+            loop_window.open(monotonic())
+
         if tick % STATUS_PRINT_EVERY_TICKS == 0:
             metabolism = state.get("metabolism", {})
             counts = state.get("state_counts", {})
@@ -931,6 +1088,7 @@ def main():
             "readout": state.get("readout"),
             "expression": output_info.get("expression"),
             "expression_memory": expr_memory.stats() if expr_memory is not None else None,
+            "loop": forward.snapshot() if forward is not None else None,
         }
         write_json_atomic(STATE_JSON_PATH, snapshot)
 
@@ -957,6 +1115,9 @@ def main():
         if expr_memory is not None and tick % EXPR_MEMORY_SAVE_EVERY_TICKS == 0:
             expr_memory.save(EXPR_MEMORY_PATH)
 
+        if forward is not None and tick % LOOP_SAVE_EVERY_TICKS == 0:
+            forward.save(FORWARD_MODEL_PATH)
+
         # Schedule the next tick. If we fell behind, resync instead of bursting.
         next_tick += TICK_SECONDS
         if now > next_tick:
@@ -966,6 +1127,8 @@ def main():
     save_field(field, FIELD_STATE_PATH)
     if expr_memory is not None:
         expr_memory.save(EXPR_MEMORY_PATH)
+    if forward is not None:
+        forward.save(FORWARD_MODEL_PATH)
     conn.commit()
     conn.close()
 

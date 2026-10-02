@@ -43,7 +43,10 @@ from mind import cell_field_v06 as cf
 from mind.expression_v06 import (
     ExpressionDecoderV06,
     voice_command_from_signal,
+    voice_params_from_signal,
 )
+# The forward model also lives in the runtime module, for the same reason.
+from mind.forward_model_v06 import ForwardModel, frame_rgbw
 # Expression-memory primitives live in the runtime module; field_lab imports them
 # so the offline gates and the live collector share one source of truth.
 from mind.expression_memory_v06 import (
@@ -1174,6 +1177,165 @@ def darkroom_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The forward model: predicting its own echo (the predict cycle)
+# ---------------------------------------------------------------------------
+#
+# The dark-room probe above learned one scalar against a loop gain it was handed.
+# This is the real one, the module the collector runs: it only ever sees what
+# the body emitted (the strip frame, any tone) and what the raw sensors returned,
+# and has to work out for itself which part of the room is its own doing.
+#
+# The room is simulated: a sun that rises and sets, sensor noise, a lamp that
+# can be switched, a hand that can cover the strip, a mic with its own bursts.
+# The creature's life is the same in every run (same seed, same field); only the
+# room differs, so any difference in what the model learns is the room's.
+
+FORWARD_COUPLING = (20.0, 35.0, 10.0, 60.0)   # lux at the sensor per RGBW channel at full
+FORWARD_ECHO = 120000.0                       # mic rms above the room per unit tone volume
+FORWARD_VOICE_GAP = 20                        # ticks between tones, as in the collector
+
+
+def _run_forward(seed, ticks, coupling, lamp_every=0, cover=None):
+    """One life with the forward model watching. `coupling` is how much of each
+    strip channel reaches the light sensor (all zero = the sensor cannot see the
+    strip). Returns the model and what it tracked along the way."""
+    random.seed(seed)
+    rng = random.Random(seed + 1)
+    room = random.Random(seed + 2)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06()
+    model = ForwardModel()
+
+    day_len = 7200
+    lamp_on = False
+    last_voice = -FORWARD_VOICE_GAP
+    switch_err = []
+    plain_err = []
+    full = []
+
+    for t, values in enumerate(scenario_inputs("day", ticks, rng)):
+        state = field.step(values)
+        signal = decoder.read(state)
+        u = frame_rgbw(signal["pixels"])
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        voice = voice_params_from_signal(signal, speaker)
+        if voice and t - last_voice < FORWARD_VOICE_GAP:
+            voice = None
+        elif voice:
+            last_voice = t
+
+        sun = max(0.0, math.sin((t % day_len) / day_len * 2 * math.pi))
+        ambient = 20.0 + 600.0 * sun
+        switched = bool(lamp_every and t > 0 and t % lamp_every == 0)
+        if switched:
+            lamp_on = not lamp_on
+        if lamp_on:
+            ambient += 300.0
+        covered = bool(cover and cover[0] <= t < cover[1])
+        own = 0.0 if covered else sum(coupling[i] * u[i] for i in range(4))
+        lux = ambient + own + room.gauss(0.0, 0.5)
+
+        rms_mean = 4000.0 + 800.0 * room.random()
+        burst = 30000.0 * room.random() if room.random() < 0.03 else 0.0
+        rms_max = rms_mean + 1500.0 * room.random() + burst
+        if voice:
+            rms_max += FORWARD_ECHO * voice["vol"] * (0.85 + 0.3 * room.random())
+
+        result = model.step(
+            {"rgbw": u, "voice": voice},
+            {"lux": lux, "rms_mean": rms_mean, "rms_max": rms_max},
+        )
+        if result["light"]:
+            (switch_err if switched else plain_err).append(abs(result["light"]["err"]))
+        full.append(model.light.lux_at_full())
+
+    return {
+        "model": model,
+        "full": full,
+        "switch_err": statistics.mean(switch_err) if switch_err else 0.0,
+        "plain_err": statistics.mean(plain_err) if plain_err else 0.0,
+    }
+
+
+def forward_probe(args):
+    """The forward-model gate: it learns its own light and voice from what it
+    emits and what comes back, takes no credit for a room it cannot see itself
+    in, keeps the world's changes as the world's, and notices when its own
+    light stops reaching its eye."""
+    apply_overrides(args.set)
+    ticks = args.ticks
+    truth = sum(FORWARD_COUPLING)
+    cover = (int(ticks * 0.75), int(ticks * 0.75) + 600)
+
+    seen = _run_forward(args.seed, ticks, FORWARD_COUPLING)
+    blind = _run_forward(args.seed, ticks, (0.0, 0.0, 0.0, 0.0))
+    lamp = _run_forward(args.seed, ticks, FORWARD_COUPLING, lamp_every=1500)
+    hand = _run_forward(args.seed, ticks, FORWARD_COUPLING, cover=cover)
+
+    print(f"field {cf.FIELD_VERSION} | FORWARD MODEL | seed={args.seed} | ticks={ticks}")
+    print(f"\n  the room: strip adds {truth:.0f} lux at full, a tone adds "
+          f"{FORWARD_ECHO:.0f} rms per unit volume")
+    print("\n  light                 learned-lux-at-full   explained   weights (r g b w)")
+    for name, run_ in (("sensor sees strip ", seen), ("sensor is blind   ", blind),
+                       ("lamp switched     ", lamp)):
+        light = run_["model"].light
+        print(f"    {name}      {light.lux_at_full():7.1f}          "
+              f"{light.explained():6.3f}     "
+              + " ".join(f"{w:6.1f}" for w in light.w))
+    sound = seen["model"].sound
+    print(f"\n  sound: learned echo {sound.gain:.0f}, explained {sound.explained():.3f}, "
+          f"{sound.voiced} tones")
+    print(f"  lamp: error on a switch tick {lamp['switch_err']:.1f} lux, "
+          f"on an ordinary tick {lamp['plain_err']:.2f} lux")
+    at_start = hand["full"][cover[0] - 1]
+    at_end = hand["full"][cover[1] - 1]
+    print(f"  hand over the strip for {cover[1] - cover[0]} ticks: learned lux "
+          f"{at_start:.1f} -> {at_end:.1f}, then back to {hand['full'][-1]:.1f}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    light = seen["model"].light
+    check("it learns its own light",
+          abs(light.lux_at_full() - truth) < 0.2 * truth,
+          f"learned {light.lux_at_full():.1f} lux at full, room has {truth:.0f}")
+    check("the prediction beats assuming nothing",
+          light.explained() > 0.4,
+          f"explains {light.explained():.3f} of the change on ticks it acted")
+    blind_light = blind["model"].light
+    check("it takes no credit for a room it cannot see itself in",
+          abs(blind_light.lux_at_full()) < 0.1 * truth and blind_light.explained() < 0.1,
+          f"blind sensor: learned {blind_light.lux_at_full():.1f} lux, "
+          f"explained {blind_light.explained():.3f}")
+    lamp_light = lamp["model"].light
+    check("a lamp is the world, not itself",
+          abs(lamp_light.lux_at_full() - truth) < 0.2 * truth
+          and lamp["switch_err"] > 20.0 * lamp["plain_err"],
+          f"learned {lamp_light.lux_at_full():.1f} lux with the lamp switching; "
+          f"switch error {lamp['switch_err']:.0f} vs {lamp['plain_err']:.2f}")
+    check("it notices its light no longer reaching its eye",
+          at_end < 0.6 * at_start and abs(hand["full"][-1] - truth) < 0.3 * truth,
+          f"learned lux falls {at_start:.1f} -> {at_end:.1f} while covered, "
+          f"recovers to {hand['full'][-1]:.1f}")
+    check("it learns its own voice",
+          abs(sound.gain - FORWARD_ECHO) < 0.2 * FORWARD_ECHO and sound.explained() > 0.5,
+          f"learned echo {sound.gain:.0f} vs {FORWARD_ECHO:.0f}, "
+          f"explained {sound.explained():.3f}")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    print("  reading: from nothing but what it emits and what comes back, the\n"
+          "  model separates its own light and voice from the room. Sim rehearsal:\n"
+          "  the real coupling is whatever tools/loop_probe.py measures on the\n"
+          "  body. Passive. Nothing here feeds the field yet.")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -1230,6 +1392,9 @@ def main():
     p.add_argument("--darkroom", action="store_true",
                    help="run the dark-room loop probe (open-loop control vs "
                         "closed-loop-with-curiosity in an empty room)")
+    p.add_argument("--forward", action="store_true",
+                   help="run the forward-model gate (it learns its own light "
+                        "and voice from what it emits and what returns)")
     p.add_argument("--loop-gain", type=float, default=0.3,
                    help="how strongly the body's output returns as input "
                         "(dark-room probe; default 0.3, kept loose to avoid "
@@ -1254,6 +1419,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.darkroom:
         ok = darkroom_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.forward:
+        ok = forward_probe(args)
         sys.exit(0 if ok else 1)
     if args.predictive:
         ok = predictive_probe(args)
