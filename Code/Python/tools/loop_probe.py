@@ -156,15 +156,19 @@ def probe_sound(body, tones, volume, ms, gap):
             print(f"    {freq:6.0f} Hz  no mic readings")
             continue
         level = statistics.median(room)
+        # Judge the tone against the room's own peaks, not its usual level: a
+        # room with talking in it peaks far above its median without any tone.
         results.append({
             "freq": freq,
             "room_rms": round(level, 1),
             "room_peak": round(max(room), 1),
             "tone_peak": round(max(heard), 1),
             "times_room": round(max(heard) / level, 1) if level > 0 else None,
+            "times_room_peak": round(max(heard) / max(room), 1) if max(room) > 0 else None,
         })
         print(f"    {freq:6.0f} Hz  room {level:9.0f}  room peak {max(room):9.0f}  "
-              f"after tone {max(heard):9.0f}  ({results[-1]['times_room']}x the room)")
+              f"after tone {max(heard):9.0f}  "
+              f"({results[-1]['times_room_peak']}x the room's own peak)")
     return results
 
 
@@ -240,11 +244,12 @@ def main():
                 tones = [float(x) for x in args.tones.split(",") if x.strip()]
                 sound = probe_sound(body, tones, args.volume, args.tone_ms, args.tone_gap)
                 report["sound"] = {"tones": sound, "volume": args.volume, "ms": args.tone_ms}
-                ratios = [t["times_room"] for t in sound if t["times_room"]]
+                ratios = [t["times_room_peak"] for t in sound if t["times_room_peak"]]
                 if ratios:
                     verdict = ("the mic hears the speaker clearly" if min(ratios) >= 3.0 else
-                               "the mic hears the speaker faintly" if max(ratios) >= 1.5 else
-                               "the mic does not hear the speaker")
+                               "the mic hears the speaker faintly" if min(ratios) >= 1.5 else
+                               "the tones cannot be told from the room. If the room was "
+                               "noisy, run it again when it is quiet")
                     print(f"    reading: {verdict}.")
     finally:
         try:

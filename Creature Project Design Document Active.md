@@ -493,6 +493,12 @@ the Creature evolve without rewriting hardware.
 
 - The loop is validated in simulation, not yet on hardware. The physical light and
   sound loops are the next real test, and the result the project most needs.
+- The light loop is physically open. Measured with `loop_probe` on 2 October 2026
+  in a 768 lux room: no strip frame, up to all four channels at the cap, added a
+  measurable amount at the BH1750 (every frame within the 1.15 lux sensor noise).
+  The sensor has to move or be shielded before the Creature can see its own light.
+  The sound loop was inconclusive in the same run: the room was louder than the
+  tones, and the body stops streaming while it plays one.
 - The light-and-weather side stays weak by design, because slow steady signals
   produce no surprise. Only the loop keeps that side alive.
 - Bias and novelty steering are not wired to the body, so the live Creature records
