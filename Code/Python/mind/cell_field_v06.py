@@ -1237,6 +1237,13 @@ class CellField:
                 "spectral_radius": self.reservoir_radius,
                 "state": [round(x, 4) for x in self.reservoir_state],
                 "input": [round(x, 4) for x in self.reservoir_input],
+                # The fixed wiring, so the dashboard can draw the real
+                # structure. w[i][j] is the weight from reservoir cell j into
+                # cell i; w_in[i][k] is from ring cell input_cells[k] into i.
+                "input_cells": list(IN_BETWEEN_CELLS),
+                "leak": RESERVOIR_LEAK,
+                "w": [[round(x, 4) for x in row] for row in self.reservoir_W],
+                "w_in": [[round(x, 4) for x in row] for row in self.reservoir_Win],
             },
             "readout": {
                 hw: {

@@ -252,6 +252,11 @@
       pointer-events: none;
     }
 
+    /* v06 ring view: twelve big cells, so the labels can be read at a glance */
+    #field.v06 .clabel { font-size: 13px; stroke-width: 0.8px; }
+    #field.v06 .hwlabel { font-size: 13px; }
+    #field.v06 .hwsub { font-size: 10px; }
+
     .hwlabel {
       font: 700 9px -apple-system, system-ui, sans-serif;
       letter-spacing: .05em;
@@ -314,6 +319,28 @@
       font-size: 13px;
       line-height: 1.6;
     }
+
+    /* inspector: wiring lists (who a cell listens to, who it feeds) */
+    .wire-head {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .wire-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 4px;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .wire-table td { padding: 2px 0 2px 8px; text-align: right; white-space: nowrap; }
+    .wire-table td:first-child { text-align: left; white-space: normal; }
+    .wire-table tr.sum td { border-top: 1px solid var(--line); padding-top: 4px; font-weight: 600; }
+    .wire-table .dim { color: var(--muted); }
+    .wire-note { color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 6px; }
+    .spark { display: block; width: 100%; height: 44px; margin-top: 6px; }
 
     .pinned-note {
       min-height: 2.8em;
@@ -770,6 +797,7 @@
       fatigue: "#f0625e", line: "#232a33", accent: "#5ec8f8", rel: "#cfd8e3",
       linkGhost: "#4b5563",
       motion: "#b98bff", weather: "#6ee0c2", loop: "#e0772b", reservoir: "#5fa8e0",
+      pos: "#5fa8e0", neg: "#e0709a",   // sign of a fixed reservoir weight
     };
     const ROLE = {
       sound: { color: C.sound, label: "Sound anchor", hw: "INMP441" },
@@ -805,7 +833,8 @@
     // ---- build the static SVG scene once ----
     const svg = document.getElementById("field");
     const defs = el("defs", {});
-    defs.innerHTML = '<filter id="halo" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="7" /></filter>';
+    defs.innerHTML = '<filter id="halo" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="7" /></filter>' +
+      ["pos", "neg"].map(k => '<marker id="arrow-' + k + '" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="' + C[k] + '" /></marker>').join("");
     svg.appendChild(defs);
 
     const gGuide = el("g", {});      // faint body-plan ring
@@ -1121,7 +1150,7 @@
         if (!tr) return;
         const n = Number(tr.dataset.cell);
         pinned = (pinned === n) ? null : n;
-        renderInspector(); updateTableSelection(); applySelection();
+        renderInspector(); updateTableSelection(); (v06Mode ? applySelectionV06 : applySelection)();
       });
       tableBuilt = true;
     }
@@ -1157,6 +1186,7 @@
       const box = document.getElementById("inspector");
       const cells = (latest && latest.cells) || [];
       let sel = pinned != null ? pinned : hoverId;
+      if (resIndex(sel) != null) { renderReservoirInspector(box, resIndex(sel)); return; }
       let auto = false;
       if (sel == null && cells.length) {
         // Nothing chosen: follow the most active cell so the panel is never empty.
@@ -1184,6 +1214,7 @@
         <div class="insp-row"><div class="label">tick interval<b>${c.tick_interval ?? "--"}</b></div></div>
         <div class="insp-row"><div class="label">size<b>${fmt(c.size, 2)}</b></div></div>
         <div class="insp-row"><div class="label">homeo gain<b>${fmt(c.homeo_gain, 2)}</b></div></div>
+        ${v06Mode ? ringWiringHtml(c) : ""}
         ${pinned === sel ? '<div class="pinned-note">pinned — click again to release</div>' : ''}
         ${auto ? '<div class="pinned-note">following the most active cell — hover or click a cell to choose</div>' : ''}
       `;
@@ -1212,8 +1243,20 @@
     // v06_ring_layout.svg, drawn entirely from the snapshot (ring,
     // sense_anchors, emitter_anchors, connections, reservoir, readout).
     let v06Mode = false;
-    const v06 = { built: false, cellEls: {}, resEls: [], linkByKey: {}, readoutLines: [] };
-    const V6 = { CX: 380, CY: 318, R_OUT: 216, R_RES: 104 };
+    const v06 = { built: false, hasWiring: false, cellEls: {}, resEls: [], linkByKey: {}, readoutLines: [], driveLines: [], recLines: [] };
+    // Reservoir cells are selected as "R0".."R5"; ring cells stay plain numbers.
+    function resIndex(sel) {
+      return (typeof sel === "string" && sel[0] === "R") ? Number(sel.slice(1)) : null;
+    }
+    function snapshotHasWiring(f) {
+      return !!(f.reservoir && f.reservoir.w && f.reservoir.w_in);
+    }
+    // The reservoir's state one tick back (its recurrent input is last tick's
+    // state), and a short history for the inspector's trace. Browser-side only.
+    let prevRes = null;
+    const resHistory = [];
+    const RES_HISTORY_MAX = 120;
+    const V6 = { CX: 380, CY: 330, R_OUT: 235, R_RES: 118 };
     const V6_LOOP_CELLS = [1, 7];
 
     function isV06Snapshot(f) {
@@ -1235,27 +1278,81 @@
 
     function buildV06(f) {
       [...svg.childNodes].forEach(n => { if (n.tagName !== "defs") svg.removeChild(n); });
+      svg.setAttribute("viewBox", "55 20 650 620");
+      svg.classList.add("v06");
       const heading = document.getElementById("fieldHeading");
-      if (heading) heading.textContent = "Live field — twelve-cell ring + reservoir";
+      if (heading) heading.textContent = "Live field — twelve-cell ring + reservoir · click a cell to see its wiring";
 
       const emitters = f.emitter_anchors || [0, 6];
       const loopCells = V6_LOOP_CELLS;
 
-      const gReadout = el("g", {}), gDrive = el("g", {}), gLinks = el("g", {});
+      const gReadout = el("g", {}), gDrive = el("g", {}), gRec = el("g", {}), gLinks = el("g", {});
       const gHalo = el("g", {}), gRes = el("g", {}), gCells = el("g", {}), gTags = el("g", {});
-      svg.append(gReadout, gDrive, gLinks, gHalo, gRes, gCells, gTags);
+      svg.append(gReadout, gDrive, gRec, gLinks, gHalo, gRes, gCells, gTags);
 
-      const resSize = (f.reservoir && f.reservoir.size) || 6;
+      const res = f.reservoir || {};
+      const resSize = res.size || 6;
+      const RES_R = 20;
+      v06.hasWiring = snapshotHasWiring(f);
       v06.resEls = [];
+      v06.driveLines = [];
+      v06.recLines = [];
       for (let j = 0; j < resSize; j++) {
-        const p = resPos(j);
-        const body = el("circle", { cx: p.x, cy: p.y, r: 11, fill: C.reservoir, "fill-opacity": 0.15, stroke: C.reservoir, "stroke-width": 1.6, "stroke-opacity": 0.85 });
-        const label = el("text", { x: p.x, y: p.y + 3.5, "text-anchor": "middle", class: "clabel" });
-        label.textContent = "R" + j;
-        gRes.append(body, label);
-        v06.resEls.push({ body });
-        const a = ringPos(2 * j + 1);
-        gDrive.appendChild(el("line", { x1: a.x, y1: a.y, x2: p.x, y2: p.y, stroke: C.reservoir, "stroke-width": 1, "stroke-opacity": 0.32 }));
+        const p = resPos(j), id = "R" + j;
+        const g = el("g", { class: "cell", tabindex: 0 });
+        const body = el("circle", { cx: p.x, cy: p.y, r: RES_R, fill: C.reservoir, "fill-opacity": 0.15, stroke: C.reservoir, "stroke-width": 2.2, "stroke-opacity": 0.85 });
+        const label = el("text", { x: p.x, y: p.y + 4.5, "text-anchor": "middle", class: "clabel" });
+        label.textContent = id;
+        g.append(body, label);
+        gRes.appendChild(g);
+        v06.resEls.push({ g, body });
+        g.addEventListener("mouseenter", () => setHover(id));
+        g.addEventListener("mouseleave", () => setHover(null));
+        g.addEventListener("focus", () => setHover(id));
+        g.addEventListener("click", () => { pinned = (pinned === id) ? null : id; renderInspector(); applySelectionV06(); });
+        if (!v06.hasWiring) {
+          // Older snapshot without the wiring: keep the schematic single line.
+          const a = ringPos(2 * j + 1);
+          gDrive.appendChild(el("line", { x1: a.x, y1: a.y, x2: p.x, y2: p.y, stroke: C.reservoir, "stroke-width": 1, "stroke-opacity": 0.32 }));
+        }
+      }
+
+      if (v06.hasWiring) {
+        // Drive: every in-between ring cell feeds every reservoir cell (w_in is dense).
+        const inCells = res.input_cells || [];
+        const inMax = Math.max(...res.w_in.flat().map(Math.abs)) || 1;
+        res.w_in.forEach((row, j) => row.forEach((w, k) => {
+          const a = ringPos(inCells[k]), b = resPos(j);
+          const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: w >= 0 ? C.pos : C.neg, "stroke-linecap": "round" });
+          gDrive.appendChild(ln);
+          v06.driveLines.push({ ln, j, cell: inCells[k], s: Math.abs(w) / inMax });
+        }));
+        // Recurrent: w[i][j] runs from cell j into cell i. Sparse and one-way, so
+        // each is a curved arrow; a cell that feeds itself gets a small loop.
+        const recMax = Math.max(...res.w.flat().map(Math.abs)) || 1;
+        res.w.forEach((row, i) => row.forEach((w, j) => {
+          if (!w) return;
+          const col = w >= 0 ? C.pos : C.neg;
+          let e;
+          if (i === j) {
+            const p = resPos(i), dx = p.x - V6.CX, dy = p.y - V6.CY, d = Math.hypot(dx, dy);
+            e = el("circle", { cx: p.x + dx / d * (RES_R + 8), cy: p.y + dy / d * (RES_R + 8), r: 12, fill: "none", stroke: col });
+          } else {
+            const a = resPos(j), b = resPos(i);
+            const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy), ux = dx / d, uy = dy / d;
+            const x1 = a.x + ux * (RES_R + 2), y1 = a.y + uy * (RES_R + 2);
+            const x2 = b.x - ux * (RES_R + 5), y2 = b.y - uy * (RES_R + 5);
+            // Bend to one side of the direction of travel, so a pair of cells
+            // that feed each other get two separate arrows.
+            const cx = (x1 + x2) / 2 - uy * d * 0.16, cy = (y1 + y2) / 2 + ux * d * 0.16;
+            e = el("path", {
+              d: `M${x1.toFixed(1)},${y1.toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`,
+              fill: "none", stroke: col, "stroke-linecap": "round", "marker-end": `url(#arrow-${w >= 0 ? "pos" : "neg"})`
+            });
+          }
+          gRec.appendChild(e);
+          v06.recLines.push({ ln: e, from: j, to: i, s: Math.abs(w) / recMax });
+        }));
       }
 
       v06.readoutLines = [];
@@ -1266,7 +1363,7 @@
           const a = resPos(j);
           const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: C.loop, "stroke-width": 1, "stroke-opacity": 0.08, "stroke-dasharray": "5 3" });
           gReadout.appendChild(ln);
-          v06.readoutLines.push({ ln, hwKey, j });
+          v06.readoutLines.push({ ln, hwKey, j, em });
         }
       });
 
@@ -1282,29 +1379,29 @@
       v06.cellEls = {};
       (f.cells || []).forEach(c => {
         const i = c.n, p = ringPos(i), role = roleOf(c), col = ROLE[role].color;
-        const baseR = c.type === "anchor_emitter" ? 17 : (c.type === "anchor_sensor" ? 15 : 12);
+        const baseR = c.type === "anchor_emitter" ? 30 : (c.type === "anchor_sensor" ? 26 : 22);
         const halo = el("circle", { cx: p.x, cy: p.y, r: baseR, fill: "#fff", "fill-opacity": 0, filter: "url(#halo)" });
         gHalo.appendChild(halo);
         const g = el("g", { class: "cell", tabindex: 0 });
         const rel = el("circle", { cx: p.x, cy: p.y, r: baseR + 5, fill: "none", stroke: C.rel, "stroke-width": 1, "stroke-opacity": 0.1 });
         const ripple = el("circle", { cx: p.x, cy: p.y, r: baseR + 2, fill: "none", stroke: "#fff", "stroke-width": 1, "stroke-opacity": 0 });
         const fatigue = el("circle", { cx: p.x, cy: p.y, r: baseR + 9, fill: "none", stroke: C.fatigue, "stroke-width": 1.5, "stroke-opacity": 0 });
-        const body = el("circle", { cx: p.x, cy: p.y, r: baseR, fill: col, "fill-opacity": 0.16, stroke: col, "stroke-width": 1.8, "stroke-opacity": 0.85 });
-        const label = el("text", { x: p.x, y: p.y + 3.5, "text-anchor": "middle", class: "clabel" });
+        const body = el("circle", { cx: p.x, cy: p.y, r: baseR, fill: col, "fill-opacity": 0.16, stroke: col, "stroke-width": 2.4, "stroke-opacity": 0.85 });
+        const label = el("text", { x: p.x, y: p.y + 4.5, "text-anchor": "middle", class: "clabel" });
         label.textContent = "C" + i;
         g.append(rel, ripple, fatigue, body, label);
         gCells.appendChild(g);
-        v06.cellEls[i] = { halo, rel, ripple, fatigue, body, label, baseR, col };
+        v06.cellEls[i] = { g, halo, rel, ripple, fatigue, body, label, baseR, col };
         g.addEventListener("mouseenter", () => setHover(i));
         g.addEventListener("mouseleave", () => setHover(null));
         g.addEventListener("focus", () => setHover(i));
-        g.addEventListener("click", () => { pinned = (pinned === i) ? null : i; renderInspector(); });
+        g.addEventListener("click", () => { pinned = (pinned === i) ? null : i; renderInspector(); applySelectionV06(); });
 
         if (c.type === "anchor_emitter" || c.type === "anchor_sensor") {
-          const lp = radialLabelPos(i, 30);
+          const lp = radialLabelPos(i, baseR + 24);
           const t1 = el("text", { x: lp.x, y: lp.y, "text-anchor": "middle", class: "hwlabel", fill: col });
           t1.textContent = (c.label || "").replace("emitter_", "").toUpperCase();
-          const t2 = el("text", { x: lp.x, y: lp.y + 12, "text-anchor": "middle", class: "hwsub" });
+          const t2 = el("text", { x: lp.x, y: lp.y + 13, "text-anchor": "middle", class: "hwsub" });
           let hwName = ROLE[role].hw;
           if (c.hardware_id === "emitter_speaker") hwName = "MAX98357A";
           else if (c.hardware_id === "emitter_led") hwName = "SK6812 16px";
@@ -1318,6 +1415,11 @@
     }
 
     function renderV06(f) {
+      if (latest && latest.reservoir) prevRes = { tick: latest.tick, state: latest.reservoir.state || [] };
+      if (f.reservoir && f.reservoir.state) {
+        resHistory.push(f.reservoir.state);
+        if (resHistory.length > RES_HISTORY_MAX) resHistory.shift();
+      }
       latest = f;
       const byN = {};
       (f.cells || []).forEach(c => byN[c.n] = c);
@@ -1337,7 +1439,7 @@
           if (w > 0.05) liveLinks++;
           const wf = clamp01(w / W_MAX);
           ln.setAttribute("stroke", rec.loop ? C.loop : C.rel);
-          ln.setAttribute("stroke-width", ((rec.loop ? 1.8 : 0.8) + 3.4 * wf).toFixed(2));
+          ln.setAttribute("stroke-width", ((rec.loop ? 3 : 1.6) + 5 * wf).toFixed(2));
           ln.setAttribute("stroke-opacity", ((rec.loop ? 0.5 : 0.12) + 0.55 * wf).toFixed(3));
           ln.removeAttribute("stroke-dasharray");
         }
@@ -1378,25 +1480,206 @@
         R.body.setAttribute("stroke-opacity", (0.45 + 0.45 * v).toFixed(3));
       });
 
-      const readout = f.readout || {};
-      v06.readoutLines.forEach(({ ln, hwKey, j }) => {
-        const ws = readout[hwKey] && readout[hwKey].weights;
-        const wv = ws ? Math.abs(ws[j] || 0) : 0;
-        ln.setAttribute("stroke-opacity", clamp01(0.06 + wv * 1.5).toFixed(3));
-        ln.setAttribute("stroke-width", (0.8 + 2.2 * clamp01(wv * 2)).toFixed(2));
-      });
-
       applySelectionV06();
       renderInspector();
       renderCellTable();
     }
 
+    // Which cells the selected one is wired to, read from the snapshot.
+    function v06Related(sel) {
+      const ring = new Set(), res = new Set();
+      const f = latest || {}, r = f.reservoir || {};
+      const inCells = r.input_cells || [1, 3, 5, 7, 9, 11];
+      const emitters = f.emitter_anchors || [0, 6];
+      const size = r.size || 6;
+      const j = resIndex(sel);
+      if (j != null) {
+        res.add(j);
+        inCells.forEach(n => ring.add(n));
+        emitters.forEach(n => ring.add(n));
+        if (r.w) for (let i = 0; i < size; i++) { if (r.w[i][j] || r.w[j][i]) res.add(i); }
+      } else {
+        ring.add(sel);
+        (f.connections || []).forEach(cn => { if (cn.a === sel) ring.add(cn.b); if (cn.b === sel) ring.add(cn.a); });
+        if (inCells.includes(sel) || emitters.includes(sel)) for (let i = 0; i < size; i++) res.add(i);
+      }
+      return { ring, res };
+    }
+
+    // Selection drives the whole picture: with nothing chosen the wiring sits
+    // faint in the background; choosing a cell lifts its own wires and the
+    // cells on the other end, and dims the rest.
     function applySelectionV06() {
+      if (!v06.built || !latest) return;
       const sel = pinned != null ? pinned : hoverId;
+      const on = sel != null;
+      const rj = resIndex(sel);
+      const rel = on ? v06Related(sel) : null;
+
       Object.keys(v06.cellEls).forEach(k => {
-        const E = v06.cellEls[k];
-        E.body.setAttribute("stroke-width", Number(k) === sel ? 3.4 : (E.baseR >= 17 ? 2.2 : 1.8));
+        const E = v06.cellEls[k], n = Number(k);
+        E.body.setAttribute("stroke-width", n === sel ? 4.4 : (E.baseR >= 30 ? 2.8 : 2.4));
+        E.g.setAttribute("opacity", !on || rel.ring.has(n) ? 1 : 0.3);
       });
+      v06.resEls.forEach((R, j) => {
+        R.body.setAttribute("stroke-width", j === rj ? 4 : 2.2);
+        R.g.setAttribute("opacity", !on || rel.res.has(j) ? 1 : 0.3);
+      });
+
+      v06.driveLines.forEach(({ ln, j, cell, s }) => {
+        const mine = on && (rj === j || sel === cell);
+        ln.setAttribute("opacity", (mine ? 0.3 + 0.7 * s : (on ? 0.03 : 0.07 + 0.25 * s)).toFixed(3));
+        ln.setAttribute("stroke-width", (mine ? 1.5 + 4.5 * s : 1).toFixed(2));
+      });
+      v06.recLines.forEach(({ ln, from, to, s }) => {
+        const mine = on && rj != null && (from === rj || to === rj);
+        ln.setAttribute("opacity", (mine ? 0.5 + 0.5 * s : (on ? 0.06 : 0.3 + 0.5 * s)).toFixed(3));
+        ln.setAttribute("stroke-width", (mine ? 1.8 + 3.4 * s : 1.2 + 2 * s).toFixed(2));
+      });
+
+      const readout = latest.readout || {};
+      v06.readoutLines.forEach(({ ln, hwKey, j, em }) => {
+        const ws = readout[hwKey] && readout[hwKey].weights;
+        const wv = ws ? Math.abs(ws[j] || 0) : 0;
+        const mine = on && (rj === j || sel === em);
+        // A learned weight can be tiny; a chosen wire still has to be findable.
+        const op = clamp01(0.06 + wv * 1.5);
+        ln.setAttribute("stroke-opacity", (mine ? Math.max(op, 0.55) : (on ? 0.03 : op)).toFixed(3));
+        ln.setAttribute("stroke-width", ((mine ? 2 : 1.2) + 3 * clamp01(wv * 2)).toFixed(2));
+      });
+
+      Object.keys(v06.linkByKey).forEach(key => {
+        const [a, b] = key.split("-").map(Number);
+        v06.linkByKey[key].ln.setAttribute("opacity", !on || a === sel || b === sel ? 1 : 0.2);
+      });
+    }
+
+    // ---- wiring inspector ----
+    function signed(v, d = 3) {
+      if (v === null || v === undefined || Number.isNaN(v)) return "--";
+      return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(d);
+    }
+    function wireColor(w) { return w >= 0 ? C.pos : C.neg; }
+    function ringName(n) {
+      const c = ((latest && latest.cells) || []).find(x => x.n === n);
+      return "C" + n + (c && c.label ? ' <span class="dim">' + c.label.replace(/_x_/g, " × ").replace("emitter_", "") + "</span>" : "");
+    }
+    // One row: source, fixed weight, the source's value now, and their product.
+    function wireRow(name, w, v) {
+      const push = (v === null || v === undefined) ? null : w * v;
+      return `<tr><td>${name}</td><td style="color:${wireColor(w)}">${signed(w)}</td>` +
+        `<td class="dim">× ${v === null || v === undefined ? "--" : signed(v, 2)}</td><td>${signed(push)}</td></tr>`;
+    }
+    function signedBar(label, value) {
+      const v = Math.max(-1, Math.min(1, value || 0));
+      const left = v >= 0 ? 50 : 50 + v * 50;
+      return `<div class="insp-row">
+        <div class="label">${label}<b>${signed(value)}</b></div>
+        <div class="bar-track" style="position:relative"><div class="bar-fill" style="position:absolute;left:${left.toFixed(1)}%;width:${(Math.abs(v) * 50).toFixed(1)}%;background:${wireColor(v)}"></div></div>
+      </div>`;
+    }
+    function resSparkline(j) {
+      if (resHistory.length < 2) return "";
+      const W = 240, H = 44, n = resHistory.length;
+      const pts = resHistory.map((s, i) => {
+        const v = Math.max(-1, Math.min(1, s[j] || 0));
+        return (i / (RES_HISTORY_MAX - 1) * W).toFixed(1) + "," + (H / 2 - v * (H / 2 - 2)).toFixed(1);
+      }).join(" ");
+      return `<div class="wire-head">state, last ${n} ticks seen here</div>
+        <svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+          <line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" stroke="${C.line}" stroke-width="1" />
+          <polyline points="${pts}" fill="none" stroke="${C.reservoir}" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        </svg>`;
+    }
+
+    function renderReservoirInspector(box, j) {
+      const f = latest || {}, r = f.reservoir || {};
+      const state = (r.state || [])[j];
+      const sel = "R" + j;
+      let html = `
+        <div class="insp-name" style="color:${C.reservoir}">${sel}</div>
+        <div class="insp-role">Reservoir cell · wiring fixed at birth, never learns · holds a fading echo of recent ticks</div>
+        ${signedBar("state", state)}
+        ${resSparkline(j)}`;
+
+      if (!snapshotHasWiring(f)) {
+        html += '<div class="wire-note">This snapshot does not carry the reservoir wiring. The collector needs the updated cell_field_v06.py.</div>';
+      } else {
+        const inCells = r.input_cells || [];
+        const havePrev = prevRes && prevRes.tick === f.tick - 1;
+        let sum = 0, complete = true;
+        let rows = "";
+        r.w_in[j].forEach((w, k) => {
+          const v = (r.input || [])[k];
+          rows += wireRow(ringName(inCells[k]), w, v);
+          sum += w * (v || 0);
+        });
+        let recIn = 0;
+        r.w[j].forEach((w, i) => {
+          if (!w) return;
+          recIn++;
+          const v = havePrev ? prevRes.state[i] : null;
+          rows += wireRow((i === j ? "itself" : "R" + i) + ' <span class="dim">one tick ago</span>', w, v);
+          if (v === null || v === undefined) complete = false; else sum += w * v;
+        });
+        const leak = r.leak ?? 1;
+        const out = complete && (leak === 1 || havePrev)
+          ? (1 - leak) * (havePrev ? prevRes.state[j] : 0) + leak * Math.tanh(sum) : null;
+        html += `<div class="wire-head">Listens to · weight × value now = push</div>
+          <table class="wire-table">${rows}
+            <tr class="sum"><td>sum</td><td></td><td></td><td>${complete ? signed(sum) : "--"}</td></tr>
+            <tr><td>squashed (tanh) = state</td><td></td><td></td><td>${signed(out)}</td></tr>
+          </table>`;
+        if (!recIn) html += '<div class="wire-note">No reservoir cell feeds this one. It hears only the ring.</div>';
+        if (!complete) html += '<div class="wire-note">The reservoir rows need two ticks in a row; they fill in on the next one.</div>';
+
+        let feeds = "";
+        r.w.forEach((row, i) => { if (row[j] && i !== j) feeds += wireRow("R" + i, row[j], state); });
+        const readout = f.readout || {};
+        Object.keys(readout).forEach(hw => {
+          const w = (readout[hw].weights || [])[j] || 0;
+          feeds += wireRow(hw.replace("emitter_", "") + ' readout <span class="dim">learned</span>', w, state);
+        });
+        html += `<div class="wire-head">Feeds · weight × its state = push</div>
+          <table class="wire-table">${feeds}</table>
+          <div class="wire-note"><span style="color:${C.pos}">blue</span> weights push the same way, <span style="color:${C.neg}">pink</span> push the opposite way. Only the readout weights change over time.</div>`;
+      }
+      html += pinned === sel ? '<div class="pinned-note">pinned — click again to release</div>' : "";
+      box.innerHTML = html;
+    }
+
+    // Wiring of a ring cell: its two ring neighbours, and the reservoir on
+    // whichever side it touches (in-between cells drive it, emitters read it).
+    function ringWiringHtml(c) {
+      const f = latest || {}, r = f.reservoir || {};
+      let html = "";
+      let rows = "";
+      (f.connections || []).forEach(cn => {
+        if (cn.a !== c.n && cn.b !== c.n) return;
+        const other = cn.a === c.n ? cn.b : cn.a;
+        rows += `<tr><td>${ringName(other)}</td><td>${fmt(cn.weight, 3)}</td></tr>`;
+      });
+      if (rows) html += `<div class="wire-head">Ring neighbours · link strength</div><table class="wire-table">${rows}</table>`;
+
+      const k = (r.input_cells || []).indexOf(c.n);
+      if (k >= 0 && r.w_in) {
+        rows = "";
+        r.w_in.forEach((row, j) => { rows += wireRow("R" + j, row[k], c.activation); });
+        html += `<div class="wire-head">Drives the reservoir · weight × its activation = push</div><table class="wire-table">${rows}</table>`;
+      }
+      const ro = (f.readout || {})[c.hardware_id];
+      if (ro && ro.weights) {
+        rows = "";
+        const size = r.size || 6;
+        for (let j = 0; j < size; j++) rows += wireRow("R" + j, ro.weights[j] || 0, (r.state || [])[j]);
+        html += `<div class="wire-head">Reads the reservoir · learned weight × state = push</div>
+          <table class="wire-table">${rows}
+            <tr><td>bias</td><td></td><td></td><td>${signed(ro.weights[size])}</td></tr>
+            <tr class="sum"><td>readout, predicting ${ro.predicts}</td><td></td><td></td><td>${signed(ro.output)}</td></tr>
+          </table>
+          <div class="wire-note">This readout is trained every tick but does not drive the emitter yet.</div>`;
+      }
+      return html;
     }
 
     function setV06Legend() {
@@ -1415,7 +1698,9 @@
         '<div class="legend-item"><span class="legend-line dotted" style="border-color:' + C.linkGhost + '"></span> Pruned connection <span class="muted">· weight has faded near zero · still wired, just quiet for now</span></div>' +
         '<div class="legend-item"><span class="legend-line" style="border-color:' + C.loop + '"></span> Loop wiring <span class="muted">· C1 (speaker/mic) and C7 (LED/light) to the emitters · loop isn\'t physically closed yet, so no real feedback runs here yet</span></div>' +
         '<div class="legend-item"><span class="legend-line dashed" style="border-color:' + C.loop + '"></span> Trained readout <span class="muted">· reservoir cell → emitter · same orange as loop wiring, dashed instead of solid · brighter dash = more influence right now</span></div>' +
-        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.reservoir + '"></span> Reservoir drive <span class="muted">· ring cell → reservoir cell · fixed strength, never changes</span></div>' +
+        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.pos + '"></span> Reservoir wiring <span class="muted">· fixed, never changes · faint straight lines: each in-between ring cell (C1, C3 … C11) into every reservoir cell · curved arrows: one reservoir cell into another · a small loop: a cell feeding itself</span></div>' +
+        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.neg + '"></span> Opposing weight <span class="muted">· same wiring, negative sign: pushes the receiving cell the other way · thicker = stronger</span></div>' +
+        '<div class="legend-sub">Click any cell to pin it: its own wires light up, the cells it connects to stay bright, and the inspector lists every weight with what it is carrying this tick.</div>' +
         '<div class="legend-sub">Cell fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
     }
 
@@ -1429,7 +1714,7 @@
         renderReadout(f);
         renderMetabolism(f);
         renderLoop(f);
-        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built) buildV06(f); renderV06(f); }
+        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built || v06.hasWiring !== snapshotHasWiring(f)) buildV06(f); renderV06(f); }
         else { v06Mode = false; render(f); }
       } catch (err) {
         document.getElementById("dot").className = "dot stale";

@@ -565,7 +565,12 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   show activation, state, and relevance; links show weight, with scarred links drawn
   as ghosts. The cell inspector is always open (it follows the most active cell
   until one is hovered or pinned). A Sensors panel shows the raw readings, with
-  temperature in both C and F.
+  temperature in both C and F. The reservoir is drawn from its real wiring, which
+  the snapshot carries (`reservoir.w`, `reservoir.w_in`, `reservoir.input_cells`):
+  every in-between ring cell into every reservoir cell, and the sparse one-way
+  links between reservoir cells as arrows, coloured by sign. Clicking any cell
+  pins it, lifts its own wires, dims the rest, and lists each weight in the
+  inspector with what it carries this tick.
 - Sensor API: `/api/sensors` and `/api/sensors/<name>` serve light, sound, motion,
   temperature, and pressure as stable, versioned JSON so other apps and services
   can treat the Creature as ordinary sensors. Raw values come from a `sensors`
