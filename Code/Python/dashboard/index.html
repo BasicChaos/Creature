@@ -769,8 +769,11 @@
     // ---- config ----
     const API = "";
     const POLL_MS = 1000;          // poll cadence (the collector writes a new snapshot every 1 s tick)
-    const STALE_AFTER_S = 8;       // mark stale if the snapshot is older than this
     const STATIC_MODE = window.location.hostname.includes("basicchaos.com");
+    // Mark stale if the snapshot is older than this. The public mirror only gets
+    // a new snapshot every sync pass (13 seconds, measured), and that snapshot is
+    // already a second or two old when it lands, so it is given longer.
+    const STALE_AFTER_S = STATIC_MODE ? 20 : 8;
     function dataUrl(staticPath, apiPath) {
       const bust = "ts=" + Date.now();
       return STATIC_MODE ? `${staticPath}?${bust}` : `${apiPath}${apiPath.includes("?") ? "&" : "?"}${bust}`;
