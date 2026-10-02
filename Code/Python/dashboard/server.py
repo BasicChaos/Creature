@@ -29,6 +29,7 @@ if str(PROJECT_PYTHON_ROOT) not in sys.path:
 
 # Shared with the collector, so reader and writer always agree on paths.
 from common.paths import DB_PATH, STATE_JSON_PATH, MUTE_FLAG_PATH
+from dashboard.learning import read_learning, WINDOWS as LEARNING_WINDOWS, DEFAULT_WINDOW as LEARNING_DEFAULT
 
 DASHBOARD_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_PATH = os.path.join(DASHBOARD_DIR, "index.html")
@@ -122,6 +123,23 @@ def read_sensors():
         "stale": stale,
         "sensors": sensors,
     }
+
+
+# Learning history changes slowly and costs a database read, so keep each
+# window's answer for a while.
+LEARNING_CACHE_SECONDS = 120
+_learning_cache = {}
+
+
+def read_learning_cached(window):
+    if window not in LEARNING_WINDOWS:
+        window = LEARNING_DEFAULT
+    hit = _learning_cache.get(window)
+    if hit and time.time() - hit[0] < LEARNING_CACHE_SECONDS:
+        return hit[1]
+    doc = read_learning(DB_PATH, window)
+    _learning_cache[window] = (time.time(), doc)
+    return doc
 
 
 def read_field_history(seconds):
@@ -318,6 +336,11 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             seconds = int(query.get("seconds", ["600"])[0])
             self._send_json(read_field_history(seconds))
+            return
+
+        if path == "/api/learning":
+            query = parse_qs(parsed.query)
+            self._send_json(read_learning_cached(query.get("window", [LEARNING_DEFAULT])[0]))
             return
 
         if path == "/api/events":

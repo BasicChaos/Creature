@@ -175,9 +175,27 @@
       background: #0b0e13;
     }
 
-    .cell-list-panel {
+    .cell-list-panel, .learning-panel {
       grid-column: 1 / -1;
     }
+
+    /* learning panel: four small charts over one shared window of ticks */
+    .learn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .seg button { background: none; border: 0; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; }
+    .seg button + button { border-left: 1px solid var(--line); }
+    .seg button.on { background: var(--line); color: var(--text); }
+    .learn-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+    .learn-card { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 6px; min-width: 0; }
+    .learn-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .learn-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; min-height: 1.3em; }
+    .learn-value small { color: var(--muted); font-size: 11px; font-weight: 400; margin-left: 6px; }
+    .learn-sub { color: var(--muted); font-size: 11px; line-height: 1.4; min-height: 2.8em; margin-top: 2px; }
+    .learn-card svg { display: block; width: 100%; height: auto; margin-top: 4px; }
+    .learn-tick { fill: var(--muted); font: 400 9px -apple-system, system-ui, sans-serif; }
+    .learn-tip { position: absolute; top: 8px; right: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
+    .learn-tip[hidden] { display: none; }
+    .learn-foot { color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 10px; }
 
     .bottom-panels {
       grid-column: 1 / -1;
@@ -206,7 +224,7 @@
       }
       .stage #field { flex: none; height: auto; max-height: 620px; }
 
-      .cell-list-panel {
+      .cell-list-panel, .learning-panel {
         grid-column: auto;
       }
 
@@ -582,6 +600,22 @@
       <div id="inspector">
         <div class="hint">Waiting for data…</div>
       </div>
+    </div>
+
+    <div class="panel learning-panel">
+      <div class="learn-head">
+        <h2>Learning — is it predicting better over time?</h2>
+        <div class="seg" id="learnWindow">
+          <button data-w="6h">6 h</button><button data-w="24h" class="on">24 h</button><button data-w="7d">7 d</button>
+        </div>
+      </div>
+      <div class="learn-grid">
+        <div class="learn-card" id="learnLight"></div>
+        <div class="learn-card" id="learnVoice"></div>
+        <div class="learn-card" id="learnSurprise"></div>
+        <div class="learn-card" id="learnLinks"></div>
+      </div>
+      <div class="learn-foot" id="learnFoot">Waiting for history…</div>
     </div>
 
     <div class="panel cell-list-panel">
@@ -1553,6 +1587,7 @@
         const [a, b] = key.split("-").map(Number);
         v06.linkByKey[key].ln.setAttribute("opacity", !on || a === sel || b === sel ? 1 : 0.2);
       });
+      if (learnDoc && learnDoc.tick_to != null && sel !== learnSel) drawLinksChart();
     }
 
     // ---- wiring inspector ----
@@ -1704,6 +1739,160 @@
         '<div class="legend-sub">Cell fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
     }
 
+    // ---- learning panel ----
+    // Slow numbers from the database (dashboard/learning.py): whether its
+    // predictions are getting better. All four charts share one window of ticks,
+    // so a stretch with no record shows as empty space, not as a shorter axis.
+    let learnWindow = "24h", learnDoc = null, learnSel = null;
+    const LEARN = { W: 320, H: 132, L: 34, R: 10, T: 8, B: 18 };
+    function learnTime(at) {
+      if (!at) return "--";
+      // Ticks are the creature's own clock, so a window can span several days.
+      const day = learnDoc && (learnDoc.at_from || "").slice(0, 10) !== (learnDoc.at_to || "").slice(0, 10);
+      return (day ? at.slice(8, 10) + "." + at.slice(5, 7) + " " : "") + at.slice(11, 16);
+    }
+
+    // cfg: { title, value, sub, series: [{ name, color, width, opacity, pts: [{t, v, at, tip}] }],
+    //        yMin, yMax, yTicks, fmt, dots }
+    function drawChart(id, cfg) {
+      const card = document.getElementById(id);
+      if (!card) return;
+      const { W, H, L, R, T, B } = LEARN;
+      const x0 = learnDoc.tick_from, x1 = Math.max(learnDoc.tick_to, x0 + 1);
+      const gap = 2.5 * learnDoc.window_ticks / 96;
+      const X = t => L + (t - x0) / (x1 - x0) * (W - L - R);
+      const Y = v => T + (1 - (v - cfg.yMin) / (cfg.yMax - cfg.yMin)) * (H - T - B);
+      let g = "";
+      cfg.yTicks.forEach(v => {
+        const y = Y(v).toFixed(1);
+        g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="${C.line}" stroke-width="1" />` +
+          `<text x="${L - 5}" y="${(Y(v) + 3).toFixed(1)}" text-anchor="end" class="learn-tick">${cfg.fmt(v)}</text>`;
+      });
+      g += `<text x="${L}" y="${H - 4}" class="learn-tick">${learnTime(learnDoc.at_from)}</text>` +
+        `<text x="${W - R}" y="${H - 4}" text-anchor="end" class="learn-tick">${learnTime(learnDoc.at_to)}</text>`;
+      const flat = [];
+      cfg.series.forEach((s, si) => {
+        const op = s.opacity ?? 1;
+        if (cfg.dots || s.pts.length === 1) {
+          s.pts.forEach(p => { g += `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3.5" fill="${s.color}" fill-opacity="${op}" stroke="#0e1116" stroke-width="1" />`; });
+        } else {
+          let d = "", prev = null;
+          s.pts.forEach(p => {
+            d += (prev === null || p.t - prev > gap ? "M" : "L") + X(p.t).toFixed(1) + "," + Y(p.v).toFixed(1);
+            prev = p.t;
+          });
+          g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-opacity="${op}" stroke-width="${s.width || 2}" stroke-linejoin="round" stroke-linecap="round" />`;
+        }
+        s.pts.forEach(p => flat.push({ x: X(p.t), y: Y(p.v), p, s }));
+      });
+      if (!flat.length) g += `<text x="${(L + W - R) / 2}" y="${H / 2}" text-anchor="middle" class="learn-tick">no record in this window</text>`;
+      g += `<line class="hair" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="${C.rel}" stroke-opacity="0.5" stroke-width="1" visibility="hidden" />` +
+        `<circle class="mark" r="5" fill="none" stroke="#fff" stroke-width="1.5" visibility="hidden" />`;
+      card.innerHTML = `<div class="learn-title">${cfg.title}</div><div class="learn-value">${cfg.value}</div>` +
+        `<div class="learn-sub">${cfg.sub}</div><svg viewBox="0 0 ${W} ${H}">${g}</svg><div class="learn-tip" hidden></div>`;
+
+      // Hover: the nearest point by x, then by y, so close lines can be told apart.
+      const chart = card.querySelector("svg"), tip = card.querySelector(".learn-tip");
+      const hair = chart.querySelector(".hair"), mark = chart.querySelector(".mark");
+      chart.addEventListener("mousemove", e => {
+        if (!flat.length) return;
+        const box = chart.getBoundingClientRect();
+        const mx = (e.clientX - box.left) / box.width * W, my = (e.clientY - box.top) / box.height * H;
+        let best = null, bd = Infinity;
+        flat.forEach(f => { const d = Math.abs(f.x - mx) * 4 + Math.abs(f.y - my); if (d < bd) { bd = d; best = f; } });
+        hair.setAttribute("x1", best.x); hair.setAttribute("x2", best.x); hair.setAttribute("visibility", "visible");
+        mark.setAttribute("cx", best.x); mark.setAttribute("cy", best.y); mark.setAttribute("visibility", "visible");
+        tip.hidden = false;
+        tip.innerHTML = learnTime(best.p.at) + " · " + (best.s.name ? best.s.name + " " : "") + "<b>" + cfg.fmt(best.p.v) + "</b>" + (best.p.tip ? " · " + best.p.tip : "");
+      });
+      chart.addEventListener("mouseleave", () => {
+        tip.hidden = true; hair.setAttribute("visibility", "hidden"); mark.setAttribute("visibility", "hidden");
+      });
+    }
+
+    const learnPct = v => Math.round(v) + "%";
+    function drawLinksChart() {
+      const links = learnDoc.links || { pairs: [], points: [] };
+      const sel = pinned != null ? pinned : hoverId;
+      learnSel = sel;
+      const series = links.pairs.map(([a, b], i) => {
+        const mine = typeof sel === "number" && (a === sel || b === sel);
+        return {
+          name: "C" + a + "–C" + b, mine,
+          color: mine ? C.loop : C.rel, opacity: mine ? 1 : 0.4, width: mine ? 2.5 : 1.5,
+          pts: links.points.filter(p => p.w[i] != null).map(p => ({ t: p.tick, v: p.w[i], at: p.at })),
+        };
+      });
+      series.sort((a, b) => a.mine - b.mine);   // chosen links drawn on top
+      const last = series.filter(s => s.pts.length).map(s => ({ name: s.name, v: s.pts[s.pts.length - 1].v }));
+      last.sort((a, b) => b.v - a.v);
+      const top = Math.max(1, ...series.flatMap(s => s.pts.map(p => p.v)));
+      const yMax = Math.ceil(top * 2) / 2;
+      drawChart("learnLinks", {
+        title: "Ring links",
+        value: last.length ? `${fmt(last[0].v, 2)}<small>${last[0].name} strongest · ${last[last.length - 1].name} weakest</small>` : "--",
+        sub: "Weight of each link between neighbouring cells. Learning shows as lines drifting apart or crossing. Pin a ring cell to pick out its two links.",
+        series, yMin: 0, yMax, yTicks: [0, yMax / 2, yMax], fmt: v => fmt(v, 2),
+      });
+    }
+
+    function renderLearning() {
+      const d = learnDoc;
+      if (!d || d.tick_to == null) { document.getElementById("learnFoot").textContent = "No history yet."; return; }
+
+      const light = (d.light || []).map(p => ({ t: p.tick, v: p.explained * 100, at: p.at, tip: p.n + " changes" }));
+      const lmin = Math.min(0, ...light.map(p => p.v));
+      const lo = lmin < 0 ? Math.floor(lmin / 50) * 50 : 0;
+      drawChart("learnLight", {
+        title: "Own light",
+        value: light.length ? learnPct(light[light.length - 1].v) + "<small>explained, latest</small>" : "--",
+        sub: "Share of the change in room light it predicted when its strip changed. Higher is better; 0% is no better than guessing nothing.",
+        series: [{ color: C.light, pts: light }],
+        yMin: lo, yMax: 100, yTicks: lo < 0 ? [lo, 0, 100] : [0, 50, 100], fmt: learnPct,
+      });
+
+      const voice = (d.voice || []).map(p => ({ t: p.tick, v: p.miss * 100, at: p.at, tip: Math.round(p.freq) + " Hz" }));
+      drawChart("learnVoice", {
+        title: "Own voice",
+        value: voice.length ? learnPct(voice[voice.length - 1].v) + `<small>miss on the last of ${voice.length} tones</small>` : "--",
+        sub: "One dot per tone: how far the echo it heard was from the one it predicted. Lower is better.",
+        series: [{ color: C.sound, pts: voice }], dots: true,
+        yMin: 0, yMax: 100, yTicks: [0, 50, 100], fmt: learnPct,
+      });
+
+      const sur = (d.surprise || []).map(p => ({ t: p.tick, v: p.value, at: p.at }));
+      const smax = Math.max(0.2, Math.ceil(Math.max(0, ...sur.map(p => p.v)) * 10) / 10);
+      drawChart("learnSurprise", {
+        title: "Surprise",
+        value: sur.length ? fmt(sur[sur.length - 1].v, 3) + "<small>average across the ring, latest</small>" : "--",
+        sub: "How wrong the twelve cells were about their own input. Falls as the room becomes familiar, jumps when something new happens.",
+        series: [{ color: C.free, pts: sur }],
+        yMin: 0, yMax: smax, yTicks: [0, smax / 2, smax], fmt: v => fmt(v, 2),
+      });
+
+      drawLinksChart();
+      document.getElementById("learnFoot").innerHTML =
+        `Ticks ${d.tick_from} to ${d.tick_to} of the creature's own clock: time the collector was off is not in it. ` +
+        "The own-light and own-voice record only starts when the loop record was switched on. " +
+        "The readout weights and each cell's own prediction also learn, but are not logged yet, so they have no history here.";
+    }
+
+    async function pullLearning() {
+      try {
+        learnDoc = await (await fetch(dataUrl("learning.json", API + "/api/learning?window=" + learnWindow))).json();
+        renderLearning();
+      } catch (err) { /* keep the last picture */ }
+    }
+    document.getElementById("learnWindow").addEventListener("click", e => {
+      const b = e.target.closest("button[data-w]");
+      if (!b) return;
+      learnWindow = b.dataset.w;
+      document.querySelectorAll("#learnWindow button").forEach(x => x.classList.toggle("on", x === b));
+      pullLearning();
+    });
+    // The public mirror exports one window only.
+    if (STATIC_MODE) document.getElementById("learnWindow").hidden = true;
+
     async function pullField() {
       try {
         const f = await (await fetch(dataUrl("state.json", API + "/api/field"))).json();
@@ -1785,7 +1974,8 @@
       } catch (err) { /* leave as is */ }
     });
 
-    pullField(); pullHealth(); pullSensors(); pullSpeaker();
+    pullField(); pullHealth(); pullSensors(); pullSpeaker(); pullLearning();
+    setInterval(pullLearning, 120000);
     setInterval(pullSpeaker, 10000);
     setInterval(pullSensors, POLL_MS);
     setInterval(pullField, POLL_MS);

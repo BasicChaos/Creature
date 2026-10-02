@@ -10,6 +10,7 @@ if str(PROJECT_PYTHON_ROOT) not in sys.path:
 
 # Shared with the collector and dashboard server; see common/paths.py.
 from common.paths import DB_PATH, STATE_JSON_PATH
+from dashboard.learning import read_learning
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
 EXPORT_DIR = DASHBOARD_DIR / "public"
@@ -143,5 +144,6 @@ write_json("history.json", read_history())
 write_json("events.json", read_events())
 write_json("sleep_summaries.json", read_sleep_summaries())
 write_json("health.json", read_health())
+write_json("learning.json", read_learning(DB_PATH))
 
 print(f"Exported dashboard to {EXPORT_DIR}")

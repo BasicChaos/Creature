@@ -571,6 +571,13 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   links between reservoir cells as arrows, coloured by sign. Clicking any cell
   pins it, lifts its own wires, dims the rest, and lists each weight in the
   inspector with what it carries this tick.
+- `learning.py`: reads the slow numbers that show whether it is predicting
+  better, over a window of its own ticks (6 h, 24 h or 7 d): how much of its own
+  light's effect the forward model explained, how far each heard tone was from
+  the predicted one, average surprise across the ring, and the weight of each
+  ring link. Served at `/api/learning` and drawn as the Learning panel; the
+  static export writes the 24 h window. The readout weights and each cell's own
+  prediction are not logged, so they have no history yet.
 - Sensor API: `/api/sensors` and `/api/sensors/<name>` serve light, sound, motion,
   temperature, and pressure as stable, versioned JSON so other apps and services
   can treat the Creature as ordinary sensors. Raw values come from a `sensors`
