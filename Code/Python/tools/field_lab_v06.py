@@ -2316,6 +2316,242 @@ def events_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# How far back the memory reaches (after v06.9)
+# ---------------------------------------------------------------------------
+#
+# The field learns, but what it learned does not last. On 3 October 2026 the
+# nine-day-old field and a newborn one were fed the same recorded day. After 24
+# hours every ring link of the newborn was within 0.1 of the elder's, and the two
+# expressed alike to within what a changed random seed does.
+#
+# "Memory horizon" is how long a newborn needs, on the same input, to become
+# indistinguishable from the elder. This gate measures it and changes nothing.
+# Three lives on the same input, field and decoder only: the elder (a field that
+# has already lived), a newborn (nothing loaded), and the elder again on the next
+# seed, which sets the noise floor. With --replay and --state the elder is the
+# saved field and the input is recorded senses. Without them the elder is raised
+# here on the bursts scenario and all three get the same synthetic day.
+
+HISTORY_TICKS_PER_HOUR = 3600
+HISTORY_WEIGHT_EVERY = 600     # ticks between samples of the ring weights
+HISTORY_NOISE_MIN = 0.005      # the noise gap is never taken as smaller than this
+HISTORY_LINK_CLOSE = 0.1       # two weights this close count as the same
+HISTORY_RAIL_TOP = 0.1         # a link within this of W_MAX is railed
+HISTORY_RAIL_FLOOR = 0.005     # and so is one within this of PRUNE_FLOOR
+
+
+def _history_life(inputs, seed, state_path=None):
+    """One life on the test input. Returns A, B and T per tick, and the ring
+    weights (sorted by link key) at the start and every HISTORY_WEIGHT_EVERY
+    ticks after. The decoder is held to the fixed expression model: the relative
+    one reads each field against its own usual, which would hide the difference
+    this gate looks for."""
+    random.seed(seed)
+    field = cf.build_field()
+    if state_path and cf.load_field(field, state_path) is None:
+        raise SystemExit(f"could not load a field state from {state_path}")
+    decoder = ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": "fixed"})
+    keys = sorted(field.weights)
+    out = {"A": [], "B": [], "T": [], "keys": keys,
+           "weights": [[field.weights[k] for k in keys]]}
+    for t, values in enumerate(inputs, 1):
+        signal = decoder.read(field.step(values))
+        out["A"].append(signal["A"])
+        out["B"].append(signal["B"])
+        out["T"].append(signal["T"])
+        if t % HISTORY_WEIGHT_EVERY == 0:
+            out["weights"].append([field.weights[k] for k in keys])
+    return out
+
+
+def _history_gap(a, b, name, lo, hi):
+    return statistics.mean(abs(x - y) for x, y in zip(a[name][lo:hi], b[name][lo:hi]))
+
+
+def _history_rows(elder, newborn, noise, hours):
+    """One row per hour of the test."""
+    per = HISTORY_TICKS_PER_HOUR
+    samples = per // HISTORY_WEIGHT_EVERY
+    rows = []
+    for hour in range(hours):
+        lo, hi = hour * per, (hour + 1) * per
+        first, end = hour * samples, (hour + 1) * samples
+        gap = {name: _history_gap(elder, newborn, name, lo, hi) for name in "ABT"}
+        noise_gap = sum(_history_gap(elder, noise, name, lo, hi) for name in "AB")
+        old, new = elder["weights"][end], newborn["weights"][end]
+        # How far the newborn's weights travelled this hour, sample to sample.
+        moved = sum(abs(b - a)
+                    for s in range(first, end)
+                    for a, b in zip(newborn["weights"][s], newborn["weights"][s + 1]))
+        rows.append({
+            "hour": hour,
+            "expression_gap": round(gap["A"] + gap["B"], 5),
+            "noise_gap": round(noise_gap, 5),
+            "link_gap": round(max(abs(a - b) for a, b in zip(old, new)), 5),
+            "newborn_learning": round(moved, 5),
+            "railed_links": sum(1 for w in old
+                                if w >= cf.W_MAX - HISTORY_RAIL_TOP
+                                or w <= cf.PRUNE_FLOOR + HISTORY_RAIL_FLOOR),
+            "gap_a": round(gap["A"], 5),
+            "gap_b": round(gap["B"], 5),
+            "gap_t": round(gap["T"], 5),
+        })
+    return rows
+
+
+def _history_horizon(close):
+    """The first hour from which every hour to the end is close. None if the
+    last hour is not: the horizon lies beyond the test."""
+    first = None
+    for hour in range(len(close) - 1, -1, -1):
+        if not close[hour]:
+            break
+        first = hour
+    return first
+
+
+def _history_text(horizon, hours):
+    return f"more than {hours} hours" if horizon is None else f"{horizon} hours"
+
+
+def _history_compare(current, baseline):
+    """Control against variant for the history gate."""
+    base, cur = baseline.get("history"), current["history"]
+    if not base:
+        raise SystemExit("--compare with --history needs a file saved by --history --json")
+    print(f"\ncompare vs {baseline.get('source')} "
+          f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
+          f"overrides {baseline.get('overrides')}):")
+    for name, key in (("expression horizon", "expression_horizon"), ("link horizon", "link_horizon")):
+        print(f"  {name:32s} {_history_text(base[key], base['hours'])} -> "
+              f"{_history_text(cur[key], cur['hours'])}")
+    share = cur["newborn_learning_3h"] / base["newborn_learning_3h"] if base["newborn_learning_3h"] else 0.0
+    print(f"  {'newborn learning, first 3 hours':32s} {base['newborn_learning_3h']:.3f} -> "
+          f"{cur['newborn_learning_3h']:.3f} ({share * 100:.0f}% of the control)")
+    print(f"  {'railed links at the end':32s} {base['railed_links']} -> {cur['railed_links']}")
+    print(f"  {'mean noise gap':32s} {base['noise_gap_mean']:.4f} -> {cur['noise_gap_mean']:.4f}")
+    print("\n  hour | expression gap      | link gap            | railed links")
+    for a, b in zip(base["rows"], cur["rows"]):
+        print(f"  {a['hour']:4d} | {a['expression_gap']:.4f} -> {b['expression_gap']:.4f}"
+              f"    | {a['link_gap']:.4f} -> {b['link_gap']:.4f}"
+              f"    | {a['railed_links']:2d} -> {b['railed_links']:2d}")
+
+
+def history_probe(args):
+    """The history gate: how long a newborn field needs, on the same input, to
+    become indistinguishable from one that has already lived. It measures and
+    changes nothing. The checks test the measurement, not the Creature."""
+    apply_overrides(args.set)
+    per = HISTORY_TICKS_PER_HOUR
+    hours = args.history_hours
+    print(f"field {cf.FIELD_VERSION} | HOW FAR BACK THE MEMORY REACHES | seed={args.seed}")
+
+    with tempfile.TemporaryDirectory() as folder:
+        if args.replay:
+            if not args.state:
+                raise SystemExit("--history with --replay needs --state: the elder is the saved field")
+            test = _read_replay(args.replay)[:hours * per]
+            hours = len(test) // per
+            test = test[:hours * per]
+            state = args.state
+            source = f"replay:{Path(args.replay).name}"
+            print(f"\n  elder: {args.state}"
+                  f"\n  test input: the first {hours} hours of {args.replay}")
+        else:
+            # Raise the elder, then save it and load it again, so it starts the
+            # test the way the saved field does: structure kept, the moment lost.
+            random.seed(args.seed)
+            raised = cf.build_field()
+            for values in scenario_inputs("bursts", args.raise_hours * per,
+                                          random.Random(args.seed + 1)):
+                raised.step(values)
+            state = str(Path(folder) / "elder.json")
+            cf.save_field(raised, state)
+            # Its own stream, so the noise life's seed is not also the input's.
+            test = list(scenario_inputs("day", hours * per, random.Random(args.seed + 2)))
+            source = "scenario:bursts then day"
+            print(f"\n  elder: raised here for {args.raise_hours} hours on the bursts scenario"
+                  f"\n  test input: {hours} hours of the day scenario")
+        if hours < 3:
+            raise SystemExit("--history needs at least 3 hours of test input")
+
+        elder = _history_life(test, args.seed, state)
+        newborn = _history_life(test, args.seed)
+        noise = _history_life(test, args.seed + 1, state)
+
+    rows = _history_rows(elder, newborn, noise, hours)
+    expression_horizon = _history_horizon(
+        [r["expression_gap"] <= 2.0 * max(r["noise_gap"], HISTORY_NOISE_MIN) for r in rows])
+    link_horizon = _history_horizon([r["link_gap"] <= HISTORY_LINK_CLOSE for r in rows])
+
+    print("\n  hour | expression gap | noise gap | link gap | newborn learning | railed links")
+    for r in rows:
+        print(f"  {r['hour']:4d} | {r['expression_gap']:14.4f} | {r['noise_gap']:9.4f} | "
+              f"{r['link_gap']:8.4f} | {r['newborn_learning']:16.3f} | {r['railed_links']:12d}")
+
+    print("\n  ring weights at the end, by link (" + " ".join(f"{i}-{j}" for i, j in elder["keys"]) + "):")
+    for name, life in (("elder", elder), ("newborn", newborn)):
+        print(f"    {name:8s} " + " ".join(f"{w:.2f}" for w in life["weights"][-1]))
+
+    print(f"\n  expression horizon: {_history_text(expression_horizon, hours)}")
+    print(f"  link horizon:       {_history_text(link_horizon, hours)}")
+
+    noise_mean = statistics.mean(r["noise_gap"] for r in rows)
+    learned = sum(r["newborn_learning"] for r in rows[:3])
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("history shows at all",
+          rows[0]["expression_gap"] >= 5.0 * rows[0]["noise_gap"],
+          f"in hour 0 the expression gap is {rows[0]['expression_gap']:.4f}, "
+          f"the noise gap {rows[0]['noise_gap']:.4f}")
+    check("the noise floor is small",
+          noise_mean < 0.01,
+          f"mean noise gap {noise_mean:.4f}")
+    check("the newborn learns",
+          learned >= 0.2,
+          f"its ring weights move {learned:.3f} in total over the first 3 hours")
+    check("the horizons are reported",
+          len(rows) == hours,
+          f"expression {_history_text(expression_horizon, hours)}, "
+          f"links {_history_text(link_horizon, hours)}, from {len(rows)} hourly rows")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+
+    result = {
+        "field_version": cf.FIELD_VERSION,
+        "source": source,
+        "seed": args.seed,
+        "overrides": args.set or [],
+        "history": {
+            "hours": hours,
+            "expression_horizon": expression_horizon,   # None: more than `hours`
+            "link_horizon": link_horizon,
+            "noise_gap_mean": round(noise_mean, 5),
+            "newborn_learning_3h": round(learned, 5),
+            "railed_links": rows[-1]["railed_links"],
+            "rows": rows,
+            "weights": {
+                name: {f"{i}-{j}": round(w, 5) for (i, j), w in zip(life["keys"], life["weights"][-1])}
+                for name, life in (("elder", elder), ("newborn", newborn))
+            },
+        },
+    }
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=1))
+        print(f"\nsaved: {args.json}")
+    if args.compare:
+        _history_compare(result, json.loads(Path(args.compare).read_text()))
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -2390,8 +2626,17 @@ def main():
     p.add_argument("--events", action="store_true",
                    help="run the significant-event gate (pressure rule vs "
                         "surprise rule); with --replay, on recorded senses")
-    p.add_argument("--replay", help="CSV of recorded senses for --events, --voice or --express "
-                                    "(tick, logged_at, sound, light, motion, weather)")
+    p.add_argument("--history", action="store_true",
+                   help="run the history gate (how long a newborn field needs to "
+                        "become indistinguishable from an elder; measures only); "
+                        "with --replay and --state, on recorded senses")
+    p.add_argument("--history-hours", type=int, default=24,
+                   help="hours of test input for --history (default 24)")
+    p.add_argument("--raise-hours", type=int, default=48,
+                   help="hours the synthetic elder lives before the test, "
+                        "for --history without --replay (default 48)")
+    p.add_argument("--replay", help="CSV of recorded senses for --events, --voice, --express "
+                                    "or --history (tick, logged_at, sound, light, motion, weather)")
     p.add_argument("--state", help="saved field state to start --replay from")
     p.add_argument("--loop-gain", type=float, default=0.3,
                    help="how strongly the body's output returns as input "
@@ -2423,6 +2668,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.events:
         ok = events_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.history:
+        ok = history_probe(args)
         sys.exit(0 if ok else 1)
     if args.express:
         ok = express_probe(args)

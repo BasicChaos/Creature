@@ -546,6 +546,7 @@ machine and the runs reproduce exactly. Every gate uses a fixed seed.
 | feel | the loop is felt: faintly when predicted, strongly when not, not at all with no loop | `--feel` | 7/7 |
 | curious | bored in a still dark room, it probes, explores its voice, and learns it | `--curious` | 9/9 |
 | voice | the fixed threshold is a metronome; the relative rule speaks rarely, when surprised; `--replay` too | `--voice` | 6/6 |
+| history | measures the memory horizon: how long a newborn field needs, on the same input, to become indistinguishable from an elder; changes nothing; `--replay` with `--state` runs it on recorded senses | `--history` | 4/4 |
 
 The ring, reservoir and readout rows were measured before the predictive cell became
 the default. Under today's defaults they read 4/7, 3/4 and 1/2 (the ring row's own
