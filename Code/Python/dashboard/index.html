@@ -402,7 +402,8 @@
     /* legend */
     .legend-item {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
+      line-height: 1.45;
       gap: 8px;
       margin-bottom: 7px;
       font-size: 12px;
@@ -420,11 +421,26 @@
       flex: none;
     }
 
+    .legend-item b {
+      font-weight: 600;
+    }
+
+    .legend-item .swatch {
+      margin-top: 3px;
+    }
+
+    .swatch.ring {
+      background: none;
+      border: 2px solid;
+      box-sizing: border-box;
+    }
+
     .legend-line {
       width: 26px;
       height: 0;
       border-top: 2.5px solid;
       flex: none;
+      margin-top: 8px;
     }
 
     .legend-line.dashed {
@@ -1786,26 +1802,60 @@
       return html;
     }
 
+    // Every mark the v06 field can draw, in the order the eye meets them.
+    // Keep this in step with buildV06, renderV06 and applySelectionV06.
     function setV06Legend() {
       const panel = document.getElementById("legendPanel");
       if (!panel) return;
+      const day = document.documentElement.dataset.theme === "day";
+      const item = (mark, name, desc) =>
+        '<div class="legend-item">' + mark + '<span><b>' + name + '</b> <span class="muted">· ' + desc + '</span></span></div>';
+      const dot = col => '<span class="swatch" style="background:' + col + '"></span>';
+      const ring = (col, w) => '<span class="swatch ring" style="border-color:' + col + ';border-width:' + (w || 2) + 'px"></span>';
+      const glow = col => '<span class="swatch" style="background:' + col + ';opacity:.45;filter:blur(2.5px)"></span>';
+      const line = (col, kind) => '<span class="legend-line' + (kind ? " " + kind : "") + '" style="border-color:' + col + '"></span>';
+      const head = t => '<div class="legend-head">' + t + '</div>';
       panel.innerHTML =
         "<h2>Legend</h2>" +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.emitter + '"></span> Emitter <span class="muted">· speaker C0 · led C6</span></div>' +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.sound + '"></span> Sound <span class="muted">· C2 · INMP441</span></div>' +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.motion + '"></span> Motion <span class="muted">· C4 · MPU-6050</span></div>' +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.light + '"></span> Light <span class="muted">· C8 · BH1750</span></div>' +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.weather + '"></span> Weather <span class="muted">· C10 · BME280</span></div>' +
-        '<div class="legend-item"><span class="swatch" style="background:' + C.reservoir + '"></span> Reservoir cell <span class="muted">· R0-R5 · brightness = how active it is right now</span></div>' +
-        '<div class="legend-head">Connecting lines</div>' +
-        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.rel + '"></span> Ring connection <span class="muted">· links neighboring outer cells · thicker/brighter = stronger</span></div>' +
-        '<div class="legend-item"><span class="legend-line dotted" style="border-color:' + C.linkGhost + '"></span> Pruned connection <span class="muted">· weight has faded near zero · still wired, just quiet for now</span></div>' +
-        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.loop + '"></span> Loop wiring <span class="muted">· C1 (speaker/mic) and C7 (LED/light) to the emitters · loop isn\'t physically closed yet, so no real feedback runs here yet</span></div>' +
-        '<div class="legend-item"><span class="legend-line dashed" style="border-color:' + C.loop + '"></span> Trained readout <span class="muted">· reservoir cell → emitter · same orange as loop wiring, dashed instead of solid · brighter dash = more influence right now</span></div>' +
-        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.pos + '"></span> Reservoir wiring <span class="muted">· fixed, never changes · faint straight lines: each in-between ring cell (C1, C3 … C11) into every reservoir cell · curved arrows: one reservoir cell into another · a small loop: a cell feeding itself</span></div>' +
-        '<div class="legend-item"><span class="legend-line" style="border-color:' + C.neg + '"></span> Opposing weight <span class="muted">· same wiring, negative sign: pushes the receiving cell the other way · thicker = stronger</span></div>' +
-        '<div class="legend-sub">Click any cell to pin it: its own wires light up, the cells it connects to stay bright, and the inspector lists every weight with what it is carrying this tick.</div>' +
-        '<div class="legend-sub">Cell fill = activation · white ring = ripple · glow = pressure · <span style="color:' + C.fatigue + '">red ring</span> = fatigue.</div>';
+
+        head("Cells, by colour") +
+        item(dot(C.emitter), "Emitter", "what the creature puts out · C0 speaker (MAX98357A) · C6 LED strip (SK6812, 16 pixels)") +
+        item(dot(C.sound), "Sound", "C2 · INMP441 microphone") +
+        item(dot(C.motion), "Motion", "C4 · MPU-6050") +
+        item(dot(C.light), "Light", "C8 · BH1750") +
+        item(dot(C.weather), "Weather", "C10 · BME280") +
+        item(dot(C.free), "In-between cell", "the odd cells C1, C3 … C11, each sitting between two anchors and mixing them · C1 speaker × sound · C3 sound × motion · C5 motion × LED · C7 LED × light · C9 light × weather · C11 weather × speaker · C1 and C7 are the loop cells: they feel the creature's own voice and own light coming back") +
+        item(dot(C.reservoir), "Reservoir cell", "R0–R5, the inner six · a fixed pool of mixed signals the emitters read from") +
+        '<div class="legend-sub">Size: emitters are the largest circles, sense anchors the middle size, in-between cells smaller, reservoir cells the smallest. The coloured word and part name beside a cell mark the hardware it is tied to.</div>' +
+
+        head("What one ring cell shows") +
+        item(dot(C.sound), "Fill", "activation · a nearly empty circle is quiet, a solid one is fully active · the fill also dims when the cell is low on energy") +
+        item(ring(C.sound, 2.5), "Coloured outline", "the cell itself · dims with low energy and with its state: active is full strength, resting is dimmer, dormant fainter, deep sleep faintest (the C-number fades too)") +
+        item(ring(C.rel, 2), "Grey outer ring", "relevance · thicker and brighter = the cell has mattered more") +
+        item(ring(C.ripple, 1.5), (day ? "Dark" : "White") + " ring", "ripple · a wave passing through the cell · the ring grows outward and brightens with the size of the ripple, and is almost invisible when there is none") +
+        item(ring(C.fatigue, 2), '<span style="color:' + C.fatigue + '">Red ring</span>', "fatigue · absent when rested, brighter the more worn down the cell is") +
+        item(glow(C.sound), "Soft glow", "pressure · a blur in the cell's own colour behind it · wider and brighter = more built up") +
+
+        head("What a reservoir cell shows") +
+        item(dot(C.reservoir), "Fill and outline", "brighter = further from zero right now, in either direction · the sign is in the inspector") +
+
+        head("Ring lines (these are learned)") +
+        item(line(C.rel), "Ring connection", "joins two neighbouring outer cells · thicker and brighter = stronger weight") +
+        item(line(C.linkGhost, "dotted"), "Pruned connection", "weight has faded to its floor (0.025 or less) · still wired, just quiet") +
+        item(line(C.loop), "Loop link", "the four ring links that touch a loop cell: C0–C1–C2 (speaker to microphone) and C6–C7–C8 (LED to light sensor) · thicker = stronger · when pruned it stays a thin solid orange line instead of going dotted · the sound loop is physically closed; the light loop is not settled yet") +
+
+        head("Lines to and inside the reservoir") +
+        item(line(C.loop, "dashed"), "Trained readout", "dashed orange, every reservoir cell to each emitter (C0 and C6) · learned · thicker and brighter = larger weight, so that reservoir cell has more say in what the emitter does · nearly invisible when the weight is near zero") +
+        item(line(C.pos), "Reservoir wiring, positive", "fixed, never learns · faint straight lines: every in-between cell into every reservoir cell · curved arrows: one reservoir cell into another, the arrowhead shows the direction · a small circle beside a reservoir cell: it feeds itself · thicker and less faint = stronger") +
+        item(line(C.neg), "Reservoir wiring, negative", "the same wiring with a minus sign: it pushes the receiving cell the other way") +
+
+        head("Pointing and clicking") +
+        '<div class="legend-sub">Hover a cell to preview it; click to pin it and open the inspector; click it again to let go. The chosen cell gets a thick outline, its own wires become bold, the cells on the other end stay bright, and everything else fades back. The inspector lists every weight with what it is carrying this tick.</div>' +
+
+        head("Top bar") +
+        item('<span class="swatch" style="background:' + C.emitter + ';box-shadow:0 0 6px ' + C.emitter + '"></span>', "Green dot", "live · the picture is the current tick") +
+        item(dot(C.fatigue), "Red dot", "stale · no fresh snapshot has arrived; the field shows the last one seen") +
+        '<div class="legend-sub">Links live counts the ring connections with a weight above 0.05, out of twelve. States counts cells that are active / resting / dormant / in deep sleep.</div>';
     }
 
     // ---- menu ----
