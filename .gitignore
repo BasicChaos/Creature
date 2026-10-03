@@ -31,8 +31,9 @@ Code/Python/data/*.sqlite3
 .DS_Store
 .vscode/
 
-# Obsidian vault: kept local, copied in occasionally for reference
-ObsidianCreature/
+# Obsidian vaults: kept local, copied in occasionally for reference
+/ObsidianCreature/
+/Creature/
 **/.history/
 
 Code/Python/dashboard/public/

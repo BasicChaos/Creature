@@ -153,7 +153,8 @@ Why this matters:
 Hardware:
 
 - MAX17048 fuel gauge, I2C address `0x36`.
-- VIN to raw battery positive, not 3V3 and not boosted 5V.
+- Adafruit breakout: LiPo through its JST pass-through (either port) to the PowerBoost.
+  VIN to 3V3. VIN only powers the I2C pull-ups; on the battery it would put ~4.2V on SDA/SCL.
 - GND to common ground.
 - SDA/SCL to GPIO 8/9.
 - Protected LiPo cell or charger with undervoltage protection.
