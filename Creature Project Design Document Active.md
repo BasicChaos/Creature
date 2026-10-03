@@ -263,6 +263,13 @@ and `SLOW_LEAK = 0.0`,
 and with them the field is exactly as it was: the history gate's control runs are
 unchanged to the last digit. The slow weights are kept and saved either way.
 
+A collector run can switch a setting on from its environment, without a change to
+the code: `CREATURE_SLOW_MIX`, `CREATURE_SLOW_LEAK`, `CREATURE_SOFT_CEILING` (1 for
+on) and `CREATURE_CEILING_KNEE`. Unset, each is off. The twin runs the same field
+code, so it lives under the same setting, and the collector prints the setting when
+it starts. Given this way a setting behaves exactly as it does under the lab's
+`--set`.
+
 A setting is judged with `--history --compare` against a saved control, on seeds
 1, 2, 3 and 7. It passes only if all of these hold:
 

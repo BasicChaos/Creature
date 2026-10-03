@@ -235,20 +235,25 @@ CONSOLIDATION_WEAK_KEEP = 0.998
 # slow one instead of toward the floor: what the link has been over the week
 # pulls it back. SLOW_MIX = 0.0 is the field as it was, the control. The slow
 # weight is kept and saved either way, so it is ready when the mix is turned up.
-SLOW_MIX = 0.0
+#
+# The four knobs that make up a setting can be given to a run from its
+# environment, so the collector can be started with them: CREATURE_SLOW_MIX,
+# CREATURE_SLOW_LEAK, CREATURE_SOFT_CEILING (1 for on) and CREATURE_CEILING_KNEE.
+# Unset, each is off. The lab's --set still overrides them for one run.
+SLOW_MIX = float(os.environ.get("CREATURE_SLOW_MIX", "0.0"))
 SLOW_RATE = 1.0 / 604800.0
 # The slow weight's own forgetting: each tick it also drifts this far toward the
 # floor. Without it nothing pulls a slow weight down, and with the fast weight
 # held at or above the slow one a link can never get weaker than it has been
 # (found on 3 October 2026). 0.0 leaves it out. 1 / 2419200 is about a month.
-SLOW_LEAK = 0.0
+SLOW_LEAK = float(os.environ.get("CREATURE_SLOW_LEAK", "0.0"))
 # Growth scaled by the room left under W_MAX, so a weight approaches the ceiling
 # instead of sitting on it. False is the field as it was. A link keeps all of
 # its growth up to CEILING_KNEE and then less and less, down to none at W_MAX.
 # With the knee at 0.0 the brake is on over the whole range (growth is halved at
 # a weight of 1.0), which cost a newborn about a fifth of its early growth.
-SOFT_CEILING = False
-CEILING_KNEE = 0.0
+SOFT_CEILING = os.environ.get("CREATURE_SOFT_CEILING", "0") == "1"
+CEILING_KNEE = float(os.environ.get("CREATURE_CEILING_KNEE", "0.0"))
 
 # --- sleep and replay ------------------------------------------------------
 LOW_STIMULATION_TICKS = 160

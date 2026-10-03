@@ -41,6 +41,10 @@ from mind.cell_field_v06 import (
     CELL_COUNT,
     EMITTER_ANCHORS,
     FIELD_VERSION,
+    SLOW_MIX,
+    SLOW_LEAK,
+    SOFT_CEILING,
+    CEILING_KNEE,
 )
 from mind.expression_v06 import (
     ExpressionDecoderV06,
@@ -167,6 +171,14 @@ ENABLE_PROBE_VOICE = os.environ.get("CREATURE_PROBE_VOICE", "1") == "1"
 # file restarts it as a newborn.
 ENABLE_TWIN = os.environ.get("CREATURE_TWIN", "1") == "1"
 TWIN_LOG_EVERY_TICKS = 60
+
+# --- Two-speed links ---
+# Off by default, and read by the field itself (mind/cell_field_v06.py), which
+# the twin shares: CREATURE_SLOW_MIX, CREATURE_SLOW_LEAK, CREATURE_SOFT_CEILING
+# (1 for on) and CREATURE_CEILING_KNEE. The setting that passed the history gate
+# on 3 October 2026:
+#   CREATURE_SLOW_MIX=0.25 CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0
+#   CREATURE_SLOW_LEAK=4.13e-7
 
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
@@ -1038,6 +1050,11 @@ def main():
           f"curiosity probes: {'on' if ENABLE_PROBE else 'off'}"
           f"{'' if ENABLE_PROBE_VOICE or not ENABLE_PROBE else ' (light only)'}")
     print(f"Newborn twin: {'on' if ENABLE_TWIN else 'off'}")
+    if SLOW_MIX > 0.0 or SLOW_LEAK > 0.0 or SOFT_CEILING:
+        ceiling = f"on above {CEILING_KNEE:g}" if SOFT_CEILING else "off"
+        print(f"Two-speed links: mix {SLOW_MIX:g}, slow leak {SLOW_LEAK:g}, soft ceiling {ceiling}")
+    else:
+        print("Two-speed links: off")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
