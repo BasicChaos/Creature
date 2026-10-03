@@ -237,9 +237,18 @@ CONSOLIDATION_WEAK_KEEP = 0.998
 # weight is kept and saved either way, so it is ready when the mix is turned up.
 SLOW_MIX = 0.0
 SLOW_RATE = 1.0 / 604800.0
+# The slow weight's own forgetting: each tick it also drifts this far toward the
+# floor. Without it nothing pulls a slow weight down, and with the fast weight
+# held at or above the slow one a link can never get weaker than it has been
+# (found on 3 October 2026). 0.0 leaves it out. 1 / 2419200 is about a month.
+SLOW_LEAK = 0.0
 # Growth scaled by the room left under W_MAX, so a weight approaches the ceiling
-# instead of sitting on it. False is the field as it was.
+# instead of sitting on it. False is the field as it was. A link keeps all of
+# its growth up to CEILING_KNEE and then less and less, down to none at W_MAX.
+# With the knee at 0.0 the brake is on over the whole range (growth is halved at
+# a weight of 1.0), which cost a newborn about a fifth of its early growth.
 SOFT_CEILING = False
+CEILING_KNEE = 0.0
 
 # --- sleep and replay ------------------------------------------------------
 LOW_STIMULATION_TICKS = 160
@@ -578,6 +587,11 @@ class CellField:
             key: (1.0 - SLOW_MIX) * w + SLOW_MIX * self.slow_weights[key]
             for key, w in self.weights.items()
         }
+
+    def _ceiling_room(self, w):
+        """The share of its growth a link at weight `w` keeps under the soft
+        ceiling: all of it up to CEILING_KNEE, none at W_MAX."""
+        return clamp((W_MAX - w) / max(1e-9, W_MAX - CEILING_KNEE), 0.0, 1.0)
 
     def _weaken(self, key, w, keep):
         """Shrink a link's fast weight to `keep` of itself: toward nothing, or
@@ -935,7 +949,7 @@ class CellField:
                     assoc = self.connection_pressure.get(key, 0.0)
                     gain = REPLAY_ETA * significance * (0.55 + assoc) * energy_scale
                     if SOFT_CEILING:
-                        gain *= max(0.0, W_MAX - self.weights[key]) / W_MAX
+                        gain *= self._ceiling_room(self.weights[key])
                     self.weights[key] = clamp(self.weights[key] + gain, 0.0, W_MAX)
                     self.connection_usage[key] = self.connection_usage.get(key, 0) + 1
                     self.connection_last_active_tick[key] = self.tick_count
@@ -1204,9 +1218,12 @@ class CellField:
             self._update_memory_pressure()
             self._finish_sleep_if_needed()
 
-        # The slow weights follow the fast ones, a little each tick.
+        # The slow weights follow the fast ones, a little each tick, and with
+        # SLOW_LEAK drift toward the floor on a slower clock still.
         for key, w in self.weights.items():
             self.slow_weights[key] += (w - self.slow_weights[key]) * SLOW_RATE
+            if SLOW_LEAK > 0.0:
+                self.slow_weights[key] -= (self.slow_weights[key] - PRUNE_FLOOR) * SLOW_LEAK
 
         self.tick_count += 1
         self.last_sense = dict(values)
@@ -1237,7 +1254,7 @@ class CellField:
                         * energy_scale
                     )
                     if SOFT_CEILING:
-                        growth *= max(0.0, W_MAX - w) / W_MAX
+                        growth *= self._ceiling_room(w)
                     w += growth
                     self.connection_usage[key] += 1
                     self.connection_last_active_tick[key] = self.tick_count

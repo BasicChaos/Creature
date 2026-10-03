@@ -2343,6 +2343,10 @@ HISTORY_NOISE_MIN = 0.005      # the noise gap is never taken as smaller than th
 HISTORY_LINK_CLOSE = 0.1       # two weights this close count as the same
 HISTORY_RAIL_TOP = 0.1         # a link within this of W_MAX is railed
 HISTORY_RAIL_FLOOR = 0.005     # and so is one within this of PRUNE_FLOOR
+HISTORY_STILL_HOURS = 60       # the elder's time in a still room, to see whether its links weaken
+HISTORY_STILL_SETTLE = 24      # hours in before the weights are first read
+HISTORY_BUILT = 0.5            # a link driving at this or more counts as one its life built
+HISTORY_STILL_FALL = 0.01      # falling: the resting level this much lower, as a share of itself
 
 
 def _history_life(inputs, seed, state_path=None):
@@ -2385,6 +2389,66 @@ def _history_elder(seed, hours, path):
     for values in scenario_inputs("bursts", hours * HISTORY_TICKS_PER_HOUR, random.Random(seed + 1)):
         raised.step(values)
     cf.save_field(raised, path)
+
+
+def _history_still(seed, state_path):
+    """The elder in a still room: can the links its life built still weaken?
+
+    What is watched is the level a link rests on once nothing drives it: the
+    floor, or with two-speed links its slow weight, which decay pulls the fast
+    one toward. Each built link's resting level must be the floor, or lower at
+    the end than a day in. The weight the drive uses is not enough to go by: for
+    days it is still sliding down to the resting level, and that looks like
+    forgetting even when the resting level itself can never fall."""
+    per = HISTORY_TICKS_PER_HOUR
+    random.seed(seed)
+    field = cf.build_field()
+    if cf.load_field(field, state_path) is None:
+        raise SystemExit(f"could not load a field state from {state_path}")
+    keys = sorted(field.weights)
+
+    def rest():
+        if cf.SLOW_MIX > 0.0:
+            return dict(field.slow_weights)
+        return {k: cf.PRUNE_FLOOR for k in keys}
+
+    drive = {0: dict(field.drive_weights())}
+    resting = {}
+    for t, values in enumerate(_still_night(HISTORY_STILL_HOURS * per), 1):
+        field.step(values)
+        if t in (HISTORY_STILL_SETTLE * per, HISTORY_STILL_HOURS * per):
+            drive[t // per] = dict(field.drive_weights())
+            resting[t // per] = rest()
+    day, end = resting[HISTORY_STILL_SETTLE], resting[HISTORY_STILL_HOURS]
+    built = [k for k in keys if drive[0][k] >= HISTORY_BUILT]
+    held = [k for k in built
+            if end[k] > cf.PRUNE_FLOOR + HISTORY_RAIL_FLOOR
+            and end[k] > day[k] * (1.0 - HISTORY_STILL_FALL)]
+
+    def mean(values):
+        return round(statistics.mean(values[k] for k in built), 5) if built else None
+
+    return {
+        "built": len(built),
+        "held_up": len(held),
+        "weakens": bool(built) and not held,
+        "two_speed": cf.SLOW_MIX > 0.0,
+        "rest_day": mean(day), "rest_end": mean(end),
+        "drive_start": mean(drive[0]), "drive_day": mean(drive[HISTORY_STILL_SETTLE]),
+        "drive_end": mean(drive[HISTORY_STILL_HOURS]),
+    }
+
+
+def _history_still_text(still):
+    if not still["built"]:
+        return "the elder has no link driving at 0.5 or more to watch"
+    text = (f"the {still['built']} links its life built drive at {still['drive_start']:.2f} on average, "
+            f"{still['drive_day']:.2f} after {HISTORY_STILL_SETTLE} still hours and "
+            f"{still['drive_end']:.2f} after {HISTORY_STILL_HOURS}; ")
+    if not still["two_speed"]:
+        return text + "they rest on the floor"
+    return text + (f"they rest on slow weights of {still['rest_day']:.4f}, then {still['rest_end']:.4f}; "
+                   f"{still['held_up']} of them not falling")
 
 
 def _history_gap(a, b, name, lo, hi):
@@ -2458,10 +2522,18 @@ def _history_twice(control, variant, variant_hours):
 def _history_compare(current, baseline):
     """Control against variant for the history gate. The variant passes only if
     its expression horizon is at least twice the control's, its newborn still
-    learns, and fewer of its links are railed. Returns True only if all hold."""
+    learns, fewer of its links are railed, and its links can still weaken.
+    Returns True only if every check that is judged holds.
+
+    The horizon is judged on recorded senses only. On the synthetic day the
+    control itself never converges (links the bursts upbringing prunes do not
+    regrow in the elder), so there is no horizon there to double. Learning is
+    judged on the weights the drive uses: with two-speed links those are what
+    the field acts on, and the fast weights alone overstate it."""
     base, cur = baseline.get("history"), current["history"]
     if not base:
         raise SystemExit("--compare with --history needs a file saved by --history --json")
+    replay = str(current.get("source", "")).startswith("replay:")
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
           f"overrides {baseline.get('overrides')}):")
@@ -2477,13 +2549,17 @@ def _history_compare(current, baseline):
     def drive_learning(h):
         return sum(r.get("newborn_drive_learning", r["newborn_learning"]) for r in h["rows"][:3])
 
+    fast_share = cur["newborn_learning_3h"] / base["newborn_learning_3h"] if base["newborn_learning_3h"] else 0.0
     print(f"\n  {'link horizon':32s} {_history_text(base['link_horizon'], base['hours'])} -> "
           f"{_history_text(cur['link_horizon'], cur['hours'])}")
     print(f"  {'mean noise gap':32s} {base['noise_gap_mean']:.4f} -> {cur['noise_gap_mean']:.4f}")
     print(f"  {'railed links, mean over the test':32s} {mean_railed(base):.1f} -> {mean_railed(cur):.1f}")
-    drive_share = drive_learning(cur) / drive_learning(base) if drive_learning(base) else 0.0
-    print(f"  {'newborn learning, drive weights':32s} {drive_learning(base):.3f} -> {drive_learning(cur):.3f} "
-          f"({drive_share * 100:.0f}% of the control), first 3 hours, on the weights the drive uses")
+    print(f"  {'newborn learning, fast weights':32s} {base['newborn_learning_3h']:.3f} -> "
+          f"{cur['newborn_learning_3h']:.3f} ({fast_share * 100:.0f}% of the control), first 3 hours")
+    if not replay:
+        print(f"  {'expression horizon':32s} {_history_text(base['expression_horizon'], base['hours'])} -> "
+              f"{_history_text(cur['expression_horizon'], cur['hours'])} "
+              f"(not judged here: judged on recorded senses, with --replay)")
 
     print("\n--- VARIANT AGAINST CONTROL ---")
     checks = []
@@ -2493,21 +2569,25 @@ def _history_compare(current, baseline):
         mark = "UNDECIDED" if ok is None else "PASS" if ok else "FAIL"
         print(f"  [{mark}] {name}: {detail}")
 
-    twice = _history_twice(base["expression_horizon"], cur["expression_horizon"], cur["hours"])
-    detail = (f"control {_history_text(base['expression_horizon'], base['hours'])}, "
-              f"variant {_history_text(cur['expression_horizon'], cur['hours'])}")
-    if twice is None:
-        detail += ("; the control's horizon lies beyond its test" if base["expression_horizon"] is None
-                   else f"; the test would have to run {2 * base['expression_horizon']} hours to say")
-    check("the expression horizon is at least twice the control's", twice, detail)
-    share = cur["newborn_learning_3h"] / base["newborn_learning_3h"] if base["newborn_learning_3h"] else 0.0
+    if replay:
+        twice = _history_twice(base["expression_horizon"], cur["expression_horizon"], cur["hours"])
+        detail = (f"control {_history_text(base['expression_horizon'], base['hours'])}, "
+                  f"variant {_history_text(cur['expression_horizon'], cur['hours'])}")
+        if twice is None:
+            detail += ("; the control's horizon lies beyond its test" if base["expression_horizon"] is None
+                       else f"; the test would have to run {2 * base['expression_horizon']} hours to say")
+        check("the expression horizon is at least twice the control's", twice, detail)
+    share = drive_learning(cur) / drive_learning(base) if drive_learning(base) else 0.0
     check("the newborn still learns",
           share >= 0.7,
-          f"its links move {cur['newborn_learning_3h']:.3f} in the first 3 hours against "
-          f"{base['newborn_learning_3h']:.3f}, {share * 100:.0f}% of the control")
+          f"the weights its drive uses move {drive_learning(cur):.3f} in the first 3 hours against "
+          f"{drive_learning(base):.3f}, {share * 100:.0f}% of the control")
     check("fewer railed links",
           cur["railed_links"] < base["railed_links"],
           f"{cur['railed_links']} at the end against {base['railed_links']}")
+    still = cur.get("still_room")
+    if still:
+        check("its links can still weaken", still["weakens"], _history_still_text(still))
 
     ok = all(c is True for c in checks)
     undecided = sum(1 for c in checks if c is None)
@@ -2551,6 +2631,7 @@ def history_probe(args):
         elder = _history_life(test, args.seed, state)
         newborn = _history_life(test, args.seed)
         noise = _history_life(test, args.seed + 1, state)
+        still = _history_still(args.seed, state)
 
     rows = _history_rows(elder, newborn, noise, hours)
     expression_horizon = _history_horizon(
@@ -2568,6 +2649,7 @@ def history_probe(args):
 
     print(f"\n  expression horizon: {_history_text(expression_horizon, hours)}")
     print(f"  link horizon:       {_history_text(link_horizon, hours)}")
+    print(f"  in a still room:    {_history_still_text(still)}")
 
     noise_mean = statistics.mean(r["noise_gap"] for r in rows)
     learned = sum(r["newborn_learning"] for r in rows[:3])
@@ -2608,7 +2690,9 @@ def history_probe(args):
             "link_horizon": link_horizon,
             "noise_gap_mean": round(noise_mean, 5),
             "newborn_learning_3h": round(learned, 5),
+            "newborn_drive_learning_3h": round(sum(r["newborn_drive_learning"] for r in rows[:3]), 5),
             "railed_links": rows[-1]["railed_links"],
+            "still_room": still,
             "rows": rows,
             "weights": {
                 name: {f"{i}-{j}": round(w, 5) for (i, j), w in zip(life["keys"], life["weights"][-1])}
