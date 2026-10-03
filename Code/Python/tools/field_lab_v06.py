@@ -2348,17 +2348,23 @@ HISTORY_RAIL_FLOOR = 0.005     # and so is one within this of PRUNE_FLOOR
 def _history_life(inputs, seed, state_path=None):
     """One life on the test input. Returns A, B and T per tick, and the ring
     weights (sorted by link key) at the start and every HISTORY_WEIGHT_EVERY
-    ticks after. The decoder is held to the fixed expression model: the relative
-    one reads each field against its own usual, which would hide the difference
-    this gate looks for."""
+    ticks after: `weights` are the links' own (fast) weights, `drive` the weights
+    the neighbour drive uses, which differ only with two-speed links. The decoder
+    is held to the fixed expression model: the relative one reads each field
+    against its own usual, which would hide the difference this gate looks for."""
     random.seed(seed)
     field = cf.build_field()
     if state_path and cf.load_field(field, state_path) is None:
         raise SystemExit(f"could not load a field state from {state_path}")
     decoder = ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": "fixed"})
     keys = sorted(field.weights)
+
+    def drive():
+        used = field.drive_weights()
+        return [used[k] for k in keys]
+
     out = {"A": [], "B": [], "T": [], "keys": keys,
-           "weights": [[field.weights[k] for k in keys]]}
+           "weights": [[field.weights[k] for k in keys]], "drive": [drive()]}
     for t, values in enumerate(inputs, 1):
         signal = decoder.read(field.step(values))
         out["A"].append(signal["A"])
@@ -2366,6 +2372,7 @@ def _history_life(inputs, seed, state_path=None):
         out["T"].append(signal["T"])
         if t % HISTORY_WEIGHT_EVERY == 0:
             out["weights"].append([field.weights[k] for k in keys])
+            out["drive"].append(drive())
     return out
 
 
@@ -2395,10 +2402,14 @@ def _history_rows(elder, newborn, noise, hours):
         gap = {name: _history_gap(elder, newborn, name, lo, hi) for name in "ABT"}
         noise_gap = sum(_history_gap(elder, noise, name, lo, hi) for name in "AB")
         old, new = elder["weights"][end], newborn["weights"][end]
-        # How far the newborn's weights travelled this hour, sample to sample.
-        moved = sum(abs(b - a)
-                    for s in range(first, end)
-                    for a, b in zip(newborn["weights"][s], newborn["weights"][s + 1]))
+
+        def travelled(track):
+            # How far the newborn's weights went this hour, sample to sample.
+            return sum(abs(b - a)
+                       for s in range(first, end)
+                       for a, b in zip(newborn[track][s], newborn[track][s + 1]))
+
+        moved = travelled("weights")
         rows.append({
             "hour": hour,
             "expression_gap": round(gap["A"] + gap["B"], 5),
@@ -2411,6 +2422,10 @@ def _history_rows(elder, newborn, noise, hours):
             "gap_a": round(gap["A"], 5),
             "gap_b": round(gap["B"], 5),
             "gap_t": round(gap["T"], 5),
+            # The same two on the weights the drive uses (two-speed links).
+            "drive_link_gap": round(max(abs(a - b) for a, b in
+                                        zip(elder["drive"][end], newborn["drive"][end])), 5),
+            "newborn_drive_learning": round(travelled("drive"), 5),
         })
     return rows
 
@@ -2430,27 +2445,76 @@ def _history_text(horizon, hours):
     return f"more than {hours} hours" if horizon is None else f"{horizon} hours"
 
 
+def _history_twice(control, variant, variant_hours):
+    """Is the variant's horizon at least twice the control's? True, False, or
+    None when the test is too short to say."""
+    if control is None:
+        return None                     # the control's own horizon lies beyond its test
+    if variant is None:
+        return True if variant_hours >= 2 * control else None
+    return variant >= 2 * control
+
+
 def _history_compare(current, baseline):
-    """Control against variant for the history gate."""
+    """Control against variant for the history gate. The variant passes only if
+    its expression horizon is at least twice the control's, its newborn still
+    learns, and fewer of its links are railed. Returns True only if all hold."""
     base, cur = baseline.get("history"), current["history"]
     if not base:
         raise SystemExit("--compare with --history needs a file saved by --history --json")
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
           f"overrides {baseline.get('overrides')}):")
-    for name, key in (("expression horizon", "expression_horizon"), ("link horizon", "link_horizon")):
-        print(f"  {name:32s} {_history_text(base[key], base['hours'])} -> "
-              f"{_history_text(cur[key], cur['hours'])}")
-    share = cur["newborn_learning_3h"] / base["newborn_learning_3h"] if base["newborn_learning_3h"] else 0.0
-    print(f"  {'newborn learning, first 3 hours':32s} {base['newborn_learning_3h']:.3f} -> "
-          f"{cur['newborn_learning_3h']:.3f} ({share * 100:.0f}% of the control)")
-    print(f"  {'railed links at the end':32s} {base['railed_links']} -> {cur['railed_links']}")
-    print(f"  {'mean noise gap':32s} {base['noise_gap_mean']:.4f} -> {cur['noise_gap_mean']:.4f}")
     print("\n  hour | expression gap      | link gap            | railed links")
     for a, b in zip(base["rows"], cur["rows"]):
         print(f"  {a['hour']:4d} | {a['expression_gap']:.4f} -> {b['expression_gap']:.4f}"
               f"    | {a['link_gap']:.4f} -> {b['link_gap']:.4f}"
               f"    | {a['railed_links']:2d} -> {b['railed_links']:2d}")
+
+    def mean_railed(h):
+        return statistics.mean(r["railed_links"] for r in h["rows"])
+
+    def drive_learning(h):
+        return sum(r.get("newborn_drive_learning", r["newborn_learning"]) for r in h["rows"][:3])
+
+    print(f"\n  {'link horizon':32s} {_history_text(base['link_horizon'], base['hours'])} -> "
+          f"{_history_text(cur['link_horizon'], cur['hours'])}")
+    print(f"  {'mean noise gap':32s} {base['noise_gap_mean']:.4f} -> {cur['noise_gap_mean']:.4f}")
+    print(f"  {'railed links, mean over the test':32s} {mean_railed(base):.1f} -> {mean_railed(cur):.1f}")
+    drive_share = drive_learning(cur) / drive_learning(base) if drive_learning(base) else 0.0
+    print(f"  {'newborn learning, drive weights':32s} {drive_learning(base):.3f} -> {drive_learning(cur):.3f} "
+          f"({drive_share * 100:.0f}% of the control), first 3 hours, on the weights the drive uses")
+
+    print("\n--- VARIANT AGAINST CONTROL ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        mark = "UNDECIDED" if ok is None else "PASS" if ok else "FAIL"
+        print(f"  [{mark}] {name}: {detail}")
+
+    twice = _history_twice(base["expression_horizon"], cur["expression_horizon"], cur["hours"])
+    detail = (f"control {_history_text(base['expression_horizon'], base['hours'])}, "
+              f"variant {_history_text(cur['expression_horizon'], cur['hours'])}")
+    if twice is None:
+        detail += ("; the control's horizon lies beyond its test" if base["expression_horizon"] is None
+                   else f"; the test would have to run {2 * base['expression_horizon']} hours to say")
+    check("the expression horizon is at least twice the control's", twice, detail)
+    share = cur["newborn_learning_3h"] / base["newborn_learning_3h"] if base["newborn_learning_3h"] else 0.0
+    check("the newborn still learns",
+          share >= 0.7,
+          f"its links move {cur['newborn_learning_3h']:.3f} in the first 3 hours against "
+          f"{base['newborn_learning_3h']:.3f}, {share * 100:.0f}% of the control")
+    check("fewer railed links",
+          cur["railed_links"] < base["railed_links"],
+          f"{cur['railed_links']} at the end against {base['railed_links']}")
+
+    ok = all(c is True for c in checks)
+    undecided = sum(1 for c in checks if c is None)
+    print(f"\n  {'VARIANT PASS' if ok else 'VARIANT NOT PASSED'} "
+          f"({sum(1 for c in checks if c is True)}/{len(checks)} checks hold"
+          + (f", {undecided} undecided" if undecided else "") + ")")
+    return ok
 
 
 def history_probe(args):
@@ -2556,7 +2620,7 @@ def history_probe(args):
         Path(args.json).write_text(json.dumps(result, indent=1))
         print(f"\nsaved: {args.json}")
     if args.compare:
-        _history_compare(result, json.loads(Path(args.compare).read_text()))
+        ok = _history_compare(result, json.loads(Path(args.compare).read_text())) and ok
     return ok
 
 

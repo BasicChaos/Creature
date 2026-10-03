@@ -248,6 +248,44 @@ demotion, not amputation.
 
 The reservoir is exempt from all of this. Its weights are fixed by design.
 
+### Two-speed links (built, off)
+
+Built on 3 October 2026 as the first attempt to push the memory horizon out. Each
+ring link also keeps a slow weight that follows the fast one with a time constant
+of about a week (`SLOW_RATE`). With `SLOW_MIX` above zero the drive between
+neighbours uses a mix of the two, and decay (waking decay and sleep's weakening)
+pulls the fast weight toward the slow one instead of toward the floor.
+`SOFT_CEILING` scales growth, waking and replayed, by the room left under `W_MAX`.
+The defaults are `SLOW_MIX = 0.0` and `SOFT_CEILING = False`, and with them the
+field is exactly as it was: the history gate's control runs are unchanged to the
+last digit. The slow weights are kept and saved either way.
+
+It is off because it did not pass its gate (`--history`, control against
+`SLOW_MIX=0.5` and `SOFT_CEILING=True`, seeds 1, 2, 3 and 7):
+
+- Horizon. On 72 hours of recorded senses the expression horizon went from 25, 25,
+  54 and 24 hours to more than 72 on every seed. That is at least twice the
+  control's on three seeds and cannot be said on the fourth. On the synthetic seeds
+  it cannot be judged at all: the control's own horizon is already beyond the test.
+- Learning. The newborn's fast weights moved 80 to 85% as far as the control's in
+  the first three hours, above the bar of 70%. The weights the drive uses moved 40
+  to 43% as far, because half of each is a slow weight that has barely left 0.20.
+- Railed links. Fewer: none against four on the synthetic seeds, three against five
+  on the recorded senses.
+- The other gates. `--forward`, `--events`, `--curious` and `--voice` pass on all
+  four seeds. `--feel` fails one check on seed 1: a covered speaker is felt 1.42
+  times as strongly as an ordinary tone, against a bar of 1.5 (the control reads
+  1.53 there). It is felt less strongly with the variant on every seed.
+
+What the numbers rest on: with decay pulling toward the slow weight, nothing pulls
+the slow weight down. A fast weight can only fall as far as its slow one, and a
+slow weight only follows the fast one, so a link never gets weaker than it has
+been. In a ten-day run (three busy days, then seven in a still room) the slow
+weights fell on 0 of 108 link-days, no link dropped below the 0.20 it was born
+with, and the links near the weather anchor kept growing in the still room. The
+floor is never reached, which is why fewer links are railed. The variant
+remembers by not forgetting.
+
 ## Sleep and consolidation
 
 The field sleeps when it is under-stimulated for a while, or when memory pressure is
@@ -503,13 +541,16 @@ still hum, fidget, and probe through the loop.
 ## Persistence
 
 `Code/Python/data/creature_field_state.json` holds only the slow state: trainable
-connection weights, reservoir weights, energy, fatigue, relevance, ages, and the
+connection weights (each link's fast weight and its slow one), reservoir weights, energy, fatigue, relevance, ages, and the
 predictive cells' learned predictions. It is written periodically, on clean
 shutdown, and via an atexit handler, and reloaded on boot. Fast values (activation,
 ripple) are deliberately not saved, so the Creature wakes calm but keeps its slow
 self. A snapshot whose shape does not match the current field is refused rather than
 half-applied. The autobiography is persisted alongside it and reloaded the same way,
-and so is the newborn twin's field.
+and so is the newborn twin's field. The snapshot is at version 2, which added the
+slow weights. A version 1 file loads with each slow weight set to the fast one.
+Code from before version 2 refuses a version 2 file and starts the field fresh, so
+copy the saved state aside before going back to older code.
 
 ## Normalization and the noise gate
 
@@ -547,7 +588,7 @@ machine and the runs reproduce exactly. Every gate uses a fixed seed.
 | feel | the loop is felt: faintly when predicted, strongly when not, not at all with no loop | `--feel` | 7/7 |
 | curious | bored in a still dark room, it probes, explores its voice, and learns it | `--curious` | 9/9 |
 | voice | the fixed threshold is a metronome; the relative rule speaks rarely, when surprised; `--replay` too | `--voice` | 6/6 |
-| history | measures the memory horizon: how long a newborn field needs, on the same input, to become indistinguishable from an elder; changes nothing; `--replay` with `--state` runs it on recorded senses | `--history` | 4/4 |
+| history | measures the memory horizon: how long a newborn field needs, on the same input, to become indistinguishable from an elder; changes nothing; `--replay` with `--state` runs it on recorded senses; `--compare` judges a variant against a saved control | `--history` | 4/4 |
 | twin | the Creature is the same with the newborn twin beside it, in the field and in the collector's own loop; the twin measures what the history gate measures | `--twin` | 6/6 |
 
 The ring, reservoir and readout rows were measured before the predictive cell became

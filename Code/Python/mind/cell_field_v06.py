@@ -35,7 +35,7 @@ import random
 from datetime import datetime
 
 CELL_COUNT = 12          # outer ring; six inner reservoir cells are separate
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2      # 2 adds each link's slow weight; a 1 loads with slow = fast
 FIELD_VERSION = "v06.9-predictive"
 
 # The ring, in design order (Creature v06.md, "The field: a ring of twelve").
@@ -227,6 +227,19 @@ LIVE_LINK_THRESHOLD = 0.05
 PRUNE_AFTER_INACTIVE_TICKS = 3600
 CONSOLIDATION_UNUSED_KEEP = 0.995
 CONSOLIDATION_WEAK_KEEP = 0.998
+
+# --- two-speed links (after v06.9; off by default) -------------------------
+# Each ring link keeps a second, slow weight that follows the fast one with a
+# time constant of about a week. With SLOW_MIX above zero the drive between
+# neighbours uses a mix of the two, and decay pulls the fast weight toward the
+# slow one instead of toward the floor: what the link has been over the week
+# pulls it back. SLOW_MIX = 0.0 is the field as it was, the control. The slow
+# weight is kept and saved either way, so it is ready when the mix is turned up.
+SLOW_MIX = 0.0
+SLOW_RATE = 1.0 / 604800.0
+# Growth scaled by the room left under W_MAX, so a weight approaches the ceiling
+# instead of sitting on it. False is the field as it was.
+SOFT_CEILING = False
 
 # --- sleep and replay ------------------------------------------------------
 LOW_STIMULATION_TICKS = 160
@@ -421,7 +434,8 @@ class CellField:
 
     def __init__(self):
         self.cells = {}
-        self.weights = {}
+        self.weights = {}          # the fast weight of each ring link
+        self.slow_weights = {}     # the slow one, which follows it over about a week
         self.connection_age = {}
         self.connection_usage = {}
         self.connection_pressure = {}
@@ -543,6 +557,7 @@ class CellField:
             j = (i + 1) % CELL_COUNT
             key = (i, j) if i < j else (j, i)
             self.weights[key] = CONNECTION_WEIGHT_BY_DISTANCE[1]
+            self.slow_weights[key] = self.weights[key]
             self.connection_age[key] = 0
             self.connection_usage[key] = 0
             self.connection_pressure[key] = 0.0
@@ -553,6 +568,24 @@ class CellField:
             return 0.0
         key = (i, j) if i < j else (j, i)
         return self.weights.get(key, 0.0)
+
+    def drive_weights(self):
+        """The weight each link drives its neighbours with: the fast weight, or
+        with two-speed links a mix of the fast and the slow."""
+        if SLOW_MIX <= 0.0:
+            return self.weights
+        return {
+            key: (1.0 - SLOW_MIX) * w + SLOW_MIX * self.slow_weights[key]
+            for key, w in self.weights.items()
+        }
+
+    def _weaken(self, key, w, keep):
+        """Shrink a link's fast weight to `keep` of itself: toward nothing, or
+        with two-speed links toward its slow weight, which may be above it."""
+        if SLOW_MIX <= 0.0:
+            return w * keep
+        slow = self.slow_weights[key]
+        return slow + (w - slow) * keep
 
     @property
     def emitter_activation(self):
@@ -901,6 +934,8 @@ class CellField:
                         continue
                     assoc = self.connection_pressure.get(key, 0.0)
                     gain = REPLAY_ETA * significance * (0.55 + assoc) * energy_scale
+                    if SOFT_CEILING:
+                        gain *= max(0.0, W_MAX - self.weights[key]) / W_MAX
                     self.weights[key] = clamp(self.weights[key] + gain, 0.0, W_MAX)
                     self.connection_usage[key] = self.connection_usage.get(key, 0) + 1
                     self.connection_last_active_tick[key] = self.tick_count
@@ -924,9 +959,9 @@ class CellField:
                 + 0.15 * (1.0 if inactive_for < PRUNE_AFTER_INACTIVE_TICKS else 0.0)
             )
             if protected < 0.12:
-                w *= CONSOLIDATION_UNUSED_KEEP
+                w = self._weaken(key, w, CONSOLIDATION_UNUSED_KEEP)
             elif w < 0.09 and protected < 0.32:
-                w *= CONSOLIDATION_WEAK_KEEP
+                w = self._weaken(key, w, CONSOLIDATION_WEAK_KEEP)
             if (
                 w < LIVE_LINK_THRESHOLD
                 and inactive_for >= PRUNE_AFTER_INACTIVE_TICKS
@@ -1024,7 +1059,7 @@ class CellField:
         neighbor_ripple = {n: 0.0 for n in cells}
         neighbor_ripple_weight = {n: 0.0 for n in cells}
 
-        for (i, j), w in self.weights.items():
+        for (i, j), w in self.drive_weights().items():
             if w <= 0.0:
                 continue
             neighbor_activation[i] += prev_activation[j] * w
@@ -1169,6 +1204,10 @@ class CellField:
             self._update_memory_pressure()
             self._finish_sleep_if_needed()
 
+        # The slow weights follow the fast ones, a little each tick.
+        for key, w in self.weights.items():
+            self.slow_weights[key] += (w - self.slow_weights[key]) * SLOW_RATE
+
         self.tick_count += 1
         self.last_sense = dict(values)
         return self.state()
@@ -1191,12 +1230,15 @@ class CellField:
                     self._spend_reserve(LEARNING_COST),
                 )
                 if energy_scale > 0.0:
-                    w += (
+                    growth = (
                         ETA
                         * coactivity
                         * (1.0 + PRESSURE_LEARNING_GAIN * pair_pressure)
                         * energy_scale
                     )
+                    if SOFT_CEILING:
+                        growth *= max(0.0, W_MAX - w) / W_MAX
+                    w += growth
                     self.connection_usage[key] += 1
                     self.connection_last_active_tick[key] = self.tick_count
                     assoc += (pair_pressure - assoc) * PRESSURE_ASSOC_GAIN
@@ -1215,7 +1257,7 @@ class CellField:
             if self.sleep_mode == "sleep":
                 decay *= 1.5
             w = clamp(w, 0.0, W_MAX)
-            w *= (1.0 - decay)
+            w = self._weaken(key, w, 1.0 - decay)
 
             self.weights[key] = max(w, PRUNE_FLOOR)
             self.connection_pressure[key] = clamp(assoc, 0.0, 1.0)
@@ -1337,6 +1379,7 @@ class CellField:
                     "a": i,
                     "b": j,
                     "weight": round(w, 6),
+                    "slow_weight": round(self.slow_weights.get((i, j), w), 8),
                     "age": self.connection_age.get((i, j), 0),
                     "usage_count": self.connection_usage.get((i, j), 0),
                     "pressure_association": round(self.connection_pressure.get((i, j), 0.0), 6),
@@ -1399,6 +1442,9 @@ class CellField:
             if key not in self.weights:
                 continue
             self.weights[key] = max(PRUNE_FLOOR, conn.get("weight", self.weights[key]))
+            # A snapshot from before two-speed links has no slow weight: it
+            # starts at the fast one, as if the link had always been as it is.
+            self.slow_weights[key] = max(PRUNE_FLOOR, conn.get("slow_weight", self.weights[key]))
             self.connection_age[key] = conn.get("age", self.connection_age.get(key, 0))
             self.connection_usage[key] = conn.get("usage_count", self.connection_usage.get(key, 0))
             self.connection_pressure[key] = conn.get(
