@@ -28,10 +28,12 @@ Same seed + same input + same overrides = same result. The field uses only the
 """
 
 import argparse
+import hashlib
 import json
 import math
 import random
 import statistics
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -57,6 +59,8 @@ from mind.forward_model_v06 import (
     SOUND_PITCH_BINS,
 )
 from mind.curiosity_v06 import Curiosity
+# The newborn twin the collector runs beside the real field.
+from mind.twin_v06 import Twin
 # The expression gate closes the light loop through the collector's normalizer.
 from mind.normalize import RollingNormalizer
 # Expression-memory primitives live in the runtime module; field_lab imports them
@@ -2365,6 +2369,17 @@ def _history_life(inputs, seed, state_path=None):
     return out
 
 
+def _history_elder(seed, hours, path):
+    """Raise a field on the bursts scenario, then save it. Loaded again, it starts
+    a test the way the collector's saved field does: structure kept, the moment
+    lost."""
+    random.seed(seed)
+    raised = cf.build_field()
+    for values in scenario_inputs("bursts", hours * HISTORY_TICKS_PER_HOUR, random.Random(seed + 1)):
+        raised.step(values)
+    cf.save_field(raised, path)
+
+
 def _history_gap(a, b, name, lo, hi):
     return statistics.mean(abs(x - y) for x, y in zip(a[name][lo:hi], b[name][lo:hi]))
 
@@ -2459,15 +2474,8 @@ def history_probe(args):
             print(f"\n  elder: {args.state}"
                   f"\n  test input: the first {hours} hours of {args.replay}")
         else:
-            # Raise the elder, then save it and load it again, so it starts the
-            # test the way the saved field does: structure kept, the moment lost.
-            random.seed(args.seed)
-            raised = cf.build_field()
-            for values in scenario_inputs("bursts", args.raise_hours * per,
-                                          random.Random(args.seed + 1)):
-                raised.step(values)
             state = str(Path(folder) / "elder.json")
-            cf.save_field(raised, state)
+            _history_elder(args.seed, args.raise_hours, state)
             # Its own stream, so the noise life's seed is not also the input's.
             test = list(scenario_inputs("day", hours * per, random.Random(args.seed + 2)))
             source = "scenario:bursts then day"
@@ -2552,6 +2560,156 @@ def history_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The newborn twin (after v06.9)
+# ---------------------------------------------------------------------------
+#
+# The collector can run a second, newborn field beside the real one: the same
+# senses, no loop, nothing to the body (mind/twin_v06.py). It shows live what the
+# history gate measures offline. Its one rule is that it must not change the
+# Creature. The field draws from the shared random stream, so a second field
+# stepped beside the first changes it unless it keeps a stream of its own.
+#
+# Control (the field alone) against variant (the twin beside it), same seed, same
+# input, here and then in the collector's own loop on a scripted body.
+
+TWIN_RAISE_HOURS = 6       # the elder's upbringing, on the bursts scenario
+TWIN_TEST_HOURS = 2        # then this much of the day scenario
+TWIN_LOG_EVERY = 60        # the collector's TWIN_LOG_EVERY_TICKS
+TWIN_SCRIPTED_SECONDS = 1800
+
+
+def _twin_run(inputs, seed, state_path, beside=None):
+    """The real field's life on the test input, as a digest of each tick's state
+    and signal. `beside` is None (alone), "twin" (the collector's Twin beside it)
+    or "shared" (a second field on the same random stream, the mistake the twin
+    avoids). With the twin, also its log rows, one a minute."""
+    random.seed(seed)
+    field = cf.build_field()
+    if cf.load_field(field, state_path) is None:
+        raise SystemExit(f"could not load a field state from {state_path}")
+    decoder = ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": "fixed"})
+    twin = Twin(seed=seed) if beside == "twin" else None
+    other = cf.build_field() if beside == "shared" else None
+    born = sorted(twin.field.weights.values()) if twin is not None else []
+    digests, rows = [], []
+    for t, values in enumerate(inputs, 1):
+        state = field.step(values)
+        signal = decoder.read(state)
+        seen = (state["cells"], state["connections"], state["metabolism"],
+                state["emitter_activations"], state["events"], signal)
+        digests.append(hashlib.blake2b(repr(seen).encode(), digest_size=8).digest())
+        if twin is not None:
+            twin.step(values, state)
+            if t % TWIN_LOG_EVERY == 0:
+                rows.append(twin.log_row())
+        if other is not None:
+            other.step(values)
+    return {"digests": digests, "rows": rows, "twin": twin, "born": born}
+
+
+def twin_probe(args):
+    """The twin gate: the Creature is the same with the newborn twin beside it,
+    in the field and in the collector's own loop, and the twin measures what the
+    history gate measures."""
+    apply_overrides(args.set)
+    per = HISTORY_TICKS_PER_HOUR
+    ticks = TWIN_TEST_HOURS * per
+    print(f"field {cf.FIELD_VERSION} | THE NEWBORN TWIN | seed={args.seed}")
+    print(f"\n  elder: raised here for {TWIN_RAISE_HOURS} hours on the bursts scenario"
+          f"\n  test input: {TWIN_TEST_HOURS} hours of the day scenario")
+
+    with tempfile.TemporaryDirectory() as folder:
+        state = str(Path(folder) / "elder.json")
+        _history_elder(args.seed, TWIN_RAISE_HOURS, state)
+        test = list(scenario_inputs("day", ticks, random.Random(args.seed + 2)))
+
+        alone = _twin_run(test, args.seed, state)
+        beside = _twin_run(test, args.seed, state, "twin")
+        shared = _twin_run(test, args.seed, state, "shared")
+        # The history gate's two lives on the same input, to set the twin's
+        # figures against.
+        elder = _history_life(test, args.seed, state)
+        newborn = _history_life(test, args.seed)
+
+        # A restart: the twin's file is a field state like any other.
+        twin = beside["twin"]
+        saved = str(Path(folder) / "twin.json")
+        twin.save(saved)
+        woken = Twin()
+        woke = woken.load(saved)
+        drift = max(abs(woken.field.weights[k] - w) for k, w in twin.field.weights.items())
+        fresh = Twin()
+        found = fresh.load(str(Path(folder) / "no_such_twin.json"))
+
+    def differing(a, b):
+        return [t for t, (x, y) in enumerate(zip(a["digests"], b["digests"])) if x != y]
+
+    changed = differing(alone, beside)
+    changed_shared = differing(alone, shared)
+
+    # The same figures two ways: the twin's log rows, and the history gate's lives.
+    samples = per // HISTORY_WEIGHT_EVERY
+    rows_per_hour = per // TWIN_LOG_EVERY
+    worst = 0.0
+    print("\n  hour | arousal gap      | balance gap      | link gap         (twin log / history gate)")
+    for hour in range(TWIN_TEST_HOURS):
+        lo, hi = hour * per, (hour + 1) * per
+        rows = beside["rows"][hour * rows_per_hour:(hour + 1) * rows_per_hour]
+        end = (hour + 1) * samples
+        pairs = (
+            (statistics.mean(r["gap_a"] for r in rows), _history_gap(elder, newborn, "A", lo, hi)),
+            (statistics.mean(r["gap_b"] for r in rows), _history_gap(elder, newborn, "B", lo, hi)),
+            (rows[-1]["gap_link"],
+             max(abs(a - b) for a, b in zip(elder["weights"][end], newborn["weights"][end]))),
+        )
+        worst = max(worst, max(abs(a - b) for a, b in pairs))
+        print(f"  {hour:4d} | " + " | ".join(f"{a:.4f} / {b:.4f}" for a, b in pairs))
+
+    # The collector's own loop, twin off and on, on a scripted body and clock.
+    scripted = subprocess.run(
+        [sys.executable, str(PROJECT_PYTHON_ROOT / "tools" / "scripted_body.py"), "--twin-check",
+         "--seed", str(args.seed), "--seconds", str(TWIN_SCRIPTED_SECONDS)],
+        capture_output=True, text=True)
+    scripted_lines = [line.strip() for line in scripted.stdout.splitlines() if line.strip()]
+    if scripted.returncode != 0:
+        print("\n" + scripted.stdout + scripted.stderr)
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("the Creature is the same with the twin beside it",
+          not changed,
+          f"{ticks - len(changed)} of {ticks} ticks identical: every cell, link and pixel"
+          + (f"; first difference at tick {changed[0]}" if changed else ""))
+    check("the check can tell: a second field on the shared stream changes it",
+          len(changed_shared) > 0,
+          f"{len(changed_shared)} of {ticks} ticks differ"
+          + (f", from tick {changed_shared[0]}" if changed_shared else ""))
+    check("the collector does the same with the twin off and on",
+          scripted.returncode == 0,
+          f"{TWIN_SCRIPTED_SECONDS} seconds on a scripted body: "
+          + (scripted_lines[-1] if scripted_lines else "no output"))
+    check("the twin is born new and ages a tick a tick",
+          beside["born"] == [INITIAL_WEIGHT] * len(beside["born"]) and twin.age == ticks,
+          f"every link at {INITIAL_WEIGHT:.2f} at birth, {twin.age} ticks old after {ticks}")
+    check("it measures what the history gate measures",
+          worst <= 1e-4,
+          f"its log and the gate's two lives agree to within {worst:.6f}")
+    check("it survives a restart, and with no file it is a newborn",
+          woke and woken.age == twin.age and drift <= 1e-6 and not found and fresh.age == 0,
+          f"loaded at {woken.age} ticks old with links within {drift:.7f}; "
+          f"no file: {fresh.age} ticks old")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -2630,6 +2788,9 @@ def main():
                    help="run the history gate (how long a newborn field needs to "
                         "become indistinguishable from an elder; measures only); "
                         "with --replay and --state, on recorded senses")
+    p.add_argument("--twin", action="store_true",
+                   help="run the twin gate (the Creature is the same with the "
+                        "newborn twin beside it, in the field and in the collector)")
     p.add_argument("--history-hours", type=int, default=24,
                    help="hours of test input for --history (default 24)")
     p.add_argument("--raise-hours", type=int, default=48,
@@ -2671,6 +2832,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.history:
         ok = history_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.twin:
+        ok = twin_probe(args)
         sys.exit(0 if ok else 1)
     if args.express:
         ok = express_probe(args)

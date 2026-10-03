@@ -52,6 +52,7 @@ from mind.expression_v06 import (
 from mind.expression_memory_v06 import ExpressionMemory
 from mind.forward_model_v06 import ForwardModel, frame_rgbw
 from mind.curiosity_v06 import Curiosity
+from mind.twin_v06 import Twin
 from mind.normalize import RollingNormalizer
 
 # --- Serial ---
@@ -158,6 +159,15 @@ ENABLE_LOOP_FEEL = ENABLE_LOOP and os.environ.get("CREATURE_LOOP_FEEL", "1") == 
 ENABLE_PROBE = ENABLE_LOOP and os.environ.get("CREATURE_PROBE", "1") == "1"
 ENABLE_PROBE_VOICE = os.environ.get("CREATURE_PROBE_VOICE", "1") == "1"
 
+# --- Newborn twin ---
+# A second field, born fresh, that gets the same four senses each tick and never
+# reaches the body. The gap between it and the real field is how much the real
+# one's longer life shows. It only watches: the Creature is the same with it on
+# or off (the --twin gate checks that). Set CREATURE_TWIN=0 to skip. Deleting its
+# file restarts it as a newborn.
+ENABLE_TWIN = os.environ.get("CREATURE_TWIN", "1") == "1"
+TWIN_LOG_EVERY_TICKS = 60
+
 # --- Database / files ---
 # Shared with the dashboard server and exporter; see common/paths.py.
 # STATE_JSON_PATH lands on tmpfs on the Pi, so the per-tick live snapshot
@@ -182,6 +192,12 @@ if FIELD_STATE_PATH.endswith("_v06.json"):
     FORWARD_MODEL_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_forward_model_v06.json"
 else:
     FORWARD_MODEL_PATH = FIELD_STATE_PATH + ".forward_model"
+
+# The newborn twin's field is saved the same way, in a file of its own.
+if FIELD_STATE_PATH.endswith("_v06.json"):
+    TWIN_STATE_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_twin_v06.json"
+else:
+    TWIN_STATE_PATH = FIELD_STATE_PATH + ".twin"
 
 
 def clamp(value, low, high):
@@ -382,6 +398,20 @@ def setup_database(db_path):
         temp_c REAL, pressure_hpa REAL,
         lux_delta REAL, lux_pred REAL, lux_err REAL,
         rms_excess REAL, rms_pred REAL, rms_err REAL
+    )
+    """)
+
+    # The newborn twin against the real field, one row a minute: the mean gap in
+    # arousal, balance and tempo over that minute, and the largest gap between
+    # their ring links at its end. `tick` is the real field's, `twin_age` the
+    # twin's own.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS twin_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        logged_at TEXT NOT NULL,
+        twin_age INTEGER,
+        gap_a REAL, gap_b REAL, gap_t REAL, gap_link REAL
     )
     """)
 
@@ -875,6 +905,14 @@ def log_sleep_summary(cur, logged_at, summary):
     ))
 
 
+def log_twin(cur, logged_at, tick, row):
+    cur.execute("""
+    INSERT INTO twin_log (tick, logged_at, twin_age, gap_a, gap_b, gap_t, gap_link)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (tick, logged_at, row["twin_age"], row["gap_a"], row["gap_b"], row["gap_t"],
+          row["gap_link"]))
+
+
 def apply_retention_policy(cur):
     """Optional conservative retention for temporary observation tables."""
     if not RETENTION_ENABLED:
@@ -939,6 +977,13 @@ def main():
     last_action = None
     curiosity = Curiosity() if ENABLE_PROBE else None
 
+    twin = Twin() if ENABLE_TWIN else None
+    if twin is not None:
+        if twin.load(TWIN_STATE_PATH):
+            print(f"Loaded the twin ({twin.age} ticks old).")
+        else:
+            print("No saved twin. A newborn twin starts now.")
+
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
     motion_norm = RollingNormalizer(MOTION_WINDOW_SECONDS, MOTION_EMA_ALPHA, MOTION_MIN_RANGE)
@@ -977,6 +1022,8 @@ def main():
         atexit.register(lambda: expr_memory.save(EXPR_MEMORY_PATH))
     if forward is not None:
         atexit.register(lambda: forward.save(FORWARD_MODEL_PATH))
+    if twin is not None:
+        atexit.register(lambda: twin is not None and twin.save(TWIN_STATE_PATH))
 
     print(f"Collector running ({FIELD_VERSION} metabolism + structural memory).")
     print(f"ESP transport: {esp.description}")
@@ -990,6 +1037,7 @@ def main():
     print(f"Loop felt by the field: {'on' if ENABLE_LOOP_FEEL else 'off'}; "
           f"curiosity probes: {'on' if ENABLE_PROBE else 'off'}"
           f"{'' if ENABLE_PROBE_VOICE or not ENABLE_PROBE else ' (light only)'}")
+    print(f"Newborn twin: {'on' if ENABLE_TWIN else 'off'}")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -1177,6 +1225,28 @@ def main():
                 curiosity.note_probe(light=bool(output_info.get("probe_light")),
                                      voice=bool(output_info.get("probe_voice")))
 
+        # The newborn twin: the same senses, no loop, nothing to the body. It
+        # runs once the body has its commands, so it cannot hold them up, and a
+        # fault in it switches it off rather than stopping the Creature.
+        twin_block = None
+        if twin is not None:
+            try:
+                twin_started = monotonic()
+                twin.step(
+                    {
+                        "sound": sound_value,
+                        "light": light_value,
+                        "motion": motion_value,
+                        "weather": weather_value,
+                    },
+                    state,
+                )
+                twin_block = twin.snapshot()
+                twin_block["step_ms"] = round((monotonic() - twin_started) * 1000.0, 2)
+            except Exception as error:
+                print(f"The twin failed and is switched off: {error!r}")
+                twin = None
+
         if tick % STATUS_PRINT_EVERY_TICKS == 0:
             metabolism = state.get("metabolism", {})
             counts = state.get("state_counts", {})
@@ -1245,6 +1315,7 @@ def main():
             "loop": forward.snapshot() if forward is not None else None,
             "loop_feel": state.get("loop_feel"),
             "curiosity": curiosity.snapshot() if curiosity is not None else None,
+            "twin": twin_block,
         }
         write_json_atomic(STATE_JSON_PATH, snapshot)
 
@@ -1257,6 +1328,8 @@ def main():
         log_sleep_summary(cur, logged_at, state.get("sleep_summary"))
         if tick % WEIGHT_LOG_EVERY_TICKS == 0:
             log_weights(cur, logged_at, state, tick)
+        if twin is not None and tick % TWIN_LOG_EVERY_TICKS == 0:
+            log_twin(cur, logged_at, tick, twin.log_row())
         if tick % RETENTION_EVERY_TICKS == 0:
             apply_retention_policy(cur)
         if tick % COMMIT_EVERY_TICKS == 0 or state.get("sleep_summary"):
@@ -1268,6 +1341,11 @@ def main():
                 save_field(field, FIELD_STATE_PATH)
             except OSError as error:
                 print("Could not save field state:", error)
+            if twin is not None:
+                try:
+                    twin.save(TWIN_STATE_PATH)
+                except OSError as error:
+                    print("Could not save the twin:", error)
 
         if expr_memory is not None and tick % EXPR_MEMORY_SAVE_EVERY_TICKS == 0:
             expr_memory.save(EXPR_MEMORY_PATH)
@@ -1286,6 +1364,8 @@ def main():
         expr_memory.save(EXPR_MEMORY_PATH)
     if forward is not None:
         forward.save(FORWARD_MODEL_PATH)
+    if twin is not None:
+        twin.save(TWIN_STATE_PATH)
     conn.commit()
     conn.close()
 

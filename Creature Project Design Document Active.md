@@ -508,7 +508,8 @@ predictive cells' learned predictions. It is written periodically, on clean
 shutdown, and via an atexit handler, and reloaded on boot. Fast values (activation,
 ripple) are deliberately not saved, so the Creature wakes calm but keeps its slow
 self. A snapshot whose shape does not match the current field is refused rather than
-half-applied. The autobiography is persisted alongside it and reloaded the same way.
+half-applied. The autobiography is persisted alongside it and reloaded the same way,
+and so is the newborn twin's field.
 
 ## Normalization and the noise gate
 
@@ -547,6 +548,7 @@ machine and the runs reproduce exactly. Every gate uses a fixed seed.
 | curious | bored in a still dark room, it probes, explores its voice, and learns it | `--curious` | 9/9 |
 | voice | the fixed threshold is a metronome; the relative rule speaks rarely, when surprised; `--replay` too | `--voice` | 6/6 |
 | history | measures the memory horizon: how long a newborn field needs, on the same input, to become indistinguishable from an elder; changes nothing; `--replay` with `--state` runs it on recorded senses | `--history` | 4/4 |
+| twin | the Creature is the same with the newborn twin beside it, in the field and in the collector's own loop; the twin measures what the history gate measures | `--twin` | 6/6 |
 
 The ring, reservoir and readout rows were measured before the predictive cell became
 the default. Under today's defaults they read 4/7, 3/4 and 1/2 (the ring row's own
@@ -555,6 +557,36 @@ is an open item, not a result.
 
 Rule: no tuning change ships without a control-versus-variant run. This is the
 difference between "I think it is emerging" and "here is the control run."
+
+## The newborn twin
+
+File: `Code/Python/mind/twin_v06.py`. The collector runs a second field beside the
+real one, behind `CREATURE_TWIN` (default on). The twin is born fresh. Each tick it
+gets the same four senses as the real field and nothing else: no loop, and nothing
+it does reaches the body. The gap between the two is how much the real field's
+longer life shows. It is the history gate's measurement, running live.
+
+- The twin must not change the Creature. The field draws its noise from Python's
+  shared random stream, so the twin keeps a stream of its own and swaps it in for
+  its step. It runs after the body has its commands, and a fault in it switches it
+  off rather than stopping the collector. The `--twin` gate checks this in the
+  field, and again in the collector's own loop with `tools/scripted_body.py`, which
+  runs the collector on a scripted body and clock so two runs can be compared line
+  for line.
+- Both fields are read through decoders held to the fixed expression model, so the
+  gap means the same as in the history gate whatever model the strip uses.
+- Its field is saved next to the real one, in `creature_field_state_twin_v06.json`,
+  whenever the real field is saved. It is an ordinary field state. Delete it and
+  the twin starts again as a newborn at the next restart.
+- The live snapshot carries a `twin` block: its age in ticks, its ring weights, and
+  the gaps in arousal, balance, tempo and the largest link difference, each smoothed
+  over about an hour. One row a minute goes to the `twin_log` table: the mean gaps
+  over that minute and the link gap at its end. Averaged over an hour, those rows
+  are the history gate's hourly figures.
+- The real field feels its own voice and light through the loop and the twin does
+  not, so on a body whose loop is closed the gap settles above zero. What is left
+  once the twin has caught up is what the loop adds.
+- Cost on the Pi 3: about 3.5 ms a tick, measured 3 October 2026.
 
 ## Dashboard
 
@@ -586,7 +618,9 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   the predicted one, average surprise across the ring, and the weight of each
   ring link. Served at `/api/learning` and drawn as the Learning panel; the
   static export writes the 24 h window. The readout weights and each cell's own
-  prediction are not logged, so they have no history yet.
+  prediction are not logged, so they have no history yet. Under the charts one
+  line reports the newborn twin from the live snapshot: its age and its gaps in
+  arousal, balance and links.
 - Sensor API: `/api/sensors` and `/api/sensors/<name>` serve light, sound, motion,
   temperature, and pressure as stable, versioned JSON so other apps and services
   can treat the Creature as ordinary sensors. Raw values come from a `sensors`
@@ -620,10 +654,12 @@ Creature/
       mind/expression_memory_v06.py   the autobiography layer
       mind/forward_model_v06.py       predicts its own light and voice
       mind/curiosity_v06.py           probes when nothing has surprised it for a while
+      mind/twin_v06.py                the newborn twin: a second field that only watches
       mind/normalize.py               rolling 0..1 normalization
       mind/cell_field.py              the retired 111-cell field, kept for reference
       dashboard/                      server.py, index.html, static export, sync
       tools/field_lab_v06.py          offline replay and gate harness
+      tools/scripted_body.py          the collector on a scripted body and clock, repeatable
       tools/expression_preview.py     renders the decoder offline
       tools/loop_probe.py             measures the light and sound loops on the body
       data/                           SQLite history + field snapshot (gitignored)

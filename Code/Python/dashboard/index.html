@@ -705,6 +705,7 @@
         <div class="learn-card" id="learnSurprise"></div>
         <div class="learn-card" id="learnLinks"></div>
       </div>
+      <div class="learn-foot" id="learnTwin" hidden></div>
       <div class="learn-foot" id="learnFoot">Waiting for history…</div>
     </section>
 
@@ -2040,6 +2041,20 @@
         "The readout weights and each cell's own prediction also learn, but are not logged yet, so they have no history here.";
     }
 
+    // The newborn twin the collector runs beside the real field: one line, from
+    // the live snapshot. Absent when the twin is off.
+    function twinAge(ticks) {
+      const d = Math.floor(ticks / 86400), h = Math.floor(ticks % 86400 / 3600), m = Math.floor(ticks % 3600 / 60);
+      return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+    }
+    function renderTwin(f) {
+      const el = document.getElementById("learnTwin"), t = f && f.twin;
+      el.hidden = !(t && t.gap);
+      if (el.hidden) return;
+      el.textContent = `Newborn twin, ${twinAge(t.age || 0)} old. Gap: arousal ${fmt(t.gap.arousal)}, ` +
+        `balance ${fmt(t.gap.balance)}, links ${fmt(t.gap.links)}.`;
+    }
+
     async function pullLearning() {
       try {
         learnDoc = await (await fetch(dataUrl("learning.json", API + "/api/learning?window=" + learnWindow))).json();
@@ -2066,6 +2081,7 @@
         renderReadout(f);
         renderMetabolism(f);
         renderLoop(f);
+        renderTwin(f);
         if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built || v06.hasWiring !== snapshotHasWiring(f)) buildV06(f); renderV06(f); }
         else { v06Mode = false; render(f); }
       } catch (err) {
