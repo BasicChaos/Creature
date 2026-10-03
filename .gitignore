@@ -41,11 +41,15 @@ Code/Python/data/
 
 # Archives
 Archive/
+/Creature.zip
 
 # Local/private project notes
 instructions.md
 tmux_creature.md
 AGENTS.md
+
+# Local Claude Code settings
+/.claude/
 
 
 # Deployment secrets
