@@ -33,6 +33,7 @@ import math
 import random
 import statistics
 import sys
+import tempfile
 from pathlib import Path
 
 PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,8 @@ from mind.forward_model_v06 import (
     SOUND_PITCH_BINS,
 )
 from mind.curiosity_v06 import Curiosity
+# The expression gate closes the light loop through the collector's normalizer.
+from mind.normalize import RollingNormalizer
 # Expression-memory primitives live in the runtime module; field_lab imports them
 # so the offline gates and the live collector share one source of truth.
 from mind.expression_memory_v06 import (
@@ -1868,6 +1871,243 @@ def voice_probe(args):
 
 
 # ---------------------------------------------------------------------------
+# How much of its range the expression uses (after v06.9)
+# ---------------------------------------------------------------------------
+#
+# On the body of 3 October 2026 the strip was always bright and the voice kept
+# to a few pitches of one length. Tempo sat at its maximum on every sample:
+# since the light sensor began to see the strip, the field's usual ripple is
+# about three times RIPPLE_REF. Balance kept to a narrow warm band, and pitch
+# comes from balance alone.
+#
+# Control (fixed references) against variant (the field's own usual levels),
+# same seed, same room. The room here can close the light loop the way the body
+# does: the strip's own light reaches the sensor and goes through the same
+# rolling normalizer the collector uses, so a brighter strip is a busier light
+# sense. With --replay it runs both on recorded senses instead (open loop: what
+# was recorded cannot answer a changed strip).
+
+EXPRESS_LUX_FULL = 200.0      # lux the sensor gets from the strip at full, as the body's model reports
+EXPRESS_LUX_CLOSE = 400.0     # the same with twice the coupling; the body's own figure is not settled
+EXPRESS_SENSOR_PIXEL = 10     # the sensor sits beside this part of the strip
+EXPRESS_SENSOR_WIDTH = 2.5    # pixels
+# The collector's light normalizer settings (collector.py LIGHT_*).
+EXPRESS_LIGHT_WINDOW = 120.0
+EXPRESS_LIGHT_ALPHA = 0.2
+EXPRESS_LIGHT_MIN_RANGE = 50.0
+
+
+def _strip_lux(pixels, full, cap=200.0):
+    """Lux the strip adds at a sensor sitting beside it. Nearby pixels count most."""
+    total = weight = 0.0
+    for p, (r, g, b, w) in enumerate(pixels):
+        wt = math.exp(-((p - EXPRESS_SENSOR_PIXEL) / EXPRESS_SENSOR_WIDTH) ** 2)
+        total += wt * ((r + g + b) / 3.0 + w) / (2.0 * cap)
+        weight += wt
+    return full * total / weight if weight else 0.0
+
+
+def _express_run(model, inputs, seed, seen=0.0, state_path=None, restart_at=None):
+    """One life under one expression model. `seen` is the lux the strip puts on
+    the sensor at full (0: the sensor cannot see it). With it, the room's light
+    is turned into lux, the strip's own light is added, and the sum is normalized
+    as the collector does, so the field senses its own strip. Tones respect the
+    collector's 20-tick minimum spacing. At `restart_at` the collector is
+    restarted: the field is saved and loaded again, and the decoder and the
+    light normalizer start fresh. Returns per-tick tracks."""
+    random.seed(seed)
+    room = random.Random(seed + 2)
+    field = cf.build_field()
+    if state_path:
+        cf.load_field(field, state_path)
+    decoder = ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": model})
+    light = RollingNormalizer(EXPRESS_LIGHT_WINDOW, EXPRESS_LIGHT_ALPHA, EXPRESS_LIGHT_MIN_RANGE)
+    out = {"A": [], "B": [], "T": [], "level": [], "tones": [], "asleep": [], "light": []}
+    own = 0.0
+    last = -FORWARD_VOICE_GAP
+    for t, values in enumerate(inputs):
+        if seen:
+            lux = 5.0 + 600.0 * values["light"] + own + room.gauss(0.0, 0.5)
+            for i in range(10):     # the body samples at about 10 Hz
+                light.add(lux, t + i / 10.0)
+            values = dict(values, light=light.normalized())
+        if t == restart_at:
+            with tempfile.TemporaryDirectory() as folder:
+                saved = str(Path(folder) / "field.json")
+                cf.save_field(field, saved)
+                field = cf.build_field()
+                cf.load_field(field, saved)
+            decoder = ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": model})
+            light = RollingNormalizer(EXPRESS_LIGHT_WINDOW, EXPRESS_LIGHT_ALPHA, EXPRESS_LIGHT_MIN_RANGE)
+        state = field.step(values)
+        signal = decoder.read(state)
+        pixels = signal["pixels"]
+        own = _strip_lux(pixels, seen) if seen else 0.0
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        voice = voice_params_from_signal(signal, speaker)
+        if voice and t - last >= FORWARD_VOICE_GAP:
+            out["tones"].append({"tick": t, "freq": voice["freq"], "ms": voice["ms"]})
+            last = t
+        out["A"].append(signal["A"])
+        out["B"].append(signal["B"])
+        out["T"].append(signal["T"])
+        out["level"].append(sum(r + g + b + w for r, g, b, w in pixels) / (len(pixels) * 4.0 * 200.0))
+        out["asleep"].append(state["metabolism"]["mode"] == "sleep")
+        out["light"].append(values["light"])
+    return out
+
+
+def _pct(values, share):
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(share * len(ordered)))] if ordered else 0.0
+
+
+def _express_stats(run_, skip=0):
+    tempo = run_["T"][skip:]
+    level = run_["level"][skip:]
+    balance = run_["B"][skip:]
+    tones = [tone for tone in run_["tones"] if tone["tick"] >= skip]
+    notes = [12.0 * math.log2(tone["freq"] / 220.0) for tone in tones]
+    return {
+        "pinned": sum(1 for v in tempo if v >= 0.999) / len(tempo),
+        "tempo_span": _pct(tempo, 0.95) - _pct(tempo, 0.05),
+        "level_low": _pct(level, 0.05),
+        "level_mid": _pct(level, 0.50),
+        "level_high": _pct(level, 0.95),
+        "balance_span": _pct(balance, 0.95) - _pct(balance, 0.05),
+        "tones": len(tones),
+        "pitch_span": (_pct(notes, 0.95) - _pct(notes, 0.05)) if notes else 0.0,
+        "lengths": len({tone["ms"] // 20 for tone in tones}),
+        "asleep": sum(run_["asleep"][skip:]) / len(tempo),
+        "light_busy": sum(1 for v in run_["light"][skip:] if v > 0.0) / len(tempo),
+    }
+
+
+def _express_line(name, st):
+    return (f"    {name:17s} tempo at max {st['pinned'] * 100:3.0f}% of the time | strip level "
+            f"{st['level_low']:.2f} / {st['level_mid']:.2f} / {st['level_high']:.2f} (low / usual / high) | "
+            f"{st['tones']:3d} tones over {st['pitch_span']:4.1f} semitones, "
+            f"{st['lengths']} lengths | asleep {st['asleep'] * 100:3.0f}%")
+
+
+def _nightfall(ticks, seed):
+    """Half a busy day, then a dark and silent room. After dark the only light
+    that moves is the creature's own, and it arrives there already stirred up."""
+    day = scenario_inputs("day", ticks // 2, random.Random(seed + 1))
+    for values in day:
+        yield values
+    for values in _still_night(ticks - ticks // 2):
+        yield values
+
+
+def express_probe(args):
+    """The expression gate: under fixed references a body that senses its own
+    strip holds tempo at its maximum; measured against its own usual, tempo,
+    brightness, pitch and tone length each use more of their range, and a calm
+    field is left as it was."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | HOW MUCH OF ITS RANGE THE EXPRESSION USES | seed={args.seed}")
+
+    if args.replay:
+        rows = _read_replay(args.replay)
+        print(f"\n  replay of {len(rows)} recorded ticks"
+              + (f", starting from {args.state}" if args.state else "") + " (open loop)")
+        for model in ("fixed", "relative"):
+            print(_express_line(model, _express_stats(
+                _express_run(model, rows, args.seed, state_path=args.state), 600)))
+        return True
+
+    ticks = args.ticks
+    settle = 1800   # past the warm-ups and the first settling of the running medians
+
+    def inputs(name):
+        if name == "still":
+            return _still_night(ticks)
+        if name.startswith("after dark"):
+            return _nightfall(ticks, args.seed)
+        return scenario_inputs("day", ticks, random.Random(args.seed + 1))
+
+    # "after dark" is judged on the last quarter of the run, well into the night.
+    night = ticks - ticks // 4
+    rooms = (("day seen", EXPRESS_LUX_FULL, settle), ("day unseen", 0.0, settle),
+             ("after dark", EXPRESS_LUX_FULL, night), ("after dark, close", EXPRESS_LUX_CLOSE, night),
+             ("still", 0.0, settle))
+    stats = {}
+    for model in ("fixed", "relative"):
+        print(f"\n  {model} model" + (" (control)" if model == "fixed" else " (variant)"))
+        for name, seen, skip in rooms:
+            stats[(model, name)] = _express_stats(
+                _express_run(model, inputs(name), args.seed, seen=seen), skip)
+            print(_express_line(name, stats[(model, name)]))
+
+    # A restart in the middle of a busy day, judged on the five minutes that
+    # start two minutes after it.
+    restart = 2000
+    woken = _express_run("relative", inputs("day seen"), args.seed, seen=EXPRESS_LUX_FULL,
+                         restart_at=restart)
+    woken_tempo = woken["T"][restart + 120:restart + 420]
+    woken_pinned = sum(1 for v in woken_tempo if v >= 0.999) / len(woken_tempo)
+
+    fixed, rel = stats[("fixed", "day seen")], stats[("relative", "day seen")]
+    fixed_dark, rel_dark = stats[("fixed", "after dark")], stats[("relative", "after dark")]
+    fixed_close, rel_close = stats[("fixed", "after dark, close")], stats[("relative", "after dark, close")]
+    fixed_still, rel_still = stats[("fixed", "still")], stats[("relative", "still")]
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("the fixed model holds tempo at its maximum",
+          fixed["pinned"] > 0.5,
+          f"at its maximum {fixed['pinned'] * 100:.0f}% of a day with the strip seen")
+    check("the relative model does not",
+          rel["pinned"] < 0.10 and rel["tempo_span"] >= 0.4,
+          f"at its maximum {rel['pinned'] * 100:.0f}% of the time, "
+          f"and tempo ranges over {rel['tempo_span']:.2f} of its scale")
+    check("it finds its level within minutes of a restart",
+          woken_pinned < 0.20,
+          f"tempo at its maximum {woken_pinned * 100:.0f}% of the time from two to seven "
+          f"minutes after a restart in a busy day")
+    check("the strip rests dimmer and still reaches its peaks",
+          rel["level_mid"] <= 0.7 * fixed["level_mid"] and rel["level_high"] >= 0.7 * fixed["level_high"],
+          f"usual level {rel['level_mid']:.2f} against {fixed['level_mid']:.2f}, "
+          f"high level {rel['level_high']:.2f} against {fixed['level_high']:.2f}")
+    check("the voice uses more pitches",
+          rel["tones"] >= 10 and rel["pitch_span"] >= 6.0 and rel["pitch_span"] >= 1.5 * fixed["pitch_span"],
+          f"{rel['tones']} tones over {rel['pitch_span']:.1f} semitones against "
+          f"{fixed['tones']} over {fixed['pitch_span']:.1f}")
+    check("and more than one length of tone",
+          rel["lengths"] >= 3,
+          f"{rel['lengths']} lengths against {fixed['lengths']}")
+    check("after dark, lit only by its own strip, it settles",
+          rel_dark["pinned"] < 0.10 and rel_dark["level_mid"] <= 0.5 * fixed_dark["level_mid"],
+          f"tempo at its maximum {rel_dark['pinned'] * 100:.0f}% of the time against "
+          f"{fixed_dark['pinned'] * 100:.0f}%, usual level {rel_dark['level_mid']:.2f} "
+          f"against {fixed_dark['level_mid']:.2f}, the light sense busy "
+          f"{rel_dark['light_busy'] * 100:.0f}% of the time against {fixed_dark['light_busy'] * 100:.0f}%")
+    check("and still settles with twice the strip on the sensor",
+          rel_close["pinned"] < 0.10 and rel_close["level_mid"] <= 0.5 * fixed_close["level_mid"],
+          f"tempo at its maximum {rel_close['pinned'] * 100:.0f}% of the time against "
+          f"{fixed_close['pinned'] * 100:.0f}%, usual level {rel_close['level_mid']:.2f} "
+          f"against {fixed_close['level_mid']:.2f}, the light sense busy "
+          f"{rel_close['light_busy'] * 100:.0f}% of the time against {fixed_close['light_busy'] * 100:.0f}%")
+    check("a still room is left as it was",
+          abs(rel_still["level_mid"] - fixed_still["level_mid"]) <= 0.01
+          and rel_still["tones"] == 0
+          and abs(rel_still["asleep"] - fixed_still["asleep"]) <= 0.02,
+          f"usual level {rel_still['level_mid']:.3f} against {fixed_still['level_mid']:.3f}, "
+          f"{rel_still['tones']} tones, asleep {rel_still['asleep'] * 100:.0f}% "
+          f"against {fixed_still['asleep'] * 100:.0f}%")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # Significant events: what gets remembered for sleep (v06.8)
 # ---------------------------------------------------------------------------
 #
@@ -2144,10 +2384,13 @@ def main():
     p.add_argument("--voice", action="store_true",
                    help="run the voice gate (fixed threshold vs the relative "
                         "rule); with --replay, on recorded senses")
+    p.add_argument("--express", action="store_true",
+                   help="run the expression gate: fixed references against the "
+                        "field's own usual levels, on a body that senses its own strip")
     p.add_argument("--events", action="store_true",
                    help="run the significant-event gate (pressure rule vs "
                         "surprise rule); with --replay, on recorded senses")
-    p.add_argument("--replay", help="CSV of recorded senses for --events or --voice "
+    p.add_argument("--replay", help="CSV of recorded senses for --events, --voice or --express "
                                     "(tick, logged_at, sound, light, motion, weather)")
     p.add_argument("--state", help="saved field state to start --replay from")
     p.add_argument("--loop-gain", type=float, default=0.3,
@@ -2180,6 +2423,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.events:
         ok = events_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.express:
+        ok = express_probe(args)
         sys.exit(0 if ok else 1)
     if args.voice:
         ok = voice_probe(args)

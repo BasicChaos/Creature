@@ -55,6 +55,25 @@ KNOBS = {
     "VOICE_EVENT_TICKS": 3,       # how recent "just surprised" is
     "VOICE_WAKE_SETTLE": 30,      # ticks after waking with no voice
     "VOICE_WARMUP": 60,           # ticks after start before "usual" means anything
+    # How arousal, tempo and balance are scaled before they reach the strip and
+    # the tone.
+    #   "fixed"     against fixed references (ACT_GAIN, RIPPLE_REF, balance as
+    #               it comes). On the body of October 2026 the field's usual
+    #               ripple sits far above RIPPLE_REF, so tempo is at its maximum
+    #               all the time, and balance keeps to a narrow warm band.
+    #   "relative"  against the field's own usual levels. Tempo's reference rises
+    #               with the usual ripple and never drops below RIPPLE_REF, usual
+    #               arousal is held at or below AROUSAL_USUAL, and balance is
+    #               read as warmer or cooler than usual. A calm field reads the
+    #               same under both.
+    "EXPRESSION_MODEL": os.environ.get("CREATURE_EXPRESSION_MODEL", "fixed"),
+    "USUAL_RATE": 0.002,          # step of the running medians, per tick
+    "USUAL_WARM": 2.0,            # after a start the step is this over the ticks so far,
+    "USUAL_RATE_MAX": 0.1,        # at most this, until it has fallen to USUAL_RATE
+    "TEMPO_HEADROOM": 2.5,        # ripple this many times its usual reads as tempo 1
+    "AROUSAL_USUAL": 0.30,        # where usual arousal may sit at most
+    "BALANCE_SPREAD_GAIN": 2.5,   # balance this many usual swings from usual reads as 1
+    "BALANCE_SPREAD_MIN": 0.08,   # smallest swing treated as real
 }
 
 
@@ -111,6 +130,40 @@ class ExpressionDecoderV06:
         self.voice_armed = True       # False from a tone until arousal settles again
         self.ticks_since_event = 10 ** 6
         self.reads = 0
+        # The relative model's running picture of what is usual.
+        self.usual_ripple = None
+        self.usual_level = None
+        self.usual_balance = None
+        self.balance_spread = None
+        self.usual_steps = 0
+
+    def _step_usual(self, ripple, level, balance):
+        """Move the running medians one step toward this tick. Each is judged
+        first and stepped after, as the voice rule does. The first reading
+        after a start says little about what is usual, so the step starts
+        large and shrinks to USUAL_RATE over the first quarter of an hour."""
+        k = self.knobs
+        self.usual_steps += 1
+        rate = max(k["USUAL_RATE"], min(k["USUAL_RATE_MAX"], k["USUAL_WARM"] / self.usual_steps))
+        if self.usual_ripple is None:
+            self.usual_ripple = max(ripple, 1e-4)
+            self.usual_level = max(level, 1e-3)
+            self.usual_balance = balance
+            self.balance_spread = 0.0
+            return
+        self.usual_ripple = max(
+            self.usual_ripple * ((1.0 + rate) if ripple > self.usual_ripple else (1.0 - rate)), 1e-4)
+        self.usual_level = max(
+            self.usual_level * ((1.0 + rate) if level > self.usual_level else (1.0 - rate)), 1e-3)
+        self.balance_spread += rate * (abs(balance - self.usual_balance) - self.balance_spread)
+        self.usual_balance += rate if balance > self.usual_balance else -rate
+        self.usual_balance = clamp(self.usual_balance, -1.0, 1.0)
+
+    def _relative_balance(self, balance):
+        """Balance as warmer (+) or cooler (-) than the field's usual."""
+        k = self.knobs
+        span = max(k["BALANCE_SPREAD_MIN"], k["BALANCE_SPREAD_GAIN"] * self.balance_spread)
+        return clamp((balance - self.usual_balance) / span, -1.0, 1.0)
 
     def _voice(self, state, arousal, balance, tempo):
         """Whether to speak this tick, and with what tone. Called once per read."""
@@ -163,9 +216,20 @@ class ExpressionDecoderV06:
         gate = smoothstep(reserve / max(0.001, reserve_max), 0.05, 0.40)
 
         k = self.knobs
+        relative = k["EXPRESSION_MODEL"] == "relative"
         raw_a = 0.48 * mean_live + 0.52 * peak
-        arousal = clamp(raw_a * k["ACT_GAIN"] * gate, 0.0, 1.0)
-        tempo = clamp((sum(abs(r) for r in ripples) / len(ripples)) / k["RIPPLE_REF"], 0.0, 1.0)
+        level = raw_a * k["ACT_GAIN"] * gate
+        ripple = sum(abs(r) for r in ripples) / len(ripples)
+        # The voice rule decides when to speak from arousal as it always has.
+        voice_arousal = clamp(level, 0.0, 1.0)
+        act_scale = 1.0
+        if relative and self.usual_ripple is not None:
+            act_scale = min(1.0, k["AROUSAL_USUAL"] / self.usual_level)
+            tempo_ref = max(k["RIPPLE_REF"], k["TEMPO_HEADROOM"] * self.usual_ripple)
+        else:
+            tempo_ref = k["RIPPLE_REF"]
+        arousal = clamp(level * act_scale, 0.0, 1.0)
+        tempo = clamp(ripple / tempo_ref, 0.0, 1.0)
 
         anchors = state.get("sense_anchors") or {}
         sound_a = anchors.get("sound")
@@ -190,6 +254,13 @@ class ExpressionDecoderV06:
         warm_total = sum(activations[n] * warm_by_cell[n] for n in range(count))
         cool_total = sum(activations[n] * cool_by_cell[n] for n in range(count))
         balance = (warm_total - cool_total) / (warm_total + cool_total + 1e-6)
+        centre = None
+        if relative:
+            raw_balance = balance
+            if self.usual_balance is not None:
+                centre = self._relative_balance
+                balance = centre(raw_balance)
+            self._step_usual(ripple, level, raw_balance)
 
         event_n, event_sig, event_flag = self._event_origin(state, count)
         pixels = self._render(
@@ -202,6 +273,8 @@ class ExpressionDecoderV06:
             event_n,
             event_sig,
             int(state.get("tick", 0) or 0),
+            act_scale,
+            centre,
         )
 
         out = {
@@ -214,7 +287,7 @@ class ExpressionDecoderV06:
         if self.knobs["VOICE_MODEL"] == "relative":
             # The decision is made here, once per tick, and carried in the
             # signal. voice_params_from_signal reads it instead of re-deciding.
-            out["voice"] = self._voice(state, arousal, balance, tempo)
+            out["voice"] = self._voice(state, voice_arousal, balance, tempo)
         return out
 
     def _event_origin(self, state, count):
@@ -232,8 +305,10 @@ class ExpressionDecoderV06:
             return int(n) % count, sig, True
         return None, 0.0, False
 
-    def _render(self, activations, warm_by_cell, cool_by_cell, arousal, balance, tempo, event_n, event_sig, tick):
+    def _render(self, activations, warm_by_cell, cool_by_cell, arousal, balance, tempo, event_n, event_sig, tick,
+                act_scale=1.0, centre=None):
         k = self.knobs
+        act_gain = k["ACT_GAIN"] * act_scale
         count = len(activations)
         n_pixels = max(1, self.pixels)
         self.pulse_pos = (self.pulse_pos + k["PULSE_BASE"] + k["PULSE_SPEED"] * tempo) % 1.0
@@ -247,6 +322,8 @@ class ExpressionDecoderV06:
             local_warm = interpolate_ring(warm_by_cell, pos) * max(local_a, 0.02)
             local_cool = interpolate_ring(cool_by_cell, pos) * max(local_a, 0.02)
             warmth = (local_warm - local_cool) / (local_warm + local_cool + 1e-6)
+            if centre is not None:
+                warmth = centre(warmth)
             warmth = clamp(0.62 * warmth + 0.38 * balance, -1.0, 1.0)
 
             mix = (warmth + 1.0) * 0.5
@@ -254,7 +331,7 @@ class ExpressionDecoderV06:
             green = k["COOL"][1] * (1.0 - mix) + k["WARM"][1] * mix
             blue = k["COOL"][2] * (1.0 - mix) + k["WARM"][2] * mix
 
-            value = k["FLOOR"] + (1.0 - k["FLOOR"]) * clamp(local_a * k["ACT_GAIN"] + arousal * 0.22, 0.0, 1.0)
+            value = k["FLOOR"] + (1.0 - k["FLOOR"]) * clamp(local_a * act_gain + arousal * 0.22, 0.0, 1.0)
             red *= value
             green *= value
             blue *= value
