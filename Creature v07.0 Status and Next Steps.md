@@ -11,15 +11,14 @@ Build v07.0 is the v06.9 mind on a body with more on it: two air sensors and an
 e-paper readout. Neither is part of the Creature's flow yet. The field, the
 gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
 
-## Where things are right now (4 October 2026, 18:30)
+## Where things are right now (4 October 2026, 18:35)
 
-- The Pi runs the collector from commit `4706fdb`, restarted at about 18:12 on
-  4 October. Commits after that one are documentation and the version label
-  only.
-- The version label in the code is now `v07.0-predictive`, and the body's boot
-  line says `v07`. Neither is running yet: the collector shows `v06.9-predictive`
-  until its next restart, and the body says `v06` until its next flash. Nothing
-  else differs.
+- The Pi runs the collector from commit `59fc0fe`, restarted at 18:33 on
+  4 October (state loaded from tick 962061). Any commit after that one is a
+  correction to this note.
+- The collector and the dashboard say `v07.0-predictive`. The body's firmware
+  was flashed just before the label changed, so its boot line still says `v06`
+  until the next flash. Nothing else differs.
 - **Two-speed links are switched on in the live Creature**, from the collector's
   start command, not in the code. A plain restart turns them off. The start
   command is under "Deploying to the Pi" below. Check what is in force with the
