@@ -1,11 +1,15 @@
 Creature Project Design Document
 
-Version: v06.9, October 2 2026
+Version: v07.0, October 4 2026
 Status: current. This document matches the running code in Code/. It supersedes the
 v05.4.1 edition, which described the 111-cell field, and the earlier editions that
 described the 3-cell arousal/fatigue/tonic network and the 11-cell ring. Those were
 real earlier stages. They are kept in git history and in the build-version notes.
 The twelve-cell ring below is what runs today.
+
+v07.0 is the v06.9 mind on a body with more on it: two air sensors and an e-paper
+readout, added on 4 October 2026. Neither is part of the Creature's flow yet. The
+field is unchanged, and the code files keep their `v06` names.
 
 The longer theory notes, per-version build docs, and daily logs live in a local
 Obsidian vault (`ObsidianCreature/`) that is not part of the public repository.
@@ -39,7 +43,8 @@ everything in it serves that.
 
 The Creature has a body and a mind.
 
-The body is an ESP32-S3 with four senses and two emitters. It runs no logic. About
+The body is an ESP32-S3 with four senses and two emitters, plus two air sensors and
+an e-paper readout that the field does not use. It runs no logic. About
 ten times a second it reads its senses and streams one JSON line per sample to the
 Pi, and it waits for commands telling its emitters what to do.
 
@@ -52,6 +57,10 @@ The mind is on the Pi. One program, the collector, runs this loop:
 5. Send the matching strip and voice frames to the ESP.
 6. Record what the body expressed into the autobiography.
 7. Write a live snapshot for the dashboard and a history row to SQLite.
+
+Beside that loop, and apart from the field, the collector passes the air readings
+to the dashboard, works out a gas index from them, and every three minutes sends
+the body ten short lines of text for its e-paper.
 
 The field is the nervous system. It is a ring of twelve outer cells with a six-cell
 reservoir on the inside. Senses come in at their anchors, the two emitters are
@@ -70,7 +79,7 @@ Runtime machine: Raspberry Pi 3 B+ (hostname creaturePi). Runs the collector, th
 field, persistence, the SQLite history on the attached SSD, and the dashboard
 server on port 8080.
 
-Body node: ESP32-S3-DevKitC-1 (N8R8).
+Body node: ESP32-S3-DevKitC-1 style board. The module is marked N16R8.
 
 Senses:
 
@@ -84,7 +93,7 @@ Senses:
   (I2C, address 0x59), wired on 4 October 2026 on the same bus. The body streams
   them raw (`co2_ppm`, `air_temp_c`, `humidity_pct`, `voc_raw`, `nox_raw`) and the
   collector passes them to the dashboard's sensor panel and `/api/sensors`. The
-  field does not read them.
+  field does not read them. The CO2 sensor is an SCD41.
   The SGP41's counts are resistances, not concentrations (the VOC count falls
   with more gas, the NOx count rises), so the collector also works out
   Sensirion's gas index from them once a second: VOC 100 is this room's normal,
@@ -126,6 +135,7 @@ deployment target is read from an untracked config file.
 
 ```
 BH1750 (light) + INMP441 (sound) + IMU (motion) + BME280 (weather)
+  [+ SCD41 and SGP41 (air): carried along, not read by the field]
   -> ESP32-S3 body, ~10 Hz JSON
   -> USB serial or WiFi TCP
   -> collector on the Pi
@@ -136,6 +146,7 @@ BH1750 (light) + INMP441 (sound) + IMU (motion) + BME280 (weather)
           -> trained readout -> two emitter cells
       -> expression decoder -> PIX: strip frame + VOX: tone
       -> autobiography record
+      [-> gas index from the air readings; EPD: text for the e-paper]
   -> creature_state.json (live snapshot) + SQLite history
   -> dashboard server :8080  -> static export -> VPS mirror
 ```
@@ -621,7 +632,9 @@ shutdown, and via an atexit handler, and reloaded on boot. Fast values (activati
 ripple) are deliberately not saved, so the Creature wakes calm but keeps its slow
 self. A snapshot whose shape does not match the current field is refused rather than
 half-applied. The autobiography is persisted alongside it and reloaded the same way,
-and so is the newborn twin's field. The snapshot is at version 2, which added the
+and so is the newborn twin's field. The gas index's learned baseline is saved the
+same way, in a file of its own, and is only taken back if it is under 12 hours
+old. The snapshot is at version 2, which added the
 slow weights. A version 1 file loads with each slow weight set to the fast one.
 Code from before version 2 refuses a version 2 file and starts the field fresh, so
 copy the saved state aside before going back to older code.
@@ -743,9 +756,18 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   arousal, balance and links.
 - Sensor API: `/api/sensors` and `/api/sensors/<name>` serve light, sound, motion,
   temperature, and pressure as stable, versioned JSON so other apps and services
-  can treat the Creature as ordinary sensors. Raw values come from a `sensors`
-  block the collector adds to the live snapshot; missing sensors are `null`. See
-  `instructions.md` for the contract. Raw history is in the `loop_log` table.
+  can treat the Creature as ordinary sensors. Since v07.0 they also serve CO2,
+  humidity, the CO2 sensor's temperature, the raw VOC and NOx counts and the VOC
+  and NOx index. Raw values come from a `sensors` block the collector adds to
+  the live snapshot; missing sensors are `null`. See `instructions.md` for the
+  contract. Raw history is in the `loop_log` table, and the air readings' in
+  `air_log`.
+- Sensor panel: under Raw data on the local dashboard, hidden on the public
+  mirror. One tile per sensor. The air tiles carry a line of their last hour,
+  read from `/api/air_history` (a row every 20 ticks). The two gas index tiles
+  show the index, a word against the room's own normal (normal, raised, high;
+  "warming up" for the first 45 samples) and the raw count underneath. A change
+  to `server.py` needs the dashboard service restarted; the page alone does not.
 - Speaker mute: a button in the local dashboard header (hidden on the public
   mirror) toggles `POST /api/speaker {"muted": bool}`. It creates or removes a
   flag file, `creature_speaker_muted`, next to the database. The collector skips
@@ -765,7 +787,8 @@ shape field design.
 Creature/
   Code/
     Firmware/esp-creature-core/      ESP32-S3 body (PlatformIO)
-      src/main.cpp                   four senses + two emitters, ~10 Hz JSON
+      src/main.cpp                   four senses + two emitters, the air sensors
+                                     and the e-paper, ~10 Hz JSON
     Firmware/bench/                  per-sensor bring-up sketches
     Python/
       collector/collector.py         the runtime loop on the Pi
@@ -776,10 +799,13 @@ Creature/
       mind/curiosity_v06.py           probes when nothing has surprised it for a while
       mind/twin_v06.py                the newborn twin: a second field that only watches
       mind/normalize.py               rolling 0..1 normalization
+      mind/gas_index.py               Sensirion's VOC and NOx index, for the dashboard only
       mind/cell_field.py              the retired 111-cell field, kept for reference
       dashboard/                      server.py, index.html, static export, sync
       tools/field_lab_v06.py          offline replay and gate harness
       tools/scripted_body.py          the collector on a scripted body and clock, repeatable
+      tools/fake_body.py              a live stand-in for the ESP over TCP
+      tools/gas_index_check.py        checks the gas index port against Sensirion's C
       tools/expression_preview.py     renders the decoder offline
       tools/loop_probe.py             measures the light and sound loops on the body
       data/                           SQLite history + field snapshot (gitignored)
@@ -824,12 +850,23 @@ the Creature evolve without rewriting hardware.
   only when the battery and fuel gauge land.
 - A steady self-loop is as predictable as a steady room, so the predictive field
   habituates to it unless the probe stays unpredictable.
+- The air sensors and the e-paper (v07.0) sit on the body but outside the
+  Creature. The field does not sense the air, and nothing it does reaches the
+  panel except as numbers to read. Bringing the air in would be a design step
+  with its own gate.
+- The body's WiFi signal measured -89 to -95 dBm on 4 October 2026, weak enough
+  to drop the link. The cause (antenna placement or the 3V3 rail) is not
+  established. The loops have not been re-measured on the body since the air
+  sensing and the panel were added.
 
 ## Roadmap
 
 The lesson of v06 holds: the organism becomes more alive when action returns through
 the world, not when the model grows more complicated. The hardware roadmap follows
-from that. Detail is in `Creature v07 Hardware Potential.md`.
+from that. Detail is in `Creature v07 Hardware Potential.md`. The name v07.0 went
+to the air senses and e-paper build of 4 October 2026, which is not on this list:
+they are passive inputs and a readout, added because the parts were at hand. The
+steps below are still the direction.
 
 - Give v06 a body. Build a rigid carrier that fixes sensor and emitter placement, so
   the loop can be tuned from weak to strong physically instead of by luck.

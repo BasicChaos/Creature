@@ -2,6 +2,12 @@
 
 Version: v07 hardware potential, June 23 2026. Status: planning note.
 
+Note, 4 October 2026: the build name v07.0 was given to something not planned
+here. Two air sensors (SCD41, SGP41) and an e-paper readout went onto the v06
+body that day. They are passive inputs and a display, outside the Creature's
+flow, and they change none of the priorities below. The stages called v07A to
+v07D further down are still plans.
+
 This document collects hardware opportunities for the next several Creature
 evolutions. It does not replace the v06 wiring document or the v06 rollout plan.
 It is a map of what is worth trying, in what order, and why.
@@ -388,6 +394,8 @@ Current v06 bus:
 - BH1750: `0x23`
 - BME280: `0x76`
 - ICM-20689 / MPU family IMU: `0x68`
+- SGP41: `0x59` (added 4 October 2026)
+- SCD41: `0x62` (added 4 October 2026)
 - Planned MAX17048: `0x36`
 
 Possible additions:

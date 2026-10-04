@@ -1,15 +1,25 @@
-# Creature v06.9: status and next steps
+# Creature v07.0: status and next steps
 
-Written 2 October 2026, updated 3 October for the dashboard work and 4 October
-for the memory-horizon work. It is the handoff for whoever picks this up next. The
-design itself is in `Creature Project Design Document Active.md`. This note is the
-state of things, what was found, and what is still open. The findings on the real
-body further down are still those of 2 October.
+Written 2 October 2026, updated 3 October for the dashboard work, 4 October for
+the memory-horizon work, and the evening of 4 October for build v07.0. It is the
+handoff for whoever picks this up next. The design itself is in
+`Creature Project Design Document Active.md`. This note is the state of things,
+what was found, and what is still open. The findings on the real body further down
+are still those of 2 October.
 
-## Where things are right now (4 October 2026, 09:00)
+Build v07.0 is the v06.9 mind on a body with more on it: two air sensors and an
+e-paper readout. Neither is part of the Creature's flow yet. The field, the
+gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
 
-- The Pi runs the collector on commit `2d889b2`, restarted at 08:45 on 4 October.
-  `main` is pushed to the same commit.
+## Where things are right now (4 October 2026, 18:30)
+
+- The Pi runs the collector from commit `4706fdb`, restarted at about 18:12 on
+  4 October. Commits after that one are documentation and the version label
+  only.
+- The version label in the code is now `v07.0-predictive`, and the body's boot
+  line says `v07`. Neither is running yet: the collector shows `v06.9-predictive`
+  until its next restart, and the body says `v06` until its next flash. Nothing
+  else differs.
 - **Two-speed links are switched on in the live Creature**, from the collector's
   start command, not in the code. A plain restart turns them off. The start
   command is under "Deploying to the Pi" below. Check what is in force with the
@@ -18,19 +28,112 @@ body further down are still those of 2 October.
 - The relative expression model is also on, the same way
   (`CREATURE_EXPRESSION_MODEL=relative`).
 - A newborn twin runs beside the real field. The present twin was born at the
-  08:45 restart (real tick 932373) and lives under two-speed links too.
-- The saved field is now snapshot version 2. Code from before commit `93b3270`
+  08:45 restart on 4 October (real tick 932373) and lives under two-speed links
+  too. It was saved and reloaded across the day's restarts.
+- The saved field is snapshot version 2. Code from before commit `93b3270`
   refuses it and would start the field fresh. State from before the switch is
   next to the database as `*.pre-twospeed.json` (version 1), and from before the
   twin as `*.pre-twin.json`.
-- The body runs the v06.8 firmware. It runs on its battery when the power cable
-  is out: on 4 October the battery ran flat at 07:08 and the body was off the
-  network until 08:40. It needed the cable and a press of reset. The collector
-  kept retrying and reconnected by itself; nothing was restarted for that.
+- The body runs the v07.0 firmware, flashed at about 18:10 on 4 October: the
+  v06.8 loop firmware plus the air senses, the e-paper, a 30 second WiFi retry
+  and its signal strength in the status line.
+- The gas index has a learned baseline, saved beside the field state as
+  `creature_field_state_air_v06.json`. It began at 17:05 on 4 October.
+- The body's WiFi was very weak that evening (see the v07.0 section). By 18:26 it
+  was holding: pings of 3 to 6 ms and no reconnects for several minutes.
+- The body runs on its battery when its power cable is out: on 4 October the
+  battery ran flat at 07:08 and the body was off the network until 08:40. It
+  needed the cable and a press of reset. The collector kept retrying and
+  reconnected by itself; nothing was restarted for that.
 - The speaker is unmuted.
-- Not committed: this note's 3 and 4 October updates, the same in `CLAUDE.md`,
-  a legend paragraph in the design doc, and `Claude Code brief - memory
-  horizon.md`. Check `git status`.
+- Check `git status` for anything not committed.
+
+## Build v07.0: air senses and e-paper (4 October)
+
+What was added, in the order it was built:
+
+- **Two air sensors on the body's I2C bus.** An SCD41 (CO2, temperature,
+  humidity, address 0x62) and an SGP41 (VOC and NOx, address 0x59). The body
+  reads them once a second and adds `co2_ppm`, `air_temp_c`, `humidity_pct`,
+  `voc_raw` and `nox_raw` to its sample lines. The SGP41's 50 ms measurement is
+  spread across passes of the loop, so the loop does not wait for it.
+- **The gas index.** The SGP41's counts are resistances, not concentrations (the
+  VOC count falls with more gas, the NOx count rises). `mind/gas_index.py` is a
+  plain-Python port of Sensirion's Gas Index Algorithm 3.2.0. The collector runs
+  it once a second: VOC 100 is this room's normal, NOx 1 is normal. Its baseline
+  is saved every 100 ticks and at exit, and taken back at start if it is under
+  12 hours old.
+- **An `air_log` table**, one row every 20 ticks, with the five raw readings and
+  the two indexes.
+- **The dashboard's sensor panel** shows CO2, humidity, the CO2 sensor's
+  temperature, and the VOC and NOx index, each with a line of its last hour. The
+  index tiles carry a word (normal, raised, high) and the raw count underneath.
+  `/api/sensors` has the new readings and `/api/air_history` the rows. The panel
+  is local only, as before.
+- **An e-paper readout on the body.** A Waveshare 2.13inch e-Paper HAT V4 on the
+  ESP's free edge. The collector sends an `EPD:` line of ten short strings every
+  180 ticks, and once 10 ticks after it starts. The left column is temperature
+  in F and C (the BME280's), humidity, CO2, VOC index and NOx index. The right
+  is energy, memory pressure, emitter, cell states and live links. The body only
+  draws the text. The panel has a task of its own on the ESP's second core.
+
+What was checked:
+
+- The port against Sensirion's own C, compiled on the Mac, on 40,000 scripted
+  samples. NOx matched on every sample. VOC differed by 1 on 84 samples and never
+  by more. A save and restore mid-run changed nothing.
+  `python tools/gas_index_check.py` repeats it against stored reference values.
+- The Creature is unchanged by any of it. `tools/scripted_body.py`, the committed
+  collector against the changed one, seeds 1, 2, 3 and 7: every command to the
+  body, every table and every saved file identical, apart from the new `air_log`
+  table, the new snapshot keys and the `EPD:` lines. The `--twin` gate passes
+  6/6. The twin's own numbers differ between any two runs, with or without a
+  change, so they are left out of that comparison.
+- On the body: all five I2C addresses answer. A full e-paper refresh takes 3.6
+  seconds and a partial one 0.5. While the panel drew, the largest gap between
+  samples was 103 ms, the normal spacing.
+
+What was found:
+
+- **The body's WiFi signal is very weak.** A diagnostic sketch measured the home
+  network at -93 to -95 dBm at the body and saw only one or two networks at all.
+  One join took 15.7 seconds and the next failed after 25. The firmware used to
+  restart the attempt every 10 seconds, which cut slow joins off; it now waits
+  30. With that it joined at -89 dBm, then dropped three times in five minutes,
+  one of them a connection reset by the body. After that it held. The cause is
+  not established. The two candidates are the antenna (it lies flat over the
+  breadboard, with the amp and new jumpers close by) and power (the 3V3 rail now
+  feeds more parts). The body had joined in 4 seconds earlier the same day.
+- After a flash the body often does not join WiFi until it is reset, sometimes
+  twice.
+- The CO2 sensor's temperature and humidity read about 3 C warm and 8 % dry for
+  the first minutes after a boot, then settle near the BME280's.
+- The dashboard service needs a restart when `server.py` changes. `sudo` on the
+  Pi asks for a password; the service runs as `josh` with `Restart=always`, so
+  stopping its process brings it back in about five seconds.
+- A mistake worth remembering: a collector change crashed at its first tick
+  under the scripted body, and the comparison reused the previous run's output
+  files and looked clean. Delete old outputs and check the exit code.
+
+Open from this build:
+
+1. The weak WiFi. The status line now carries `wifi_rssi`, but only on the wire:
+   the collector does not log it. Watch the serial output with the UART cable in,
+   move the antenna end clear of the breadboard, and see what the number does.
+   Check the 3V3 rail with a meter while the panel refreshes and WiFi transmits.
+2. The air senses are not part of the Creature. Whether they should be, and
+   where they would enter the ring, is a design question, and any answer needs
+   its own gate.
+3. The loops have not been measured on the real body since the air sensing and
+   the panel task were added. This joins item 1 of the older list: rerun the
+   loop probe.
+4. The words on the index tiles (VOC raised at 150, high at 250; NOx at 20 and
+   150) and the 12 hour limit on a saved baseline are first guesses.
+5. `air_log` has no retention. It grows by 4,320 rows a day.
+6. Whether every e-paper line fits its column has not been confirmed line by
+   line. The panel redraws every three minutes, Waveshare's recommended minimum.
+7. The NOx index needs about five hours from a fresh baseline before it means
+   much.
 
 ## The memory-horizon work (3 and 4 October)
 
@@ -194,7 +297,8 @@ Nothing was running away at the last look. Arousal was between 0.5 and 0.75.
    above the minimum range reads as moderately loud for a moment. Real data showed
    no sign of it, but it is worth knowing when a test room misbehaves.
 9. The public dashboard mirror's `state.json` carries the raw sensor readings,
-   although the Sensors panel is hidden there. Decide whether that is wanted.
+   although the Sensors panel is hidden there. Since v07.0 that includes the air
+   readings and the gas index. Decide whether that is wanted.
 
 After those, the direction agreed at the start of the session:
 
@@ -227,6 +331,7 @@ this session pass on seeds 1, 2, 3 and 7.
 | voice | `python tools/field_lab_v06.py --voice` | 6/6 |
 | history | `python tools/field_lab_v06.py --history` | 4/4 |
 | twin | `python tools/field_lab_v06.py --twin` | 6/6 |
+| gas index port | `python tools/gas_index_check.py` | PASS |
 
 The history gate judges a variant against a saved control. On recorded senses,
 with the setting that is live now:
@@ -282,6 +387,7 @@ Switches, all environment variables on the collector:
 | `CREATURE_SOFT_CEILING` | 0 | 1 scales growth by the room left under the ceiling; 1 at the Pi |
 | `CREATURE_CEILING_KNEE` | 0.0 | weight up to which growth is not braked; 1.0 at the Pi |
 | `CREATURE_SLOW_LEAK` | 0.0 | the slow weight's drift toward the floor, per tick; 4.13e-7 at the Pi |
+| `CREATURE_PAPER` | 1 | the `EPD:` text for the body's e-paper |
 
 In the field, `EVENT_MODEL = "pressure"` and `LOOP_FEEL_GAIN = 0` are the controls
 for the event rule and the felt loop.
@@ -308,8 +414,14 @@ Looking at a dashboard change. Start the `creature-dashboard-test` entry in
 scratch folder; if the field is empty, copy `dashboard/public/state.json` there.
 The page says "stale" because the snapshot is old. On the Pi the dashboard serves
 `index.html` from disk, so a fast-forward is the whole deploy, and the sync loop
-carries the page to the public mirror within a minute.
+carries the page to the public mirror within a minute. A change to `server.py`
+needs the dashboard service restarted as well; see the v07.0 section for how.
 
 Flashing the body. Plug the ESP's UART socket into the Pi. It shows up as
 `/dev/ttyACM0`, not `ttyUSB0`. Build and upload with the PlatformIO in the Pi's
-firmware folder. Opening that serial port resets the ESP.
+firmware folder. Opening that serial port resets the ESP. After a flash, watch
+the serial output for `wifi_ready` before starting the collector; if it only
+prints `wifi_reconnecting`, reset the body. A bench sketch can be built from a
+scratch folder on the Pi outside the checkout, with the same PlatformIO, so the
+checkout stays clean. Flashing a bench sketch takes the Creature offline until
+the main firmware is flashed back.

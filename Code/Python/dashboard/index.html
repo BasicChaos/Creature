@@ -1153,7 +1153,7 @@
     }
 
     function renderReadout(f) {
-      const version = f.field_version || "v06.9";
+      const version = f.field_version || "v07.0";
       const title = `Creature ${version}`;
       document.getElementById("creatureTitle").textContent = title;
       document.title = `${title} — live`;
@@ -1387,7 +1387,7 @@
     const V6_LOOP_CELLS = [1, 7];
 
     function isV06Snapshot(f) {
-      return (f.field_version || "").indexOf("v06") === 0 || f.cell_count === 12 || Array.isArray(f.ring);
+      return /^v0[67]/.test(f.field_version || "") || f.cell_count === 12 || Array.isArray(f.ring);
     }
     function ringPos(i) {
       const a = (-90 - i * 30) * Math.PI / 180;

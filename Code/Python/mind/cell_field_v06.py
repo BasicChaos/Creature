@@ -36,7 +36,7 @@ from datetime import datetime
 
 CELL_COUNT = 12          # outer ring; six inner reservoir cells are separate
 SNAPSHOT_VERSION = 2      # 2 adds each link's slow weight; a 1 loads with slow = fast
-FIELD_VERSION = "v06.9-predictive"
+FIELD_VERSION = "v07.0-predictive"
 
 # The ring, in design order (Creature v06.md, "The field: a ring of twelve").
 # Each entry: (label, cell_type, hardware_id). Cell ids are the list indices,

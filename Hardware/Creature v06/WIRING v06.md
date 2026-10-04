@@ -1,15 +1,17 @@
 # Creature Hardware Wiring
 
-Version: v06 — June 19 2026
+Version: v06 — June 19 2026. Updated 4 October 2026 for build v07.0, which added
+the air sensors and the e-paper to the same body.
 
 Body node wiring for v06. The devices below match the live firmware in
-`Code/Firmware/esp-creature-core/src/main.cpp`. The ESP reads the four senses,
-accepts legacy `LED:<brightness>` status commands, and accepts v06 `PIX:` strip
-frames plus optional `VOX:` speaker commands.
+`Code/Firmware/esp-creature-core/src/main.cpp`. The ESP reads the four senses and
+the two air sensors, accepts legacy `LED:<brightness>` status commands, and
+accepts v06 `PIX:` strip frames, optional `VOX:` speaker commands and `EPD:` text
+for the e-paper.
 
 ## Board
 
-ESP32-S3-DevKitC-1 (N8R8). Seated on the breadboard across the center channel.
+ESP32-S3-DevKitC-1 style board (the module is marked N16R8). Seated on the breadboard across the center channel.
 Connects to the Raspberry Pi 3 by USB serial at 115200 baud. The Pi runs the
 collector and sends `LED:<brightness>` back over the same connection.
 
@@ -22,6 +24,9 @@ collector and sends `LED:<brightness>` back over the same connection.
 - MAX98357A + 4Ω 3W speaker: I2S audio output. (coded + enabled; `VOX:` optional)
 - SK6812 RGBW strip: addressable emitter, ~16 px. (coded + enabled; `PIX:`)
 - Onboard NeoPixel (RGB@IO38): status pixel. No external wiring.
+- SCD41: I2C CO2, temperature, humidity. (coded + enabled; dashboard only)
+- SGP41: I2C VOC and NOx. (coded + enabled; dashboard only)
+- Waveshare 2.13inch e-Paper HAT V4: SPI readout, 250 x 122. (coded + enabled; `EPD:`)
 
 ## Pin assignments
 
@@ -62,10 +67,19 @@ These devices share GPIO 8/9. No address clash:
 - BH1750 = 0x23
 - BME280 = 0x76
 - MPU-6050 / ICM-20689 = 0x68
+- SGP41 = 0x59
+- SCD41 = 0x62
 - MAX17048 fuel gauge = 0x36 (untethered power add-on, see below)
 
 The GY-302 (BH1750) and GY-521 (IMU) breakouts carry onboard pull-ups, so no
-external I2C resistors are needed.
+external I2C resistors are needed. The two air sensor boards carry their own as
+well; with all of them in parallel the bus still scans cleanly.
+
+The e-paper's six signal pins were chosen as the only run of six free, safe pins
+on the ESP's empty edge. On that edge 35, 36 and 37 belong to the module's
+memory, 38 is the onboard LED, 45 and 0 are boot-mode pins, 19 and 20 are the
+second USB port, and RX and TX are the serial link used for flashing. The edge
+has no 3V3 pin, so the panel's VCC comes from the 3V3 rail.
 
 ## Unused pins — leave open (n/c)
 
@@ -231,6 +245,11 @@ Runtime output protocol:
 - `PIX:r,g,b,w,...`: full v06 RGBW strip frame, up to 16 pixels. The live decoder
   keeps the white channel capped, but otherwise leaves the field's pulse and
   shimmer visible.
+- `EPD:l1;l2;l3;l4;l5|r1;r2;r3;r4;r5`: text for the e-paper, two columns of five
+  short lines. The body redraws only when the text changes, at most once a
+  minute, with a full refresh every tenth redraw, and answers with a `paper`
+  line giving the refresh time. The collector sends it every 180 ticks. Set
+  `CREATURE_PAPER=0` to stop.
 - `VOX:freq,ms[,vol]`: optional speaker tone. The live collector sends quiet,
   low, slow tones by default. Set `CREATURE_ENABLE_VOICE=0` to silence it.
 

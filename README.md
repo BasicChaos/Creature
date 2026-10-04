@@ -42,7 +42,7 @@ activity instead of waiting for the room to hand it some.
 
 ## Hardware overview
 
-Body node: ESP32-S3-DevKitC-1 (N8R8) on a breadboard.
+Body node: ESP32-S3-DevKitC-1 style board (N16R8 module) on a breadboard.
 
 Senses:
 
@@ -50,6 +50,13 @@ Senses:
 - INMP441 MEMS microphone (I2S)
 - MPU-6050 / ICM-20689 motion (I2C)
 - BME280 temperature and pressure, a slow sense with a real day-night rhythm (I2C)
+
+On the body but not yet part of the Creature (v07.0):
+
+- SCD41 CO2, temperature and humidity, and SGP41 VOC and NOx (I2C). Shown on the
+  dashboard, with Sensirion's gas index worked out on the Pi.
+- Waveshare 2.13inch e-paper (SPI). Shows the air readings and five of the
+  Creature's own numbers, as text the Pi sends.
 
 Emitters:
 
@@ -62,7 +69,8 @@ SQLite history, and the dashboard server. The Mac is only used for editing and
 Git and is not part of the runtime.
 
 Sensor API: the Pi's dashboard server (port 8080) also serves the raw sensors as
-JSON at `/api/sensors` (light, sound, motion, temperature, pressure), so other
+JSON at `/api/sensors` (light, sound, motion, temperature, pressure, and the air
+readings: CO2, humidity, VOC and NOx), so other
 apps and services can use the Creature as a set of ordinary sensors. Details in
 `instructions.md`.
 
@@ -79,6 +87,8 @@ back in. Full pin assignments, power, and wiring notes live in
 - v06: added the BME280 weather sensor, the motion IMU, the MAX98357A amplifier
   with a speaker, and the SK6812 RGBW strip. The microphone moved to its own I2S
   peripheral so the mic and amplifier never share pins.
+- v07.0: added the SCD41 and SGP41 air sensors on the same I2C bus and the
+  e-paper readout on the ESP's free edge. Wiring is still in the v06 document.
 
 Each version keeps its own schematic, wiring, and bench notes under `Hardware/`.
 
@@ -120,7 +130,12 @@ same on purpose so the field can change without rewriting hardware.
   longer runs as a metronome: it speaks when arousal stands clear of its own usual
   level just after something surprised it.
 
-The current running version string is `v06.9-predictive`.
+- v07.0: no change to the mind. The body gained air sensors and an e-paper
+  readout; the Pi passes the air readings to the dashboard, works out a VOC and
+  NOx index from them, keeps an hour of history, and sends the e-paper its text.
+  None of it reaches the field.
+
+The current version string is `v07.0-predictive`.
 
 ## Status
 
@@ -130,10 +145,10 @@ the reservoir distinguishes histories, the readout beats a direct connection, th
 predictive cell does not flatten, and the dark-room loop self-sustains. The
 expression-memory record layer is live in the runtime.
 
-The next phase is hardware: place the two loop sensors physically, wire the
-curiosity drive and forward model into the firmware and collector, and run the
-dark-room test on the real Creature. The one blocker is power. That work waits on
-the battery path going in.
+Since then the forward model, the felt loop and curiosity have gone live on the
+real body (v06.7 to v06.9), and the sound loop is physically closed. Where things
+stand now, what was found, and the open items are in
+`Creature v07.0 Status and Next Steps.md`.
 
 ## Repository layout
 
@@ -153,6 +168,8 @@ Hardware/                       KiCad schematics, wiring, bench notes, photos
 
 - `Creature Project Design Document Active.md`: the canonical design, current
   architecture in full.
+- `Creature v07.0 Status and Next Steps.md`: what is running, what was found, and
+  what is open.
 - `Creature v06.md`: the v06 design rationale.
 - `CREATURE_v06_SOFTWARE_RESULTS.md` and
   `CREATURE_v06_EXPRESSION_AND_LOOP_RESULTS.md`: the simulation results logs.

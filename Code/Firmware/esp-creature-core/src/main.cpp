@@ -17,8 +17,8 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Creature body node firmware (v06)
-// Board: ESP32-S3-DevKitC-1-N8R8
+// Creature body node firmware (v07.0: the v06 body plus air sensors and e-paper)
+// Board: ESP32-S3-DevKitC-1 style, N16R8 module
 //
 // Bring-up switches: enable one sensor at a time while the wiring is settled.
 //   ENABLE_MIC    1 = read the INMP441 (I2S), stream sound_rms
@@ -1307,7 +1307,7 @@ void setup()
   playTone(523.0f, 120, 1.0f);   // boot chirp = amp alive
 #endif
 
-  String startLine = "{\"system\":\"creature body node v06 started\"";
+  String startLine = "{\"system\":\"creature body node v07 started\"";
 #if ENABLE_LIGHT
   startLine += ",\"light_ready\":";
   startLine += lightReady ? "true" : "false";
