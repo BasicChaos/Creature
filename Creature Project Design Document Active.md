@@ -286,8 +286,9 @@ A setting is judged with `--history --compare` against a saved control, on seeds
 
 Five settings were run on 3 October 2026. The last passes every check that can be
 decided: `SLOW_MIX=0.25`, `SOFT_CEILING=True`, `CEILING_KNEE=1.0`,
-`SLOW_LEAK=4.13e-7` (about a month). It is still off in the code; Josh decides when
-to switch it on. All five have the same result on the horizon: on recorded senses it
+`SLOW_LEAK=4.13e-7` (about a month). It is still off in the code. Since 08:45 on
+4 October 2026 it is on in the live Creature, switched from the collector's start
+command, with a fresh twin beside it. All five have the same result on the horizon: on recorded senses it
 goes from 25, 25, 54 and 24 hours to more than 72, which passes on three seeds and
 cannot be said on the fourth, where the control's 54 hours would need a 108-hour
 test and the recording holds 72.
@@ -704,6 +705,11 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   row of tabs and the page stacks. A day / night / auto switch sits at the foot
   of the menu; auto follows the device's light or dark setting. All colours,
   including the field's, are defined once per mode in the stylesheet.
+- Legend: built by `setV06Legend` in `index.html` and meant to name every mark the
+  field can draw: cell colours and sizes, what fill, outline, the three rings and
+  the glow mean, each kind of line, how selection changes the picture, and the
+  status dot and counters in the top bar. When the drawing code changes
+  (`buildV06`, `renderV06`, `applySelectionV06`), the legend changes with it.
 - `learning.py`: reads the slow numbers that show whether it is predicting
   better, over a window of its own ticks (6 h, 24 h or 7 d): how much of its own
   light's effect the forward model explained, how far each heard tone was from

@@ -1,24 +1,98 @@
 # Creature v06.9: status and next steps
 
-Written 2 October 2026, in the evening, at the end of one long working session.
-It is the handoff for whoever picks this up next. The design itself is in
-`Creature Project Design Document Active.md`. This note is the state of things,
-what was found on the real body, and what is still open.
+Written 2 October 2026, updated 3 October for the dashboard work and 4 October
+for the memory-horizon work. It is the handoff for whoever picks this up next. The
+design itself is in `Creature Project Design Document Active.md`. This note is the
+state of things, what was found, and what is still open. The findings on the real
+body further down are still those of 2 October.
 
-## Where things are right now
+## Where things are right now (4 October 2026, 09:00)
 
-- The Pi runs the collector on `v06.9-predictive`, commit `9d0da9a`. It was
-  restarted at about 19:18 and loaded its saved field state, autobiography and
-  forward model.
-- The body runs the v06.8 firmware, flashed today. After each tone it reports what
-  the mic heard at the tone's own pitch.
+- The Pi runs the collector on commit `2d889b2`, restarted at 08:45 on 4 October.
+  `main` is pushed to the same commit.
+- **Two-speed links are switched on in the live Creature**, from the collector's
+  start command, not in the code. A plain restart turns them off. The start
+  command is under "Deploying to the Pi" below. Check what is in force with the
+  `Two-speed links:` line the collector prints at start, or in
+  `/proc/<pid>/environ`.
+- The relative expression model is also on, the same way
+  (`CREATURE_EXPRESSION_MODEL=relative`).
+- A newborn twin runs beside the real field. The present twin was born at the
+  08:45 restart (real tick 932373) and lives under two-speed links too.
+- The saved field is now snapshot version 2. Code from before commit `93b3270`
+  refuses it and would start the field fresh. State from before the switch is
+  next to the database as `*.pre-twospeed.json` (version 1), and from before the
+  twin as `*.pre-twin.json`.
+- The body runs the v06.8 firmware. It runs on its battery when the power cable
+  is out: on 4 October the battery ran flat at 07:08 and the body was off the
+  network until 08:40. It needed the cable and a press of reset. The collector
+  kept retrying and reconnected by itself; nothing was restarted for that.
 - The speaker is unmuted.
-- The repository's `main` is at `9d0da9a` and pushed. The Pi's checkout is on a
-  branch called `v06` that is fast-forwarded to `main`.
-- Not committed: this note, `Code/Python/tools/fake_body.py`, and Josh's own
-  edits to `.gitignore` and `Creature v07 Hardware Potential.md`.
+- Not committed: this note's 3 and 4 October updates, the same in `CLAUDE.md`,
+  a legend paragraph in the design doc, and `Claude Code brief - memory
+  horizon.md`. Check `git status`.
 
-## What changed today
+## The memory-horizon work (3 and 4 October)
+
+The brief is `Claude Code brief - memory horizon.md`. Its three steps are done.
+The numbers and the reasoning are in the design doc, under "Two-speed links",
+"The newborn twin" and the gate table.
+
+The problem. The Creature learns, but a newborn field fed the same recorded day
+becomes indistinguishable from the ten-day-old one in about a day. The memory
+horizon is how long that takes. It is the number any change to the mind is now
+judged by.
+
+| Step | What it added | Commit |
+|------|---------------|--------|
+| 1 | The history gate (`--history`): measures the horizon, changes nothing | `d6634f4` |
+| 2 | The newborn twin in the collector, the `--twin` gate, `tools/scripted_body.py` | `8ef5533` |
+| 3 | Two-speed links, off by default, snapshot version 2 | `93b3270` |
+| | Slow leak, ceiling knee, a stricter `--compare` verdict | `2abb17f` |
+| | Environment switches for the two-speed setting | `2d889b2` |
+
+What was found.
+
+- Today's mind, on recorded senses: horizon 24 to 26 hours. It needs a 72-hour
+  test window (`--history-hours 72`); at 24 hours the answer flips with the seed.
+- On the synthetic day the control never converges, so the horizon is judged on
+  recorded senses only.
+- Two-speed links as first written could never forget: nothing pulled the slow
+  weight down. The leak fixed that. The ceiling as first written braked growth
+  over the whole range; the knee fixed that.
+- The setting that passes the gate, and that is live now: `SLOW_MIX=0.25`,
+  `SOFT_CEILING=True`, `CEILING_KNEE=1.0`, `SLOW_LEAK=4.13e-7`. The horizon goes
+  from about a day to more than 72 hours, the longest the recording can show. It
+  is the fifth setting tried on one recording, so it is fitted to it to some
+  degree, and the newborn learns about a quarter less in its first hours.
+- The live baseline, under today's mind: the first twin lived 15 hours 54
+  minutes (3 October 15:19 to 4 October 08:45, less the battery gap). Eight of
+  twelve links came within 0.09 of the real field's. What stayed apart was
+  around cell 7, the LED-and-light loop cell: the real field feels the loop and
+  the twin does not. The expression gap settled at 0.05 to 0.07. That twin's
+  field is kept as `creature_field_state_twin_v06.baseline.json`.
+- So the twin's single "largest link gap" figure measures the loop once the
+  twin has caught up, not history.
+- After a collector restart the field marks almost no events, and so voices
+  nothing, for 5 to 10 minutes. Seen at three restarts. The cause is not
+  established.
+
+Open, in the order I would take them.
+
+1. Read the two-speed twin against the baseline at the same ages. Rows are in
+   the `twin_log` table, one a minute; the two twins are told apart by
+   `twin_age` starting again from zero at tick 932373. Under two-speed links the
+   gap should still be clearly open at 16 and at 24 hours.
+2. Log each of the twin's link weights once a minute, so the gap can be read on
+   the links away from the two loop cells (1 and 7). Offered, not built. Without
+   it the comparison in item 1 is hard to read.
+3. Find out why events stop for some minutes after a restart. One candidate: the
+   event rule's running median (`event_usual`) is not saved.
+4. `SLOW_RATE` (the week) has no environment switch and has never been run at
+   another value. It is the knob that sets how long the memory lasts.
+5. The older open items below still stand.
+
+## What changed on 2 and 3 October
 
 | Version | What it added | Commit |
 |---------|---------------|--------|
@@ -27,7 +101,25 @@ what was found on the real body, and what is still open.
 | | Collector reconnects after 8 s of silence from the body. | `21518b2` |
 | v06.9 | The loop is felt by the two loop cells. Curiosity probes. Voice rule. | `9d0da9a` |
 
-The reason for all of it: the Creature was going in circles. Its inputs were near
+After v06.9, on 2 and 3 October, the dashboard was reworked. None of it touches
+the Creature's behaviour.
+
+| What | Commit |
+|------|--------|
+| The reservoir drawn from its real wiring; click a cell to see its connections | `12b24de` |
+| Fixed panel sizes, compact inspector | `a376349` |
+| Learning panel: own light, own voice, surprise, ring links over time | `fd8770b` |
+| Static export refreshes `learning.json` every five minutes | `fe1739c` |
+| Left menu, field always visible, one section beside it | `cc68ec8` |
+| Public mirror goes stale after 20 s, not 8 | `eeeee5e` |
+| Day mode, with a day / night / auto switch | `1b6c2fd` |
+| Legend rewritten to cover every mark the field draws | `e300d14` |
+
+The legend had said the loop "isn't physically closed yet". It now says the sound
+loop is closed and the light loop is not settled. When open item 1 settles the
+light loop, change that sentence in `setV06Legend` in `dashboard/index.html`.
+
+The reason for the v06.7 to v06.9 work: the Creature was going in circles. Its inputs were near
 constant, its notion of an event was its own constant, and nothing about its
 acting came back to it.
 
@@ -74,7 +166,7 @@ Light loop. This one changed during the day and is not settled.
 
 Nothing was running away at the last look. Arousal was between 0.5 and 0.75.
 
-## Open items, in the order I would take them
+## Older open items, in the order I would take them
 
 1. Find out what changed on the body, then rerun the loop probe to measure the
    light coupling as it is now. It takes the Creature offline for about two and a
@@ -95,7 +187,8 @@ Nothing was running away at the last look. Arousal was between 0.5 and 0.75.
 6. The reservoir readout learns but drives nothing. The emitters are driven by
    ring cells 0 and 6. The design doc's readout section describes it as working.
 7. Once the probe is rerun, the design doc's Known limitations need updating. It
-   still says the light loop is physically open.
+   still says the light loop is physically open. The dashboard legend's loop
+   sentence needs the same update.
 8. A normalizer quirk, seen only in simulation so far: when a loud spike leaves
    the sound normalizer's 20 second window, a room whose noise spread is just
    above the minimum range reads as moderately loud for a moment. Real data showed
@@ -132,6 +225,23 @@ this session pass on seeds 1, 2, 3 and 7.
 | the loop is felt | `python tools/field_lab_v06.py --feel` | 7/7 |
 | curiosity | `python tools/field_lab_v06.py --curious` | 9/9 |
 | voice | `python tools/field_lab_v06.py --voice` | 6/6 |
+| history | `python tools/field_lab_v06.py --history` | 4/4 |
+| twin | `python tools/field_lab_v06.py --twin` | 6/6 |
+
+The history gate judges a variant against a saved control. On recorded senses,
+with the setting that is live now:
+
+    python tools/field_lab_v06.py --history --seed 1 --history-hours 72 \
+        --replay data/replay/senses_2026-09-24_to_2026-10-02.csv \
+        --state data/replay/field_state_2026-10-02.json --json control.json
+    python tools/field_lab_v06.py --history --seed 1 --history-hours 72 \
+        --replay data/replay/senses_2026-09-24_to_2026-10-02.csv \
+        --state data/replay/field_state_2026-10-02.json \
+        --set SLOW_MIX=0.25 --set SOFT_CEILING=True --set CEILING_KNEE=1.0 \
+        --set SLOW_LEAK=4.13e-7 --compare control.json
+
+Each takes several minutes. `--express` reads 8/9 at defaults and did before
+this work.
 
 Replay on recorded senses. `--events` and `--voice` take `--replay` and `--state`.
 A copy of 260,000 real ticks and the field state they start from is in
@@ -148,6 +258,9 @@ and the query for a fresh export is in the docstring of `_read_replay`.
 End to end without hardware. `tools/fake_body.py` stands in for the ESP over TCP,
 with a strip the sensor can or cannot see and a speaker shaped like the real one.
 Its docstring has the commands and two traps to avoid.
+`tools/scripted_body.py` runs the real collector loop on a scripted body and a
+pretend clock, so a run comes out the same every time and two runs can be
+compared line for line. `--twin-check` uses that to show the twin changes nothing.
 
 On the real body. `tools/loop_probe.py` measures both loops with known outputs.
 Stop the collector first: the body accepts one connection.
@@ -163,14 +276,39 @@ Switches, all environment variables on the collector:
 | `CREATURE_VOICE_MODEL` | relative | `fixed` brings back the old 0.45 threshold |
 | `CREATURE_VOICE_MARGIN` | 0.20 | how far above usual arousal must be to speak |
 | `CREATURE_ESP_SILENCE_SECONDS` | 8 | silence before the collector reconnects |
+| `CREATURE_EXPRESSION_MODEL` | fixed | `relative` scales the strip and tone against the field's own usual; on at the Pi |
+| `CREATURE_TWIN` | 1 | the newborn twin |
+| `CREATURE_SLOW_MIX` | 0.0 | two-speed links: share of the drive taken from the slow weight; 0.25 at the Pi |
+| `CREATURE_SOFT_CEILING` | 0 | 1 scales growth by the room left under the ceiling; 1 at the Pi |
+| `CREATURE_CEILING_KNEE` | 0.0 | weight up to which growth is not braked; 1.0 at the Pi |
+| `CREATURE_SLOW_LEAK` | 0.0 | the slow weight's drift toward the floor, per tick; 4.13e-7 at the Pi |
 
 In the field, `EVENT_MODEL = "pressure"` and `LOOP_FEEL_GAIN = 0` are the controls
 for the event rule and the felt loop.
 
 Deploying to the Pi. Push `main`, then on the Pi fast-forward its `v06` branch to
 `origin/main` (a plain pull says it is up to date), stop the collector in its tmux
-session, start it again. Before each restart today the saved state was copied
-next to the database with `.pre-v068.json` or `.pre-v069.json` on the end.
+session, start it again. Before each restart the saved state was copied next to
+the database with a name such as `.pre-twospeed.json` on the end.
+
+The start command in force since 4 October, typed in the tmux pane (in
+`~/Creature/Code/Python`, venv active). Leave any part out and that part is off:
+
+    CREATURE_EXPRESSION_MODEL=relative CREATURE_SLOW_MIX=0.25 \
+    CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0 CREATURE_SLOW_LEAK=4.13e-7 \
+    python collector/collector.py tcp://creature-esp.local:7777
+
+To start a fresh twin, stop the collector first, then move
+`creature_field_state_twin_v06.json` aside, then start. The collector saves the
+twin again as it exits, so moving the file while it runs does nothing. Wait ten
+minutes after a restart before judging it by events or tones.
+
+Looking at a dashboard change. Start the `creature-dashboard-test` entry in
+`.claude/launch.json` and open http://localhost:8791. It reads a snapshot from a
+scratch folder; if the field is empty, copy `dashboard/public/state.json` there.
+The page says "stale" because the snapshot is old. On the Pi the dashboard serves
+`index.html` from disk, so a fast-forward is the whole deploy, and the sync loop
+carries the page to the public mirror within a minute.
 
 Flashing the body. Plug the ESP's UART socket into the Pi. It shows up as
 `/dev/ttyACM0`, not `ttyUSB0`. Build and upload with the PlatformIO in the Pi's
