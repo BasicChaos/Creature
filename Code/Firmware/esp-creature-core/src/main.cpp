@@ -203,7 +203,9 @@ bool wifiEnabled = strlen(CREATURE_WIFI_SSID) > 0;
 bool wifiServerStarted = false;
 bool mdnsStarted = false;
 unsigned long lastWifiAttemptMs = 0;
-const unsigned long WIFI_RETRY_INTERVAL_MS = 10000;
+// On a weak signal a join was measured at 15.7 s (4 October 2026). Retrying
+// sooner than that cuts every attempt off before it can finish.
+const unsigned long WIFI_RETRY_INTERVAL_MS = 30000;
 
 String serialCommand = "";
 String wifiCommand = "";
@@ -444,6 +446,8 @@ void serviceWifi()
     line += ".local";
     line += "\",\"port\":";
     line += CREATURE_WIFI_PORT;
+    line += ",\"rssi\":";
+    line += WiFi.RSSI();
     line += ",\"mdns\":";
     line += mdnsStarted ? "true" : "false";
     line += "}";
@@ -1463,6 +1467,20 @@ void loop()
     }
     statusLine += "]";
 #endif
+    if (wifiEnabled)
+    {
+      // Signal strength in dBm, or null while not joined. Around -60 is good,
+      // below -85 is too weak to hold a connection.
+      statusLine += ",\"wifi_rssi\":";
+      if (WiFi.status() == WL_CONNECTED)
+      {
+        statusLine += WiFi.RSSI();
+      }
+      else
+      {
+        statusLine += "null";
+      }
+    }
     statusLine += "}";
     writeSystemLineToTransports(statusLine);
   }
