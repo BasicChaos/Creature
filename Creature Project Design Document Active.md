@@ -102,6 +102,14 @@ Emitters:
 - MAX98357A amplifier and a small speaker, I2S1. The field's voice. Driven by
   optional `VOX:` tones.
 - Onboard NeoPixel on GPIO 38. A status pixel, driven by the legacy `LED:` command.
+- Waveshare 2.13inch e-Paper HAT V4, SPI, on the ESP's free edge: DIN 1, CLK 2,
+  CS 42, DC 41, RST 40, BUSY 39. A readout, not part of the field's expression.
+  Driven by `EPD:` text: two columns of five short lines, which the collector
+  composes every 180 ticks (air readings on the left, the Creature's energy,
+  memory pressure, emitter, cell states and live links on the right). The body
+  only draws the text, in a task of its own so the sample loop never waits for a
+  refresh, and answers with a `paper` line giving the refresh time.
+  `CREATURE_PAPER=0` at the collector turns it off.
 
 Sampling at about 10 Hz. One JSON line per sample over USB serial, and over a small
 WiFi TCP server on port 7777 with mDNS when WiFi is configured. After each `VOX:`

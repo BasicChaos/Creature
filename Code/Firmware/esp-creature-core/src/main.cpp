@@ -8,6 +8,9 @@
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include <SPI.h>
+#include <GxEPD2_BW.h>
+#include <Fonts/FreeSansBold9pt7b.h>
 
 #if __has_include("creature_wifi_secrets.h")
 #include "creature_wifi_secrets.h"
@@ -48,6 +51,7 @@
 #define ENABLE_WEATHER  1   // BME280 (I2C 0x76), stream "temp_c" and "pressure_hpa"
 #define ENABLE_AIR      1   // SCD4x (I2C 0x62) and SGP41 (I2C 0x59), stream "co2_ppm",
                             // "air_temp_c", "humidity_pct", "voc_raw" and "nox_raw"
+#define ENABLE_PAPER    1   // Waveshare 2.13inch e-Paper HAT V4 (SPI), EPD: command
 #define ENABLE_STRIP    1   // SK6812 RGBW strip (GPIO 4, 16 px), PIX: command
 #define ENABLE_VOICE    1   // MAX98357A amp (I2S1 15/16/17), VOX: command
 #define ENABLE_BOOT_CHIRP 0  // keep startup quiet; collector sends gentle VOX tones
@@ -125,6 +129,35 @@ bool     sgpPending = false;       // a command is out, its answer not yet read
 bool     sgpPendingConditioning = false;
 unsigned long sgpSentMs = 0;
 unsigned long lastAirMs = 0;
+
+// ---- e-paper: Waveshare 2.13inch e-Paper HAT V4 (SPI, 250 x 122) -----------
+// It shows whatever text the collector sends: two columns of five short lines.
+//   EPD:left1;left2;left3;left4;left5|right1;right2;right3;right4;right5
+// A redraw takes about half a second, and a full one about four, so the panel
+// has a task of its own and the sample loop never waits for it.
+// Wiring, in the order of the HAT's own connector, on the ESP's free edge:
+//   DIN 1, CLK 2, CS 42, DC 41, RST 40, BUSY 39. VCC to 3V3, GND to GND.
+#define EPD_DIN   1
+#define EPD_CLK   2
+#define EPD_CS    42
+#define EPD_DC    41
+#define EPD_RST   40
+#define EPD_BUSY  39
+#define PAPER_LINES          5
+#define PAPER_LINE_CHARS     20
+#define PAPER_MIN_GAP_MS     60000   // never redraw more often than this
+#define PAPER_FULL_EVERY     10      // every Nth redraw is a full one, to clear ghosting
+// GxEPD2_213_BN also drives this panel, but its partial refresh left faint grey
+// text and heavy ghosting on the V4.
+#define EPD_DRIVER GxEPD2_213_GDEY0213B74
+GxEPD2_BW<EPD_DRIVER, EPD_DRIVER::HEIGHT>
+    paper(EPD_DRIVER(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+SemaphoreHandle_t paperLock = NULL;
+char paperText[2][PAPER_LINES][PAPER_LINE_CHARS];   // [column][line], guarded by paperLock
+volatile bool paperWanted = false;                  // new text is waiting to be drawn
+volatile bool paperReportPending = false;           // a redraw finished; tell the collector
+volatile bool paperReportFull = false;
+volatile unsigned long paperReportMs = 0;
 
 // ---- SK6812 RGBW strip emitter (GPIO 4, 16 px) ----------------------------
 #define STRIP_PIN            4
@@ -205,6 +238,9 @@ float readMotion();
 void  setupBME();
 void  readWeather(float& tempC, float& pressureHpa);
 void  setupAir();
+void  setupPaper();
+void  setPaperText(const String& text);
+void  reportPaper();
 void  serviceAir(unsigned long now);
 void  setupStrip();
 void  stripProof();
@@ -255,6 +291,12 @@ void handleCommand(String command, const char* source)
   else if (command.startsWith("PIX:"))
   {
     applyPixels(command.substring(4));
+  }
+#endif
+#if ENABLE_PAPER
+  else if (command.startsWith("EPD:"))
+  {
+    setPaperText(command.substring(4));
   }
 #endif
 #if ENABLE_VOICE
@@ -696,6 +738,135 @@ void serviceAir(unsigned long now)
   }
 }
 
+// ---- e-paper ---------------------------------------------------------------
+// Take new text from an EPD: command. Lines are split on ';', the two columns
+// on '|'. Nothing is drawn here; the panel's task picks it up.
+void setPaperText(const String& text)
+{
+  if (paperLock == NULL)
+  {
+    return;
+  }
+  char next[2][PAPER_LINES][PAPER_LINE_CHARS];
+  memset(next, 0, sizeof(next));
+  int column = 0, line = 0, at = 0;
+  for (unsigned int i = 0; i < text.length(); i++)
+  {
+    char c = text[i];
+    if (c == '|')
+    {
+      column++;
+      line = 0;
+      at = 0;
+      if (column > 1)
+      {
+        break;
+      }
+    }
+    else if (c == ';')
+    {
+      line++;
+      at = 0;
+    }
+    else if (line < PAPER_LINES && at < PAPER_LINE_CHARS - 1 && c >= ' ' && c <= '~')
+    {
+      next[column][line][at++] = c;
+    }
+  }
+  xSemaphoreTake(paperLock, portMAX_DELAY);
+  if (memcmp(next, paperText, sizeof(next)) != 0)
+  {
+    memcpy(paperText, next, sizeof(next));
+    paperWanted = true;
+  }
+  xSemaphoreGive(paperLock);
+}
+
+// The panel's own task. It waits for new text, then redraws: a fast partial
+// refresh usually, a full one the first time and every PAPER_FULL_EVERY after.
+void paperTask(void* unused)
+{
+  char shown[2][PAPER_LINES][PAPER_LINE_CHARS];
+  int redraws = 0;
+  unsigned long lastDrawMs = 0;
+
+  SPI.begin(EPD_CLK, -1, EPD_DIN, EPD_CS);
+  paper.init(0, true, 2, false);   // no serial chatter; Waveshare's short 2 ms reset pulse
+  paper.setRotation(1);
+
+  for (;;)
+  {
+    vTaskDelay(pdMS_TO_TICKS(250));
+    if (!paperWanted || (redraws > 0 && millis() - lastDrawMs < PAPER_MIN_GAP_MS))
+    {
+      continue;
+    }
+    xSemaphoreTake(paperLock, portMAX_DELAY);
+    memcpy(shown, paperText, sizeof(shown));
+    paperWanted = false;
+    xSemaphoreGive(paperLock);
+
+    bool full = (redraws % PAPER_FULL_EVERY) == 0;
+    if (full)
+    {
+      paper.setFullWindow();
+    }
+    else
+    {
+      paper.setPartialWindow(0, 0, paper.width(), paper.height());
+    }
+    unsigned long started = millis();
+    paper.firstPage();
+    do
+    {
+      paper.fillScreen(GxEPD_WHITE);
+      paper.setTextColor(GxEPD_BLACK);
+      paper.setFont(&FreeSansBold9pt7b);
+      paper.drawFastVLine(paper.width() / 2, 4, paper.height() - 8, GxEPD_BLACK);
+      for (int column = 0; column < 2; column++)
+      {
+        for (int line = 0; line < PAPER_LINES; line++)
+        {
+          paper.setCursor(column == 0 ? 5 : paper.width() / 2 + 7, 20 + line * 23);
+          paper.print(shown[column][line]);
+        }
+      }
+    } while (paper.nextPage());
+    paper.powerOff();
+    lastDrawMs = millis();
+    redraws++;
+
+    paperReportMs = lastDrawMs - started;
+    paperReportFull = full;
+    paperReportPending = true;
+  }
+}
+
+void setupPaper()
+{
+  memset(paperText, 0, sizeof(paperText));
+  paperLock = xSemaphoreCreateMutex();
+  // Core 0, low priority: the sample loop runs on core 1.
+  xTaskCreatePinnedToCore(paperTask, "paper", 8192, NULL, 1, NULL, 0);
+}
+
+// Called from loop(): say when a redraw has finished and how long it took. Under
+// 200 ms means BUSY is not connected; over 9000 ms means it timed out.
+void reportPaper()
+{
+  if (!paperReportPending)
+  {
+    return;
+  }
+  paperReportPending = false;
+  String line = "{\"system\":\"paper\",\"refresh\":\"";
+  line += paperReportFull ? "full" : "partial";
+  line += "\",\"ms\":";
+  line += paperReportMs;
+  line += "}";
+  writeSystemLineToTransports(line);
+}
+
 // ---- SK6812 RGBW strip emitter --------------------------------------------
 void setupStrip()
 {
@@ -1112,6 +1283,9 @@ void setup()
 #if ENABLE_AIR
   setupAir();
 #endif
+#if ENABLE_PAPER
+  setupPaper();
+#endif
 
 #if ENABLE_MIC
   setupI2SMic();
@@ -1151,6 +1325,9 @@ void setup()
   startLine += ",\"sgp_ready\":";
   startLine += sgpReady ? "true" : "false";
 #endif
+#if ENABLE_PAPER
+  startLine += ",\"paper\":true";
+#endif
 #if ENABLE_STRIP
   startLine += ",\"strip\":true";
 #endif
@@ -1173,6 +1350,9 @@ void loop()
   readWifiCommands();
 #if ENABLE_AIR
   serviceAir(now);
+#endif
+#if ENABLE_PAPER
+  reportPaper();
 #endif
 
   if (now - lastSampleMs < SAMPLE_INTERVAL_MS)

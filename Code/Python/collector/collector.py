@@ -176,6 +176,11 @@ TWIN_LOG_EVERY_TICKS = 60
 # lines, and how old a saved gas-index baseline may be and still be taken back.
 AIR_LOG_EVERY_TICKS = 20
 AIR_STATE_MAX_AGE_SECONDS = 12 * 3600
+# The e-paper on the body shows air readings and the Creature's headline
+# numbers. It is redrawn seldom: the panel wears with every refresh.
+ENABLE_PAPER = os.environ.get("CREATURE_PAPER", "1") == "1"
+PAPER_EVERY_TICKS = 180
+PAPER_FIRST_AFTER_TICKS = 10     # the first text, once the senses have reported
 
 # --- Two-speed links ---
 # Off by default, and read by the field itself (mind/cell_field_v06.py), which
@@ -322,6 +327,33 @@ def save_air_state(path, voc_index, nox_index):
         "voc": voc_index.snapshot(),
         "nox": nox_index.snapshot(),
     })
+
+
+def paper_command(raw, voc_index, nox_index, state):
+    """The EPD: line for the body's e-paper: two columns of five short lines,
+    air on the left, the Creature on the right. The body only draws the text."""
+    def shown(value, pattern):
+        return pattern.format(value) if value is not None else "--"
+
+    temp_c = raw.get("temp_c")
+    left = [
+        f"{temp_c * 9.0 / 5.0 + 32.0:.1f}F {temp_c:.1f}C" if temp_c is not None else "--F --C",
+        "Hum " + shown(raw.get("humidity_pct"), "{:.0f}%"),
+        "CO2 " + shown(raw.get("co2_ppm"), "{:.0f} ppm"),
+        "VOC " + shown(voc_index, "{}"),
+        "NOx " + shown(nox_index, "{}"),
+    ]
+    metabolism = state.get("metabolism", {})
+    counts = state.get("state_counts", {})
+    right = [
+        "Energy " + shown(metabolism.get("energy_reserve"), "{:.1f}"),
+        "Memory " + shown(metabolism.get("memory_pressure"), "{:.2f}"),
+        "Emit " + shown(state.get("emitter_activation"), "{:.2f}"),
+        "St {}/{}/{}/{}".format(counts.get("active", 0), counts.get("resting", 0),
+                                counts.get("dormant", 0), counts.get("deep_sleep", 0)),
+        "Links " + shown(metabolism.get("live_connections"), "{}/12"),
+    ]
+    return "EPD:" + ";".join(left) + "|" + ";".join(right) + "\n"
 
 
 def setup_database(db_path):
@@ -1066,6 +1098,7 @@ def main():
         print("No recent gas index baseline. Starting a fresh one.")
     latest_voc_index = None
     latest_nox_index = None
+    run_ticks = 0     # ticks since this start, for the e-paper's first text
 
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
@@ -1126,6 +1159,7 @@ def main():
           f"curiosity probes: {'on' if ENABLE_PROBE else 'off'}"
           f"{'' if ENABLE_PROBE_VOICE or not ENABLE_PROBE else ' (light only)'}")
     print(f"Newborn twin: {'on' if ENABLE_TWIN else 'off'}")
+    print(f"E-paper: {'on, new text every ' + str(PAPER_EVERY_TICKS) + ' ticks' if ENABLE_PAPER else 'off'}")
     if SLOW_MIX > 0.0 or SLOW_LEAK > 0.0 or SOFT_CEILING:
         ceiling = f"on above {CEILING_KNEE:g}" if SOFT_CEILING else "off"
         print(f"Two-speed links: mix {SLOW_MIX:g}, slow leak {SLOW_LEAK:g}, soft ceiling {ceiling}")
@@ -1267,6 +1301,11 @@ def main():
         try:
             output_info = body_send(state, brightness, now, probe)
             sent_brightness = output_info["sent_brightness"]
+            run_ticks += 1
+            if ENABLE_PAPER and (run_ticks == PAPER_FIRST_AFTER_TICKS
+                                 or field.tick_count % PAPER_EVERY_TICKS == 0):
+                esp.write(paper_command(latest_raw, latest_voc_index, latest_nox_index,
+                                        state).encode("utf-8"))
         except TransportError as error:
             if not is_tcp_target(transport_target):
                 print("Could not send body command over serial. Check USB, then restart the collector.")

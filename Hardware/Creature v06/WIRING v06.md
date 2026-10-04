@@ -41,6 +41,13 @@ collector and sends `LED:<brightness>` back over the same connection.
 | I2S1 data out       | GPIO 17      | DIN        | MAX98357A                              |
 | SK6812 data         | GPIO 4       | DIN        | via 470Ω on perfboard                  |
 | Onboard RGB LED     | GPIO 38      | -          | NeoPixel status pixel, no ext wiring   |
+| Air senses          | GPIO 8 / 9   | SDA / SCL  | SCD4x (0x62) and SGP41 (0x59), on the shared I2C bus. Leave the SGP41's `3.3V` pin open |
+| e-paper data        | GPIO 1       | DIN        | Waveshare 2.13inch e-Paper HAT V4, blue |
+| e-paper clock       | GPIO 2       | CLK        | yellow                                 |
+| e-paper chip select | GPIO 42      | CS         | orange                                 |
+| e-paper data/command | GPIO 41     | DC         | green                                  |
+| e-paper reset       | GPIO 40      | RST        | white                                  |
+| e-paper busy        | GPIO 39      | BUSY       | purple. HAT's BS switch at 0 (4-line SPI); VCC grey to 3V3, GND brown |
 | 3V3                 | 3V3 rail     | VDD / VIN  | All sensors and mic                    |
 | 5V                  | 5V pin       | +5V        | SK6812 strip and MAX98357A amp VIN     |
 | Ground              | GND rail     | GND        | Single common ground for everything    |

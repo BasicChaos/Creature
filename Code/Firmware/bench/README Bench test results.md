@@ -58,6 +58,49 @@ amp = I2S1). On boot it runs an R/G/B/W strip proof and a short chirp, then the
 status line starts. Tap the board, cover the light sensor, and make noise to see
 the motion, light, and mic values move.
 
+## Air senses and e-paper (bare board)
+
+`env:air` tests three new parts on a bare ESP32-S3 (N16R8) on a breadboard, away
+from the v06 body: the SCD4x (CO2, temperature, humidity), the SGP41 (VOC and
+NOx) and the Waveshare 2.13inch e-Paper HAT V4. Each part is reported on its own,
+so one missing part does not stop the other two.
+
+| Part    | Part pin (wire)  | ESP32-S3 |
+|---------|------------------|----------|
+| SCD4x   | VDD              | 3V3      |
+| SCD4x   | GND              | GND      |
+| SCD4x   | SDA              | GPIO 8   |
+| SCD4x   | SCL              | GPIO 9   |
+| SGP41   | VIN              | 3V3      |
+| SGP41   | GND              | GND      |
+| SGP41   | SDA              | GPIO 8   |
+| SGP41   | SCL              | GPIO 9   |
+| e-paper | VCC (grey)       | 3V3      |
+| e-paper | GND (brown)      | GND      |
+| e-paper | DIN (blue)       | GPIO 1   |
+| e-paper | CLK (yellow)     | GPIO 2   |
+| e-paper | CS (orange)      | GPIO 42  |
+| e-paper | DC (green)       | GPIO 41  |
+| e-paper | RST (white)      | GPIO 40  |
+| e-paper | BUSY (purple)    | GPIO 39  |
+
+Leave the SGP41 pin marked `3.3V` open; it is an output. The HAT's BS switch must
+sit at 0 (4-line SPI). Both sensor boards carry their own I2C pull-ups. None of
+these pins are used by the v06 body, and the addresses (0x62, 0x59) do not clash
+with its I2C bus, so the wiring can carry over.
+
+Pass when:
+
+- SCD4x: first reading after about 5 s; CO2 400-2000 ppm indoors, and it climbs
+  within a few readings when you breathe on it.
+- SGP41: self-test ok; raw VOC in the tens of thousands, dropping when you
+  breathe on it. The VOC index reads 0 for about 45 s, then settles near 100. The
+  NOx index needs several minutes and settles near 1.
+- e-paper: a full refresh takes roughly 1 to 5 s and the readings show. It
+  redraws every 15 s with a fast partial refresh; every tenth redraw is a full
+  one, which clears the ghosting that partial refreshes leave. A refresh that
+  returns at once, or `Busy Timeout!` on serial, means wiring.
+
 ## Audio: playing clean tones (important)
 
 **Root cause + fix (confirmed 22 Jun 2026):** the persistent distortion was not a
@@ -116,3 +159,6 @@ not required for the fix.
   Sensor and BusIO).
 - `sk6812` env: `adafruit/Adafruit NeoPixel`.
 - `i2c_scan`, `imu`, `speaker`: no external library.
+- `air` env: `zinggjm/GxEPD2` (also pulls Adafruit GFX and BusIO) and
+  `sensirion/Sensirion Gas Index Algorithm`. The Sensirion sensors themselves are
+  read with raw I2C.
