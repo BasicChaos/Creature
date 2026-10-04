@@ -47,6 +47,11 @@ SENSORS = {
     "motion": {"key": "motion", "unit": "g", "label": "Motion (IMU)"},
     "temperature": {"key": "temp_c", "unit": "C", "label": "Temperature"},
     "pressure": {"key": "pressure_hpa", "unit": "hPa", "label": "Air pressure"},
+    "co2": {"key": "co2_ppm", "unit": "ppm", "label": "CO2"},
+    "humidity": {"key": "humidity_pct", "unit": "%", "label": "Humidity"},
+    "air_temperature": {"key": "air_temp_c", "unit": "C", "label": "Temperature (CO2 sensor)"},
+    "voc": {"key": "voc_raw", "unit": "raw", "label": "VOC"},
+    "nox": {"key": "nox_raw", "unit": "raw", "label": "NOx"},
 }
 
 

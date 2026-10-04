@@ -153,7 +153,9 @@ def main():
                     sample = {"time_ms": int((now - start) * 1000), "light_lux": round(lux, 1),
                               "sound_rms": round(rms, 1),
                               "motion": round(0.42 + 0.01 * rng.random(), 4),
-                              "temp_c": 22.5, "pressure_hpa": 1029.9}
+                              "temp_c": 22.5, "pressure_hpa": 1029.9,
+                              "co2_ppm": 735, "air_temp_c": 21.5, "humidity_pct": 64.0,
+                              "voc_raw": 29400, "nox_raw": 17000}
                     conn.sendall((json.dumps(sample) + "\n").encode())
                 time.sleep(0.005)
         except (BrokenPipeError, ConnectionResetError):

@@ -1002,8 +1002,12 @@ def main():
     latest_temp_c = 0.0
     latest_pressure_hpa = 0.0
     # Raw readings for the sensor API: None until first seen, never a fake 0.
+    # The air readings (CO2, humidity, VOC, NOx) are only passed through to the
+    # dashboard here. The field does not read them.
     latest_raw = {"light_lux": None, "sound_rms": None, "motion": None,
-                  "temp_c": None, "pressure_hpa": None}
+                  "temp_c": None, "pressure_hpa": None,
+                  "co2_ppm": None, "air_temp_c": None, "humidity_pct": None,
+                  "voc_raw": None, "nox_raw": None}
     last_sample_at = None
 
     # Stop cleanly on Ctrl-C (SIGINT) and `systemctl stop` (SIGTERM).

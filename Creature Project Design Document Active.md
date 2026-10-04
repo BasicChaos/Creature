@@ -80,6 +80,11 @@ Senses:
 - BME280 temperature and pressure, I2C, address 0x76. A slow sense with a real
   day-night rhythm that stays nonzero at night, so the field has something to hold
   when light reads zero in the dark.
+- SCD4x CO2, temperature and humidity (I2C, address 0x62) and SGP41 VOC and NOx
+  (I2C, address 0x59), wired on 4 October 2026 on the same bus. The body streams
+  them raw (`co2_ppm`, `air_temp_c`, `humidity_pct`, `voc_raw`, `nox_raw`) and the
+  collector passes them to the dashboard's sensor panel and `/api/sensors`. The
+  field does not read them, and they are not logged to the database.
 
 Emitters:
 

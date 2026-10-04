@@ -46,6 +46,8 @@
 #define ENABLE_LIGHT  1
 #define ENABLE_MOTION   1   // ICM-20689 IMU (I2C 0x68), stream "motion" scalar
 #define ENABLE_WEATHER  1   // BME280 (I2C 0x76), stream "temp_c" and "pressure_hpa"
+#define ENABLE_AIR      1   // SCD4x (I2C 0x62) and SGP41 (I2C 0x59), stream "co2_ppm",
+                            // "air_temp_c", "humidity_pct", "voc_raw" and "nox_raw"
 #define ENABLE_STRIP    1   // SK6812 RGBW strip (GPIO 4, 16 px), PIX: command
 #define ENABLE_VOICE    1   // MAX98357A amp (I2S1 15/16/17), VOX: command
 #define ENABLE_BOOT_CHIRP 0  // keep startup quiet; collector sends gentle VOX tones
@@ -100,6 +102,29 @@ Adafruit_BME280 bme;
 bool  bmeReady = false;
 float lastTempC = 0.0f;
 float lastPressureHpa = 0.0f;
+
+// ---- Air senses: SCD4x CO2 (I2C 0x62) and SGP41 VOC / NOx (I2C 0x59) -------
+// Raw readings only. The body reports them; nothing here interprets them.
+#define SCD_ADDR 0x62
+#define SGP_ADDR 0x59
+#define AIR_INTERVAL_MS      1000   // the SGP41 is meant to be read once a second
+#define SGP_MEASURE_MS       50     // time the SGP41 needs between command and read
+#define SGP_CONDITIONING_S   10     // the datasheet's limit; longer harms the NOx pixel
+bool     scdReady = false;
+bool     sgpReady = false;
+bool     haveCo2 = false;          // false until the SCD4x's first reading (about 5 s)
+bool     haveVoc = false;
+bool     haveNox = false;          // false through the SGP41's conditioning
+uint16_t airCo2Ppm = 0;
+float    airTempC = 0.0f;
+float    airHumidity = 0.0f;
+uint16_t airVocRaw = 0;
+uint16_t airNoxRaw = 0;
+int      sgpSeconds = 0;
+bool     sgpPending = false;       // a command is out, its answer not yet read
+bool     sgpPendingConditioning = false;
+unsigned long sgpSentMs = 0;
+unsigned long lastAirMs = 0;
 
 // ---- SK6812 RGBW strip emitter (GPIO 4, 16 px) ----------------------------
 #define STRIP_PIN            4
@@ -179,6 +204,8 @@ void  setupIMU();
 float readMotion();
 void  setupBME();
 void  readWeather(float& tempC, float& pressureHpa);
+void  setupAir();
+void  serviceAir(unsigned long now);
 void  setupStrip();
 void  stripProof();
 void  stripBootIdle();
@@ -510,6 +537,163 @@ void readWeather(float& tempC, float& pressureHpa)
   pressureHpa = bme.readPressure() / 100.0f;
   lastTempC = tempC;
   lastPressureHpa = pressureHpa;
+}
+
+// ---- Air senses ------------------------------------------------------------
+// The Sensirion parts speak a 16-bit command and a CRC after every data word.
+uint8_t sensirionCrc(uint8_t hi, uint8_t lo)
+{
+  uint8_t crc = 0xFF;
+  uint8_t bytes[2] = {hi, lo};
+  for (int i = 0; i < 2; i++)
+  {
+    crc ^= bytes[i];
+    for (int b = 0; b < 8; b++)
+    {
+      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+    }
+  }
+  return crc;
+}
+
+bool sensirionCommand(uint8_t addr, uint16_t cmd, const uint16_t* args = NULL, int count = 0)
+{
+  Wire.beginTransmission(addr);
+  Wire.write((uint8_t)(cmd >> 8));
+  Wire.write((uint8_t)(cmd & 0xFF));
+  for (int i = 0; i < count; i++)
+  {
+    uint8_t hi = args[i] >> 8;
+    uint8_t lo = args[i] & 0xFF;
+    Wire.write(hi);
+    Wire.write(lo);
+    Wire.write(sensirionCrc(hi, lo));
+  }
+  return Wire.endTransmission() == 0;
+}
+
+bool sensirionRead(uint8_t addr, uint16_t* words, int count)
+{
+  int wanted = count * 3;
+  if (Wire.requestFrom((int)addr, wanted) != wanted)
+  {
+    return false;
+  }
+  bool ok = true;
+  for (int i = 0; i < count; i++)
+  {
+    uint8_t hi = Wire.read();
+    uint8_t lo = Wire.read();
+    uint8_t crc = Wire.read();
+    if (crc != sensirionCrc(hi, lo))
+    {
+      ok = false;
+    }
+    words[i] = ((uint16_t)hi << 8) | lo;
+  }
+  return ok;
+}
+
+bool i2cPresent(uint8_t addr)
+{
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission() == 0;
+}
+
+void setupAir()
+{
+  if (i2cPresent(SCD_ADDR))
+  {
+    // It may still be measuring from before a reset, and then ignores the rest.
+    sensirionCommand(SCD_ADDR, 0x3F86);              // stop periodic measurement
+    delay(500);
+    scdReady = sensirionCommand(SCD_ADDR, 0x21B1);   // start periodic measurement
+  }
+  sgpReady = i2cPresent(SGP_ADDR);
+}
+
+// Take the SCD4x's reading if a new one is waiting (one arrives every 5 s).
+void pollScd()
+{
+  uint16_t w[3];
+  if (!sensirionCommand(SCD_ADDR, 0xE4B8))           // data ready?
+  {
+    return;
+  }
+  delay(1);
+  if (!sensirionRead(SCD_ADDR, w, 1) || (w[0] & 0x07FF) == 0)
+  {
+    return;
+  }
+  if (!sensirionCommand(SCD_ADDR, 0xEC05))           // read measurement
+  {
+    return;
+  }
+  delay(1);
+  if (!sensirionRead(SCD_ADDR, w, 3))
+  {
+    return;
+  }
+  airCo2Ppm = w[0];
+  airTempC = -45.0f + 175.0f * w[1] / 65535.0f;
+  airHumidity = 100.0f * w[2] / 65535.0f;
+  haveCo2 = true;
+}
+
+// Called every pass of loop(). Once a second it asks the SCD4x for a new
+// reading and starts an SGP41 measurement; the SGP41's answer is collected on
+// a later pass, so the loop never waits out its 50 ms.
+void serviceAir(unsigned long now)
+{
+  if (sgpPending)
+  {
+    if (now - sgpSentMs < SGP_MEASURE_MS)
+    {
+      return;
+    }
+    sgpPending = false;
+    uint16_t w[2] = {0, 0};
+    if (sensirionRead(SGP_ADDR, w, sgpPendingConditioning ? 1 : 2))
+    {
+      airVocRaw = w[0];
+      haveVoc = true;
+      if (!sgpPendingConditioning)
+      {
+        airNoxRaw = w[1];
+        haveNox = true;
+      }
+    }
+    return;
+  }
+
+  if (now - lastAirMs < AIR_INTERVAL_MS)
+  {
+    return;
+  }
+  lastAirMs = now;
+
+  if (scdReady)
+  {
+    pollScd();
+  }
+  if (sgpReady)
+  {
+    // The SGP41 corrects for humidity and temperature. It gets the SCD4x's
+    // when there are any, the datasheet defaults (50 %, 25 C) when not.
+    uint16_t args[2] = {0x8000, 0x6666};
+    if (haveCo2)
+    {
+      args[0] = (uint16_t)(constrain(airHumidity, 0.0f, 100.0f) * 65535.0f / 100.0f);
+      args[1] = (uint16_t)((constrain(airTempC, -45.0f, 130.0f) + 45.0f) * 65535.0f / 175.0f);
+    }
+    sgpPendingConditioning = sgpSeconds < SGP_CONDITIONING_S;
+    if (sensirionCommand(SGP_ADDR, sgpPendingConditioning ? 0x2612 : 0x2619, args, 2))
+    {
+      sgpPending = true;
+      sgpSentMs = now;
+      sgpSeconds++;
+    }
+  }
 }
 
 // ---- SK6812 RGBW strip emitter --------------------------------------------
@@ -912,7 +1096,7 @@ void setup()
 
   setupWifi();
 
-#if (ENABLE_LIGHT || ENABLE_MOTION || ENABLE_WEATHER)
+#if (ENABLE_LIGHT || ENABLE_MOTION || ENABLE_WEATHER || ENABLE_AIR)
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   scanI2C();
 #endif
@@ -924,6 +1108,9 @@ void setup()
 #endif
 #if ENABLE_WEATHER
   setupBME();
+#endif
+#if ENABLE_AIR
+  setupAir();
 #endif
 
 #if ENABLE_MIC
@@ -958,6 +1145,12 @@ void setup()
   startLine += ",\"bme_ready\":";
   startLine += bmeReady ? "true" : "false";
 #endif
+#if ENABLE_AIR
+  startLine += ",\"scd_ready\":";
+  startLine += scdReady ? "true" : "false";
+  startLine += ",\"sgp_ready\":";
+  startLine += sgpReady ? "true" : "false";
+#endif
 #if ENABLE_STRIP
   startLine += ",\"strip\":true";
 #endif
@@ -978,6 +1171,9 @@ void loop()
   serviceWifi();
   readSerialCommands();
   readWifiCommands();
+#if ENABLE_AIR
+  serviceAir(now);
+#endif
 
   if (now - lastSampleMs < SAMPLE_INTERVAL_MS)
   {
@@ -1024,6 +1220,28 @@ void loop()
   sampleLine += String(tempC, 2);
   sampleLine += ",\"pressure_hpa\":";
   sampleLine += String(pressureHpa, 1);
+#endif
+#if ENABLE_AIR
+  // Each appears only once its sensor has given a real reading.
+  if (haveCo2)
+  {
+    sampleLine += ",\"co2_ppm\":";
+    sampleLine += airCo2Ppm;
+    sampleLine += ",\"air_temp_c\":";
+    sampleLine += String(airTempC, 2);
+    sampleLine += ",\"humidity_pct\":";
+    sampleLine += String(airHumidity, 1);
+  }
+  if (haveVoc)
+  {
+    sampleLine += ",\"voc_raw\":";
+    sampleLine += airVocRaw;
+  }
+  if (haveNox)
+  {
+    sampleLine += ",\"nox_raw\":";
+    sampleLine += airNoxRaw;
+  }
 #endif
   sampleLine += "}";
   writeLineToTransports(sampleLine);

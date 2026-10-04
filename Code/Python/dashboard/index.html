@@ -2106,7 +2106,8 @@
 
     // Raw sensor readings from the sensor API (live mode only; the public
     // static export deliberately does not publish them).
-    const SENSOR_DECIMALS = { light: 1, sound: 3, motion: 3, temperature: 1, pressure: 1 };
+    const SENSOR_DECIMALS = { light: 1, sound: 3, motion: 3, temperature: 1, pressure: 1,
+                              co2: 0, humidity: 1, air_temperature: 1, voc: 0, nox: 0 };
     async function pullSensors() {
       if (STATIC_MODE) return;
       try {
