@@ -84,7 +84,16 @@ Senses:
   (I2C, address 0x59), wired on 4 October 2026 on the same bus. The body streams
   them raw (`co2_ppm`, `air_temp_c`, `humidity_pct`, `voc_raw`, `nox_raw`) and the
   collector passes them to the dashboard's sensor panel and `/api/sensors`. The
-  field does not read them, and they are not logged to the database.
+  field does not read them.
+  The SGP41's counts are resistances, not concentrations (the VOC count falls
+  with more gas, the NOx count rises), so the collector also works out
+  Sensirion's gas index from them once a second: VOC 100 is this room's normal,
+  NOx 1 is normal. The maths is `mind/gas_index.py`, a plain-Python port of
+  Sensirion's C, checked against it by `tools/gas_index_check.py`. Its learned
+  baseline is saved beside the field state (`..._air_v06.json`) and taken back
+  at start if it is under 12 hours old. A row of air readings goes into the
+  `air_log` table every 20 ticks, which feeds the last-hour lines on the sensor
+  panel through `/api/air_history`.
 
 Emitters:
 

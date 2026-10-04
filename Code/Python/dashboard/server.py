@@ -19,6 +19,7 @@ import os
 import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -52,6 +53,10 @@ SENSORS = {
     "air_temperature": {"key": "air_temp_c", "unit": "C", "label": "Temperature (CO2 sensor)"},
     "voc": {"key": "voc_raw", "unit": "raw", "label": "VOC"},
     "nox": {"key": "nox_raw", "unit": "raw", "label": "NOx"},
+    # Sensirion's gas index, worked out by the collector from the raw counts.
+    # VOC: 100 is this room's normal. NOx: 1 is normal.
+    "voc_index": {"key": "voc_index", "unit": "index", "label": "VOC index"},
+    "nox_index": {"key": "nox_index", "unit": "index", "label": "NOx index"},
 }
 
 
@@ -171,6 +176,48 @@ def read_field_history(seconds):
         return [dict(row) for row in rows]
     except sqlite3.Error:
         return []
+
+
+# The air history is a row every 20 seconds, so its answer keeps for a while.
+AIR_HISTORY_CACHE_SECONDS = 15
+AIR_HISTORY_MAX_MINUTES = 24 * 60
+AIR_HISTORY_COLUMNS = ("co2_ppm", "air_temp_c", "humidity_pct", "voc_raw", "nox_raw",
+                       "voc_index", "nox_index")
+_air_history_cache = {}
+
+
+def read_air_history(minutes):
+    """Recent air readings for the sensor panel's history lines, oldest first."""
+    minutes = max(1, min(AIR_HISTORY_MAX_MINUTES, int(minutes)))
+    cached = _air_history_cache.get(minutes)
+    if cached and time.time() - cached[0] < AIR_HISTORY_CACHE_SECONDS:
+        return cached[1]
+    rows = []
+    try:
+        conn = open_db_readonly()
+        # Newest rows by id, a few more than the window can hold; the time
+        # test then trims them. This never scans the table.
+        found = conn.execute(
+            f"""
+            SELECT logged_at, {", ".join(AIR_HISTORY_COLUMNS)}
+            FROM air_log ORDER BY id DESC LIMIT ?
+            """,
+            (minutes * 3 + 10,),
+        ).fetchall()
+        conn.close()
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        for row in reversed(found):
+            try:
+                if datetime.fromisoformat(row["logged_at"]) < cutoff:
+                    continue
+            except ValueError:
+                continue
+            rows.append(dict(row))
+    except sqlite3.Error:
+        rows = []
+    doc = {"minutes": minutes, "rows": rows}
+    _air_history_cache[minutes] = (time.time(), doc)
+    return doc
 
 
 def read_events(limit=80):
@@ -363,6 +410,15 @@ class Handler(BaseHTTPRequestHandler):
         # Sensor layer for other apps/services.
         if path == "/api/sensors":
             self._send_json(read_sensors())
+            return
+
+        if path == "/api/air_history":
+            query = parse_qs(parsed.query)
+            try:
+                minutes = int(query.get("minutes", ["60"])[0])
+            except ValueError:
+                minutes = 60
+            self._send_json(read_air_history(minutes))
             return
 
         if path.startswith("/api/sensors/"):

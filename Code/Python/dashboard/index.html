@@ -193,6 +193,12 @@
     .sensor .s-value { font-size: 20px; font-variant-numeric: tabular-nums; }
     .sensor .s-unit { color: var(--muted); font-size: 11px; margin-left: 4px; }
     .sensor.off .s-value { color: var(--muted); }
+    .sensor .s-word { color: var(--muted); font-size: 11px; margin-left: 6px; }
+    .sensor .s-word.raised { color: var(--light); }
+    .sensor .s-word.high { color: var(--fatigue); }
+    .sensor .s-sub { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .sensor .s-spark { display: block; width: 100%; height: 24px; margin-top: 6px; }
+    .sensor .s-spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
     .sensor-foot { margin-top: 8px; color: var(--muted); font-size: 11px; }
     .sensor-foot code { color: var(--accent); }
 
@@ -2107,20 +2113,80 @@
     // Raw sensor readings from the sensor API (live mode only; the public
     // static export deliberately does not publish them).
     const SENSOR_DECIMALS = { light: 1, sound: 3, motion: 3, temperature: 1, pressure: 1,
-                              co2: 0, humidity: 1, air_temperature: 1, voc: 0, nox: 0 };
+                              co2: 0, humidity: 1, air_temperature: 1, voc: 0, nox: 0,
+                              voc_index: 0, nox_index: 0 };
+    // The air tiles carry a line of their last hour. `key` is the column in
+    // /api/air_history; `span` is the smallest range the line is drawn over,
+    // so sensor noise on a steady reading stays a flat line.
+    const AIR_HISTORY_MINUTES = 60;
+    const SENSOR_HISTORY = {
+      co2: { key: "co2_ppm", span: 100 },
+      humidity: { key: "humidity_pct", span: 4 },
+      air_temperature: { key: "air_temp_c", span: 2 },
+      voc_index: { key: "voc_index", span: 100 },
+      nox_index: { key: "nox_index", span: 10 },
+    };
+    // The gas index against the room's own normal (VOC 100, NOx 1). The raw
+    // count is shown small under the index instead of in a tile of its own.
+    const GAS_INDEX = {
+      voc_index: { raw: "voc", raised: 150, high: 250 },
+      nox_index: { raw: "nox", raised: 20, high: 150 },
+    };
+    let airHistory = [];
+    async function pullAirHistory() {
+      if (STATIC_MODE) return;
+      try {
+        const doc = await (await fetch("/api/air_history?minutes=" + AIR_HISTORY_MINUTES + "&ts=" + Date.now())).json();
+        airHistory = doc.rows || [];
+      } catch (err) { /* keep the last history */ }
+    }
+    function sensorSpark(name) {
+      const h = SENSOR_HISTORY[name];
+      if (!h) return "";
+      const end = Date.now(), start = end - AIR_HISTORY_MINUTES * 60000;
+      const pts = airHistory
+        .map(r => [new Date(r.logged_at).getTime(), r[h.key]])
+        .filter(p => p[1] !== null && p[1] !== undefined && p[0] >= start);
+      if (pts.length < 2) {
+        return '<div class="s-sub" style="margin-top:6px">last hour: collecting…</div>';
+      }
+      let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+      const d = SENSOR_DECIMALS[name] ?? 1;
+      const caption = "last hour · " + lo.toFixed(d) + " to " + hi.toFixed(d);
+      if (hi - lo < h.span) { const mid = (hi + lo) / 2; lo = mid - h.span / 2; hi = mid + h.span / 2; }
+      const line = pts.map(p =>
+        ((p[0] - start) / (end - start) * 100).toFixed(2) + "," +
+        (22 - (p[1] - lo) / (hi - lo) * 20).toFixed(2)).join(" ");
+      return '<svg class="s-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true">' +
+        '<polyline points="' + line + '"/></svg><div class="s-sub">' + caption + '</div>';
+    }
     async function pullSensors() {
       if (STATIC_MODE) return;
       try {
         const doc = await (await fetch("/api/sensors?ts=" + Date.now())).json();
         document.getElementById("sensorPanel").hidden = false;
+        const rawInIndexTile = Object.values(GAS_INDEX).map(g => g.raw);
         document.getElementById("sensors").innerHTML = Object.entries(doc.sensors).map(([name, s]) => {
+          if (rawInIndexTile.includes(name)) return "";
+          const gas = GAS_INDEX[name];
+          const raw = gas ? doc.sensors[gas.raw] : null;
+          if (gas && !(raw && raw.available)) return "";   // no SGP41 on this body
           const shown = s.available ? Number(s.value).toFixed(SENSOR_DECIMALS[name] ?? 2) : "--";
+          let extra = "";
+          if (gas) {
+            const word = !s.available ? "warming up"
+              : s.value >= gas.high ? "high" : s.value >= gas.raised ? "raised" : "normal";
+            extra = '<span class="s-word ' + word + '">' + word + '</span>';
+          } else if (name === "temperature" && s.available) {
+            extra = ' <span class="s-unit">· ' + (s.value * 9 / 5 + 32).toFixed(1) + ' F</span>';
+          }
           return '<div class="sensor' + (s.available ? "" : " off") + '">' +
             '<div class="s-label">' + s.label + '</div>' +
-            '<div class="s-value">' + shown + '<span class="s-unit">' + s.unit + '</span>' +
-            (name === "temperature" && s.available
-              ? ' <span class="s-unit">· ' + (s.value * 9 / 5 + 32).toFixed(1) + ' F</span>' : '') +
-            '</div></div>';
+            '<div class="s-value">' + shown +
+            (gas ? '' : '<span class="s-unit">' + s.unit + '</span>') + extra + '</div>' +
+            (gas ? '<div class="s-sub">raw ' + Number(raw.value).toFixed(0) + '</div>' : '') +
+            sensorSpark(name) +
+            '</div>';
         }).join("");
         document.getElementById("sensorFoot").innerHTML =
           (doc.stale ? "stale · " : "live · ") + "API: <code>/api/sensors</code>";
@@ -2155,7 +2221,8 @@
     });
 
     applyTheme();
-    pullField(); pullHealth(); pullSensors(); pullSpeaker(); pullLearning();
+    pullField(); pullHealth(); pullAirHistory().then(pullSensors); pullSpeaker(); pullLearning();
+    setInterval(pullAirHistory, 20000);
     setInterval(pullLearning, 120000);
     setInterval(pullSpeaker, 10000);
     setInterval(pullSensors, POLL_MS);

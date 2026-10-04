@@ -34,6 +34,17 @@ import random
 import socket
 import time
 
+def fake_air(seconds):
+    """Made-up air readings: a slow CO2 swell, and every 90 s a 20 s VOC event
+    (the raw count falls when there is more of it), so the gas index and the
+    dashboard's history lines have something to show."""
+    swell = math.sin(2.0 * math.pi * seconds / 240.0)
+    event = 2500.0 if seconds % 90.0 >= 70.0 else 0.0
+    return {"co2_ppm": int(735 + 60 * swell), "air_temp_c": round(21.5 + 0.3 * swell, 2),
+            "humidity_pct": round(64.0 - 1.5 * swell, 1),
+            "voc_raw": int(29400 - event), "nox_raw": 17000}
+
+
 # How loud the speaker is across its range, relative to its usual echo.
 VOICE_RESPONSE = [(220.0, 0.15), (250.0, 0.20), (290.0, 0.25), (325.0, 1.00),
                   (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00)]
@@ -154,8 +165,7 @@ def main():
                               "sound_rms": round(rms, 1),
                               "motion": round(0.42 + 0.01 * rng.random(), 4),
                               "temp_c": 22.5, "pressure_hpa": 1029.9,
-                              "co2_ppm": 735, "air_temp_c": 21.5, "humidity_pct": 64.0,
-                              "voc_raw": 29400, "nox_raw": 17000}
+                              **fake_air(now - start)}
                     conn.sendall((json.dumps(sample) + "\n").encode())
                 time.sleep(0.005)
         except (BrokenPipeError, ConnectionResetError):

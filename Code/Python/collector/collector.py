@@ -58,6 +58,7 @@ from mind.forward_model_v06 import ForwardModel, frame_rgbw
 from mind.curiosity_v06 import Curiosity
 from mind.twin_v06 import Twin
 from mind.normalize import RollingNormalizer
+from mind.gas_index import GasIndex
 
 # --- Serial ---
 BAUD = 115200
@@ -171,6 +172,10 @@ ENABLE_PROBE_VOICE = os.environ.get("CREATURE_PROBE_VOICE", "1") == "1"
 # file restarts it as a newborn.
 ENABLE_TWIN = os.environ.get("CREATURE_TWIN", "1") == "1"
 TWIN_LOG_EVERY_TICKS = 60
+# Air readings for the dashboard: how often a row is kept for the history
+# lines, and how old a saved gas-index baseline may be and still be taken back.
+AIR_LOG_EVERY_TICKS = 20
+AIR_STATE_MAX_AGE_SECONDS = 12 * 3600
 
 # --- Two-speed links ---
 # Off by default, and read by the field itself (mind/cell_field_v06.py), which
@@ -210,6 +215,12 @@ if FIELD_STATE_PATH.endswith("_v06.json"):
     TWIN_STATE_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_twin_v06.json"
 else:
     TWIN_STATE_PATH = FIELD_STATE_PATH + ".twin"
+
+# The gas index's learned baseline (what is normal air for this room).
+if FIELD_STATE_PATH.endswith("_v06.json"):
+    AIR_STATE_PATH = FIELD_STATE_PATH[: -len("_v06.json")] + "_air_v06.json"
+else:
+    AIR_STATE_PATH = FIELD_STATE_PATH + ".air"
 
 
 def clamp(value, low, high):
@@ -285,6 +296,32 @@ def write_json_atomic(path, payload):
         os.replace(tmp_path, path)
     except OSError:
         pass
+
+
+def load_air_state(path, voc_index, nox_index):
+    """Take back the gas index's learned baseline. True when it was restored."""
+    try:
+        with open(path) as state_file:
+            saved = json.load(state_file)
+        age = datetime.now() - datetime.fromisoformat(saved["saved_at"])
+        if not timedelta(0) <= age <= timedelta(seconds=AIR_STATE_MAX_AGE_SECONDS):
+            return False
+        voc, nox = GasIndex("voc"), GasIndex("nox")
+        if not (voc.restore(saved["voc"]) and nox.restore(saved["nox"])):
+            return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    voc_index.restore(saved["voc"])
+    nox_index.restore(saved["nox"])
+    return True
+
+
+def save_air_state(path, voc_index, nox_index):
+    write_json_atomic(path, {
+        "saved_at": datetime.now().isoformat(),
+        "voc": voc_index.snapshot(),
+        "nox": nox_index.snapshot(),
+    })
 
 
 def setup_database(db_path):
@@ -424,6 +461,20 @@ def setup_database(db_path):
         logged_at TEXT NOT NULL,
         twin_age INTEGER,
         gap_a REAL, gap_b REAL, gap_t REAL, gap_link REAL
+    )
+    """)
+
+    # The air readings, a row every AIR_LOG_EVERY_TICKS, for the dashboard's
+    # history lines. Raw counts and the gas index beside them. Not read by the
+    # field.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS air_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        logged_at TEXT NOT NULL,
+        co2_ppm REAL, air_temp_c REAL, humidity_pct REAL,
+        voc_raw REAL, nox_raw REAL,
+        voc_index INTEGER, nox_index INTEGER
     )
     """)
 
@@ -925,6 +976,15 @@ def log_twin(cur, logged_at, tick, row):
           row["gap_link"]))
 
 
+def log_air(cur, logged_at, tick, raw, voc_index, nox_index):
+    cur.execute("""
+    INSERT INTO air_log (tick, logged_at, co2_ppm, air_temp_c, humidity_pct,
+                         voc_raw, nox_raw, voc_index, nox_index)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (tick, logged_at, raw["co2_ppm"], raw["air_temp_c"], raw["humidity_pct"],
+          raw["voc_raw"], raw["nox_raw"], voc_index, nox_index))
+
+
 def apply_retention_policy(cur):
     """Optional conservative retention for temporary observation tables."""
     if not RETENTION_ENABLED:
@@ -996,6 +1056,17 @@ def main():
         else:
             print("No saved twin. A newborn twin starts now.")
 
+    # The gas index, for the dashboard only. It learns the room's normal air
+    # over hours, so the baseline is saved and taken back like the rest.
+    voc_gas_index = GasIndex("voc")
+    nox_gas_index = GasIndex("nox")
+    if load_air_state(AIR_STATE_PATH, voc_gas_index, nox_gas_index):
+        print("Loaded the gas index baseline.")
+    else:
+        print("No recent gas index baseline. Starting a fresh one.")
+    latest_voc_index = None
+    latest_nox_index = None
+
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
     sound_norm = RollingNormalizer(SOUND_WINDOW_SECONDS, SOUND_EMA_ALPHA, SOUND_MIN_RANGE)
     motion_norm = RollingNormalizer(MOTION_WINDOW_SECONDS, MOTION_EMA_ALPHA, MOTION_MIN_RANGE)
@@ -1040,6 +1111,7 @@ def main():
         atexit.register(lambda: forward.save(FORWARD_MODEL_PATH))
     if twin is not None:
         atexit.register(lambda: twin is not None and twin.save(TWIN_STATE_PATH))
+    atexit.register(lambda: save_air_state(AIR_STATE_PATH, voc_gas_index, nox_gas_index))
 
     print(f"Collector running ({FIELD_VERSION} metabolism + structural memory).")
     print(f"ESP transport: {esp.description}")
@@ -1289,6 +1361,15 @@ def main():
                   f"E={metabolism.get('energy_reserve', 0):.1f} M={metabolism.get('memory_pressure', 0):.2f} states={count_text}")
 
         # Live snapshot for the dashboard.
+        # The gas index wants one sample a second, and only real ones: it is
+        # not fed while the body is silent. It reads 0 through its first 45
+        # samples, shown as nothing rather than as a number.
+        air_fresh = last_sample_at is not None and now - last_sample_at <= 2.0 * TICK_SECONDS
+        if air_fresh and latest_raw["voc_raw"] is not None:
+            latest_voc_index = voc_gas_index.process(latest_raw["voc_raw"]) or None
+        if air_fresh and latest_raw["nox_raw"] is not None:
+            latest_nox_index = nox_gas_index.process(latest_raw["nox_raw"]) or None
+
         snapshot = {
             "field_version": state.get("field_version", FIELD_VERSION),
             "updated_at": logged_at,
@@ -1301,6 +1382,8 @@ def main():
             "weather_norm": round(weather_value, 4),
             "sensors": {
                 **{k: (round(v, 3) if v is not None else None) for k, v in latest_raw.items()},
+                "voc_index": latest_voc_index,
+                "nox_index": latest_nox_index,
                 "sample_age_s": round(now - last_sample_at, 2) if last_sample_at is not None else None,
             },
             "weather_raw": {"temp_c": round(weather_temp_c, 2), "pressure_hpa": round(weather_pressure_hpa, 1)},
@@ -1351,6 +1434,9 @@ def main():
             log_weights(cur, logged_at, state, tick)
         if twin is not None and tick % TWIN_LOG_EVERY_TICKS == 0:
             log_twin(cur, logged_at, tick, twin.log_row())
+        if air_fresh and tick % AIR_LOG_EVERY_TICKS == 0 and (
+                latest_raw["co2_ppm"] is not None or latest_raw["voc_raw"] is not None):
+            log_air(cur, logged_at, tick, latest_raw, latest_voc_index, latest_nox_index)
         if tick % RETENTION_EVERY_TICKS == 0:
             apply_retention_policy(cur)
         if tick % COMMIT_EVERY_TICKS == 0 or state.get("sleep_summary"):
@@ -1367,6 +1453,7 @@ def main():
                     twin.save(TWIN_STATE_PATH)
                 except OSError as error:
                     print("Could not save the twin:", error)
+            save_air_state(AIR_STATE_PATH, voc_gas_index, nox_gas_index)
 
         if expr_memory is not None and tick % EXPR_MEMORY_SAVE_EVERY_TICKS == 0:
             expr_memory.save(EXPR_MEMORY_PATH)
@@ -1387,6 +1474,7 @@ def main():
         forward.save(FORWARD_MODEL_PATH)
     if twin is not None:
         twin.save(TWIN_STATE_PATH)
+    save_air_state(AIR_STATE_PATH, voc_gas_index, nox_gas_index)
     conn.commit()
     conn.close()
 
