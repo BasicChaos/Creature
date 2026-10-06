@@ -49,8 +49,11 @@ gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
 
 ## The battery gauge, step 1 (6 October)
 
-Written on 6 October. Nothing in this section is on the Pi or the body yet: it
-needs a commit, a push, a flash and a collector restart.
+Deployed on 6 October 2026 as commit `0f5b5ec`. The Pi was fast-forwarded, the
+body flashed at 21:10, and the collector restarted at 21:11 with the same five
+settings as before (state loaded from tick 1142866, about two minutes down). The
+dashboard service was restarted for the `server.py` change. State from before
+the restart is next to the database as `*.pre-battery.json`.
 
 - **A MAX17048 fuel gauge on the body's I2C bus** (address 0x36), in line between
   the LiPo and the PowerBoost. The firmware reads three registers once a second
@@ -73,7 +76,10 @@ needs a commit, a push, a flash and a collector restart.
 
 What was checked:
 
-- The firmware compiles on the Mac. It has not run on the body.
+- On the body: the I2C scan finds six devices and the gauge answers. Its first
+  readings were 4.187 V, 92.8 % and +16.6 %/hr with the charger in. The body
+  joined WiFi after the flash without a reset, at -90 dBm. `/api/sensors` and
+  `/api/power_history` on the Pi return the readings.
 - The Creature is unchanged. `tools/scripted_body.py`, the committed collector
   against the changed one, seeds 1, 2, 3 and 7, 1800 seconds: every command,
   every table and every saved file identical, apart from the new empty
@@ -86,7 +92,8 @@ income, which needs a gate (a scripted drain and recharge, seeds 1, 2, 3 and 7).
 Step 3 is a low-battery reflex on the body. Open from this step: `power_log` has
 no retention (4,320 rows a day, like `air_log`); the `chg` threshold of 0.5 %/hr
 and the tile's 20 % low mark are first guesses; the gauge's charge rate is known
-to settle slowly, so how fast it shows a plug-in is not measured.
+to settle slowly, so how fast it shows a plug-in is not measured. The e-paper's
+`Batt` line has not been looked at on the panel.
 
 ## Build v07.0: air senses and e-paper (4 October)
 
