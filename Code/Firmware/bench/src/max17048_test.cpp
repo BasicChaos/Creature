@@ -2,10 +2,10 @@
 // This is the "power level" sense: cell voltage and state-of-charge over I2C, so
 // the Creature knows its own energy instead of guessing from raw voltage.
 //
-// IMPORTANT: the MAX17048 is powered FROM the cell it measures. Its VIN must go to
-// the raw battery (tap the PowerBoost BAT pad), NOT to 3V3. With no battery on VIN
-// the chip has no power and will not appear on I2C at all, so run this only after
-// the LiPo is wired.
+// IMPORTANT: the MAX17048 is powered FROM the cell it measures, through the
+// breakout's JST port. With no battery plugged in the chip has no power and will
+// not appear on I2C at all, so run this only after the LiPo is wired. The VIN pin
+// goes to 3V3, never to the cell: it only sets the I2C pull-up voltage.
 //
 // Pass: begin() succeeds; cell voltage reads a plausible LiPo value (3.0-4.2V) and
 // percent 0-100, both stable. Pull the charge cable and the rate should go negative
@@ -31,7 +31,7 @@ void setup() {
   Serial.println("[max17048] bench test  (addr 0x36)");
   ready = maxlipo.begin(&Wire);
   if (!ready) {
-    Serial.println("  not found. Is the LiPo on VIN? The gauge is powered by the cell.");
+    Serial.println("  not found. Is the LiPo plugged in? The gauge is powered by the cell.");
   } else {
     Serial.println("  found. reading cell voltage and charge...");
   }
@@ -39,7 +39,7 @@ void setup() {
 
 void loop() {
   if (!ready) {
-    ready = maxlipo.begin(&Wire);   // keep retrying until the battery is on VIN
+    ready = maxlipo.begin(&Wire);   // keep retrying until the battery is plugged in
     delay(1000);
     return;
   }

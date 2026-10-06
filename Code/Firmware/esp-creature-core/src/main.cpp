@@ -17,7 +17,8 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Creature body node firmware (v07.0: the v06 body plus air sensors and e-paper)
+// Creature body node firmware (v07.0: the v06 body plus air sensors, e-paper
+// and a battery fuel gauge)
 // Board: ESP32-S3-DevKitC-1 style, N16R8 module
 //
 // Bring-up switches: enable one sensor at a time while the wiring is settled.
@@ -51,6 +52,8 @@
 #define ENABLE_WEATHER  1   // BME280 (I2C 0x76), stream "temp_c" and "pressure_hpa"
 #define ENABLE_AIR      1   // SCD4x (I2C 0x62) and SGP41 (I2C 0x59), stream "co2_ppm",
                             // "air_temp_c", "humidity_pct", "voc_raw" and "nox_raw"
+#define ENABLE_BATTERY  1   // MAX17048 fuel gauge (I2C 0x36), stream "battery_v",
+                            // "battery_pct" and "battery_rate"
 #define ENABLE_PAPER    1   // Waveshare 2.13inch e-Paper HAT V4 (SPI), EPD: command
 #define ENABLE_STRIP    1   // SK6812 RGBW strip (GPIO 4, 16 px), PIX: command
 #define ENABLE_VOICE    1   // MAX98357A amp (I2S1 15/16/17), VOX: command
@@ -129,6 +132,22 @@ bool     sgpPending = false;       // a command is out, its answer not yet read
 bool     sgpPendingConditioning = false;
 unsigned long sgpSentMs = 0;
 unsigned long lastAirMs = 0;
+
+// ---- Battery: MAX17048 fuel gauge (I2C 0x36) -------------------------------
+// The gauge sits in line between the LiPo and the PowerBoost and is powered by
+// the cell, so it drops off the bus when the cell is out. Raw readings only.
+#define GAUGE_ADDR          0x36
+#define GAUGE_REG_VCELL     0x02   // cell voltage, 78.125 uV per count
+#define GAUGE_REG_SOC       0x04   // state of charge, 1/256 % per count
+#define GAUGE_REG_CRATE     0x16   // charge rate, signed, 0.208 %/hr per count
+#define GAUGE_INTERVAL_MS   1000
+#define GAUGE_RETRY_MS      10000  // how often to look for a gauge that is missing
+bool  gaugeReady = false;
+bool  haveBattery = false;         // false until a full reading has come back
+float batteryVolts = 0.0f;
+float batteryPct = 0.0f;
+float batteryRate = 0.0f;          // %/hr: positive charging, negative discharging
+unsigned long lastGaugeMs = 0;
 
 // ---- e-paper: Waveshare 2.13inch e-Paper HAT V4 (SPI, 250 x 122) -----------
 // It shows whatever text the collector sends: two columns of five short lines.
@@ -742,6 +761,61 @@ void serviceAir(unsigned long now)
   }
 }
 
+// ---- Battery ---------------------------------------------------------------
+bool gaugeRead16(uint8_t reg, uint16_t& value)
+{
+  Wire.beginTransmission(GAUGE_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0)
+  {
+    return false;
+  }
+  if (Wire.requestFrom((int)GAUGE_ADDR, 2) != 2)
+  {
+    return false;
+  }
+  uint8_t hi = Wire.read();
+  uint8_t lo = Wire.read();
+  value = ((uint16_t)hi << 8) | lo;
+  return true;
+}
+
+void setupGauge()
+{
+  gaugeReady = i2cPresent(GAUGE_ADDR);
+}
+
+// Called every pass of loop(). Once a second it reads the cell's voltage,
+// charge and charge rate. A failed read drops the battery from the sample
+// lines until the gauge answers again.
+void serviceGauge(unsigned long now)
+{
+  if (now - lastGaugeMs < (gaugeReady ? GAUGE_INTERVAL_MS : GAUGE_RETRY_MS))
+  {
+    return;
+  }
+  lastGaugeMs = now;
+
+  if (!gaugeReady)
+  {
+    gaugeReady = i2cPresent(GAUGE_ADDR);
+    return;
+  }
+
+  uint16_t vcell = 0, soc = 0, crate = 0;
+  if (!gaugeRead16(GAUGE_REG_VCELL, vcell) || !gaugeRead16(GAUGE_REG_SOC, soc) ||
+      !gaugeRead16(GAUGE_REG_CRATE, crate))
+  {
+    gaugeReady = false;
+    haveBattery = false;
+    return;
+  }
+  batteryVolts = vcell * 78.125e-6f;
+  batteryPct = soc / 256.0f;
+  batteryRate = (int16_t)crate * 0.208f;
+  haveBattery = true;
+}
+
 // ---- e-paper ---------------------------------------------------------------
 // Take new text from an EPD: command. Lines are split on ';', the two columns
 // on '|'. Nothing is drawn here; the panel's task picks it up.
@@ -1271,7 +1345,7 @@ void setup()
 
   setupWifi();
 
-#if (ENABLE_LIGHT || ENABLE_MOTION || ENABLE_WEATHER || ENABLE_AIR)
+#if (ENABLE_LIGHT || ENABLE_MOTION || ENABLE_WEATHER || ENABLE_AIR || ENABLE_BATTERY)
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   scanI2C();
 #endif
@@ -1286,6 +1360,9 @@ void setup()
 #endif
 #if ENABLE_AIR
   setupAir();
+#endif
+#if ENABLE_BATTERY
+  setupGauge();
 #endif
 #if ENABLE_PAPER
   setupPaper();
@@ -1329,6 +1406,10 @@ void setup()
   startLine += ",\"sgp_ready\":";
   startLine += sgpReady ? "true" : "false";
 #endif
+#if ENABLE_BATTERY
+  startLine += ",\"gauge_ready\":";
+  startLine += gaugeReady ? "true" : "false";
+#endif
 #if ENABLE_PAPER
   startLine += ",\"paper\":true";
 #endif
@@ -1354,6 +1435,9 @@ void loop()
   readWifiCommands();
 #if ENABLE_AIR
   serviceAir(now);
+#endif
+#if ENABLE_BATTERY
+  serviceGauge(now);
 #endif
 #if ENABLE_PAPER
   reportPaper();
@@ -1425,6 +1509,17 @@ void loop()
   {
     sampleLine += ",\"nox_raw\":";
     sampleLine += airNoxRaw;
+  }
+#endif
+#if ENABLE_BATTERY
+  if (haveBattery)
+  {
+    sampleLine += ",\"battery_v\":";
+    sampleLine += String(batteryVolts, 3);
+    sampleLine += ",\"battery_pct\":";
+    sampleLine += String(batteryPct, 1);
+    sampleLine += ",\"battery_rate\":";
+    sampleLine += String(batteryRate, 1);
   }
 #endif
   sampleLine += "}";

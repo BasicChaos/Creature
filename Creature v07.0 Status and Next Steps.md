@@ -47,6 +47,47 @@ gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
 - The speaker is unmuted.
 - Check `git status` for anything not committed.
 
+## The battery gauge, step 1 (6 October)
+
+Written on 6 October. Nothing in this section is on the Pi or the body yet: it
+needs a commit, a push, a flash and a collector restart.
+
+- **A MAX17048 fuel gauge on the body's I2C bus** (address 0x36), in line between
+  the LiPo and the PowerBoost. The firmware reads three registers once a second
+  and adds `battery_v`, `battery_pct` and `battery_rate` (percent per hour,
+  negative while discharging) to its sample lines. No library: raw I2C, like the
+  IMU. If the gauge stops answering, the keys drop out and the body looks for it
+  again every 10 seconds. The start line carries `gauge_ready`.
+- **The collector passes it through.** The three readings go into the snapshot's
+  `sensors` block and a new `power_log` table, one row every 20 ticks. When the
+  body stops sending them the collector shows nothing rather than the last
+  charge.
+- **The e-paper** shows `Batt 84%` (with `chg` while charging) on the line that
+  held `Emit`, when the body has a gauge. Without one the line is `Emit` as
+  before.
+- **The dashboard's sensor panel** has a battery tile: charge, a word (charging,
+  discharging, steady), cell voltage, charge rate and a line of the last six
+  hours from `/api/power_history`.
+- `tools/fake_body.py` sends a made-up cell that drains for ten minutes and
+  charges for two.
+
+What was checked:
+
+- The firmware compiles on the Mac. It has not run on the body.
+- The Creature is unchanged. `tools/scripted_body.py`, the committed collector
+  against the changed one, seeds 1, 2, 3 and 7, 1800 seconds: every command,
+  every table and every saved file identical, apart from the new empty
+  `power_log` table and the new snapshot keys. With a battery added to the
+  scripted samples, the only further differences were the `EPD:` lines and the
+  `power_log` rows.
+
+This is step 1 of three. Step 2 is the battery setting the field's energy
+income, which needs a gate (a scripted drain and recharge, seeds 1, 2, 3 and 7).
+Step 3 is a low-battery reflex on the body. Open from this step: `power_log` has
+no retention (4,320 rows a day, like `air_log`); the `chg` threshold of 0.5 %/hr
+and the tile's 20 % low mark are first guesses; the gauge's charge rate is known
+to settle slowly, so how fast it shows a plug-in is not measured.
+
 ## Build v07.0: air senses and e-paper (4 October)
 
 What was added, in the order it was built:

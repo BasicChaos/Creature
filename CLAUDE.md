@@ -1,6 +1,6 @@
 # Creature — project context
 
-Creature is Josh Gnizak's experiment in building a small artificial organism, not an AI assistant. An ESP32-S3 body senses a room (light, sound, motion, weather) and renders light and sound. Since build v07.0 (4 October 2026) it also carries two air sensors (CO2, VOC and NOx) and an e-paper readout, which the field does not use yet. A Raspberry Pi mind runs a twelve-cell field, a forward model of its own outputs, and the collector loop that ties them together. A public dashboard mirrors it at basicchaos.com/creature/.
+Creature is Josh Gnizak's experiment in building a small artificial organism, not an AI assistant. An ESP32-S3 body senses a room (light, sound, motion, weather) and renders light and sound. Since build v07.0 (4 October 2026) it also carries two air sensors (CO2, VOC and NOx) and an e-paper readout, which the field does not use yet. A MAX17048 fuel gauge reports the battery (code written 6 October 2026, also outside the field for now). A Raspberry Pi mind runs a twelve-cell field, a forward model of its own outputs, and the collector loop that ties them together. A public dashboard mirrors it at basicchaos.com/creature/.
 
 This file is background for a new chat. Read these two first:
 

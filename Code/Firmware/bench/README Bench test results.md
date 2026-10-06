@@ -29,12 +29,13 @@ Run in this order. Do not start the next part until the current one passes.
 | 3    | `imu`      | ICM-20689 motion      | WHO_AM_I = 0x98; motion scalar rises on tap, settles still |
 | 4    | `sk6812`   | SK6812 RGBW strip     | every pixel shows R, G, B, W; no dead/wrong pixels |
 | 5    | `speaker`  | MAX98357A + speaker   | clean 440 Hz tone, volume steps up, silent at rest |
-| 6    | `fuelgauge`| MAX17048 power level  | needs LiPo on VIN; cell 3.0-4.2V, percent 0-100, stable |
+| 6    | `fuelgauge`| MAX17048 power level  | needs LiPo on its JST; cell 3.0-4.2V, percent 0-100, stable |
 
 Step 6 is the untethered power sense and runs only after the battery is wired.
-The MAX17048 is powered by the cell, so with no LiPo on its VIN it will not appear
-on I2C at all. Wire its VIN to the PowerBoost BAT pad (raw cell), not to 3V3. See
-the PowerBoost add-on in WIRING v06 for the full battery wiring.
+The MAX17048 is powered by the cell through its JST port, so with no LiPo plugged
+in it will not appear on I2C at all. Its VIN pin goes to 3V3, never to the cell: on
+the Adafruit breakout VIN only sets the I2C pull-up voltage. See the PowerBoost
+add-on in WIRING v06 for the full battery wiring.
 
 The mic (INMP441) and light sensor (BH1750) are already proven in the v05
 firmware, so they are not repeated in the per-part list. If you want to re-check

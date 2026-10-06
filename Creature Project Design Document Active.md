@@ -103,6 +103,15 @@ Senses:
   at start if it is under 12 hours old. A row of air readings goes into the
   `air_log` table every 20 ticks, which feeds the last-hour lines on the sensor
   panel through `/api/air_history`.
+- MAX17048 fuel gauge (I2C, address 0x36), wired on 6 October 2026 in line
+  between the LiPo and the PowerBoost. The body reads it once a second and
+  streams `battery_v`, `battery_pct` and `battery_rate` (percent per hour,
+  negative while discharging). The gauge is powered by the cell, so the three
+  keys drop out of the sample lines when the cell is out. The collector passes
+  them to the sensor panel, `/api/sensors` and the e-paper, and writes a row to
+  the `power_log` table every 20 ticks. The field does not read them yet: this
+  is the first of three steps toward the battery setting the field's energy
+  income.
 
 Emitters:
 
@@ -115,7 +124,8 @@ Emitters:
   CS 42, DC 41, RST 40, BUSY 39. A readout, not part of the field's expression.
   Driven by `EPD:` text: two columns of five short lines, which the collector
   composes every 180 ticks (air readings on the left, the Creature's energy,
-  memory pressure, emitter, cell states and live links on the right). The body
+  memory pressure, emitter, cell states and live links on the right; the battery
+  takes the emitter's line when the body has a fuel gauge). The body
   only draws the text, in a task of its own so the sample loop never waits for a
   refresh, and answers with a `paper` line giving the refresh time.
   `CREATURE_PAPER=0` at the collector turns it off.
@@ -135,7 +145,7 @@ deployment target is read from an untracked config file.
 
 ```
 BH1750 (light) + INMP441 (sound) + IMU (motion) + BME280 (weather)
-  [+ SCD41 and SGP41 (air): carried along, not read by the field]
+  [+ SCD41 and SGP41 (air), MAX17048 (battery): carried along, not read by the field]
   -> ESP32-S3 body, ~10 Hz JSON
   -> USB serial or WiFi TCP
   -> collector on the Pi
@@ -761,12 +771,15 @@ Served from the Pi on port 8080, mirrored to the VPS for remote viewing.
   and NOx index. Raw values come from a `sensors` block the collector adds to
   the live snapshot; missing sensors are `null`. See `instructions.md` for the
   contract. Raw history is in the `loop_log` table, and the air readings' in
-  `air_log`.
+  `air_log`. The battery's charge, voltage and charge rate are served the same
+  way, with their history in `power_log` and `/api/power_history`.
 - Sensor panel: under Raw data on the local dashboard, hidden on the public
   mirror. One tile per sensor. The air tiles carry a line of their last hour,
   read from `/api/air_history` (a row every 20 ticks). The two gas index tiles
   show the index, a word against the room's own normal (normal, raised, high;
   "warming up" for the first 45 samples) and the raw count underneath. A change
+  The battery tile shows the charge, a word (charging, discharging, steady),
+  the cell voltage and charge rate, and a line of its last six hours. A change
   to `server.py` needs the dashboard service restarted; the page alone does not.
 - Speaker mute: a button in the local dashboard header (hidden on the public
   mirror) toggles `POST /api/speaker {"muted": bool}`. It creates or removes a
@@ -846,8 +859,9 @@ the Creature evolve without rewriting hardware.
   produce no surprise. Only the loop keeps that side alive.
 - Bias and novelty steering are not wired to the body, so the live Creature records
   its autobiography but is not yet steered by it.
-- Metabolism is simulated while the body runs on USB power. Scarcity becomes real
-  only when the battery and fuel gauge land.
+- Metabolism is still simulated. The fuel gauge is on the body since 6 October
+  2026 and its readings are logged, but the field's energy reserve does not
+  depend on them yet. That step needs its own gate.
 - A steady self-loop is as predictable as a steady room, so the predictive field
   habituates to it unless the probe stays unpredictable.
 - The air sensors and the e-paper (v07.0) sit on the body but outside the

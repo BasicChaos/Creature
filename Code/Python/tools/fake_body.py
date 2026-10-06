@@ -45,6 +45,18 @@ def fake_air(seconds):
             "voc_raw": int(29400 - event), "nox_raw": 17000}
 
 
+def fake_battery(seconds):
+    """A made-up cell: ten minutes down from 90 % to 30 %, then two minutes back
+    up on the charger, so the dashboard's battery tile has something to show."""
+    phase = seconds % 720.0
+    if phase < 600.0:
+        pct, rate = 90.0 - 60.0 * phase / 600.0, -360.0
+    else:
+        pct, rate = 30.0 + 60.0 * (phase - 600.0) / 120.0, 1800.0
+    return {"battery_v": round(3.5 + 0.7 * pct / 100.0, 3), "battery_pct": round(pct, 1),
+            "battery_rate": rate}
+
+
 # How loud the speaker is across its range, relative to its usual echo.
 VOICE_RESPONSE = [(220.0, 0.15), (250.0, 0.20), (290.0, 0.25), (325.0, 1.00),
                   (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00)]
@@ -165,7 +177,7 @@ def main():
                               "sound_rms": round(rms, 1),
                               "motion": round(0.42 + 0.01 * rng.random(), 4),
                               "temp_c": 22.5, "pressure_hpa": 1029.9,
-                              **fake_air(now - start)}
+                              **fake_air(now - start), **fake_battery(now - start)}
                     conn.sendall((json.dumps(sample) + "\n").encode())
                 time.sleep(0.005)
         except (BrokenPipeError, ConnectionResetError):

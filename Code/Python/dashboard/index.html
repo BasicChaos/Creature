@@ -2111,7 +2111,7 @@
     // static export deliberately does not publish them).
     const SENSOR_DECIMALS = { light: 1, sound: 3, motion: 3, temperature: 1, pressure: 1,
                               co2: 0, humidity: 1, air_temperature: 1, voc: 0, nox: 0,
-                              voc_index: 0, nox_index: 0 };
+                              voc_index: 0, nox_index: 0, battery: 1 };
     // The air tiles carry a line of their last hour. `key` is the column in
     // /api/air_history; `span` is the smallest range the line is drawn over,
     // so sensor noise on a steady reading stays a flat line.
@@ -2122,7 +2122,14 @@
       air_temperature: { key: "air_temp_c", span: 2 },
       voc_index: { key: "voc_index", span: 100 },
       nox_index: { key: "nox_index", span: 10 },
+      battery: { key: "battery_pct", span: 10, power: true },
     };
+    // The battery tile draws from /api/power_history over a longer stretch,
+    // and carries the cell voltage and charge rate under the percentage.
+    const POWER_HISTORY_MINUTES = 360;
+    const BATTERY_PARTS = ["battery_voltage", "battery_rate"];
+    const BATTERY_LOW_PCT = 20, BATTERY_RATE_STEADY = 0.5;
+    let powerHistory = [];
     // The gas index against the room's own normal (VOC 100, NOx 1). The raw
     // count is shown small under the index instead of in a tile of its own.
     const GAS_INDEX = {
@@ -2136,20 +2143,26 @@
         const doc = await (await fetch("/api/air_history?minutes=" + AIR_HISTORY_MINUTES + "&ts=" + Date.now())).json();
         airHistory = doc.rows || [];
       } catch (err) { /* keep the last history */ }
+      try {
+        const doc = await (await fetch("/api/power_history?minutes=" + POWER_HISTORY_MINUTES + "&ts=" + Date.now())).json();
+        powerHistory = doc.rows || [];
+      } catch (err) { /* keep the last history */ }
     }
     function sensorSpark(name) {
       const h = SENSOR_HISTORY[name];
       if (!h) return "";
-      const end = Date.now(), start = end - AIR_HISTORY_MINUTES * 60000;
-      const pts = airHistory
+      const minutes = h.power ? POWER_HISTORY_MINUTES : AIR_HISTORY_MINUTES;
+      const stretch = h.power ? "last 6 hours" : "last hour";
+      const end = Date.now(), start = end - minutes * 60000;
+      const pts = (h.power ? powerHistory : airHistory)
         .map(r => [new Date(r.logged_at).getTime(), r[h.key]])
         .filter(p => p[1] !== null && p[1] !== undefined && p[0] >= start);
       if (pts.length < 2) {
-        return '<div class="s-sub" style="margin-top:6px">last hour: collecting…</div>';
+        return '<div class="s-sub" style="margin-top:6px">' + stretch + ': collecting…</div>';
       }
       let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
       const d = SENSOR_DECIMALS[name] ?? 1;
-      const caption = "last hour · " + lo.toFixed(d) + " to " + hi.toFixed(d);
+      const caption = stretch + " · " + lo.toFixed(d) + " to " + hi.toFixed(d);
       if (hi - lo < h.span) { const mid = (hi + lo) / 2; lo = mid - h.span / 2; hi = mid + h.span / 2; }
       const line = pts.map(p =>
         ((p[0] - start) / (end - start) * 100).toFixed(2) + "," +
@@ -2164,13 +2177,22 @@
         document.getElementById("sensorPanel").hidden = false;
         const rawInIndexTile = Object.values(GAS_INDEX).map(g => g.raw);
         document.getElementById("sensors").innerHTML = Object.entries(doc.sensors).map(([name, s]) => {
-          if (rawInIndexTile.includes(name)) return "";
+          if (rawInIndexTile.includes(name) || BATTERY_PARTS.includes(name)) return "";
           const gas = GAS_INDEX[name];
           const raw = gas ? doc.sensors[gas.raw] : null;
           if (gas && !(raw && raw.available)) return "";   // no SGP41 on this body
           const shown = s.available ? Number(s.value).toFixed(SENSOR_DECIMALS[name] ?? 2) : "--";
-          let extra = "";
-          if (gas) {
+          let extra = "", sub = "";
+          if (name === "battery" && s.available) {
+            const volts = doc.sensors.battery_voltage, rate = doc.sensors.battery_rate;
+            const r = rate && rate.available ? rate.value : 0;
+            const word = r > BATTERY_RATE_STEADY ? "charging" : r < -BATTERY_RATE_STEADY ? "discharging" : "steady";
+            const low = s.value < BATTERY_LOW_PCT && word !== "charging";
+            extra = '<span class="s-word' + (low ? " high" : "") + '">' + word + '</span>';
+            sub = '<div class="s-sub">' +
+              (volts && volts.available ? Number(volts.value).toFixed(2) + " V" : "-- V") +
+              (rate && rate.available ? " · " + (r > 0 ? "+" : "") + r.toFixed(1) + " %/h" : "") + '</div>';
+          } else if (gas) {
             const word = !s.available ? "warming up"
               : s.value >= gas.high ? "high" : s.value >= gas.raised ? "raised" : "normal";
             extra = '<span class="s-word ' + word + '">' + word + '</span>';
@@ -2181,7 +2203,7 @@
             '<div class="s-label">' + s.label + '</div>' +
             '<div class="s-value">' + shown +
             (gas ? '' : '<span class="s-unit">' + s.unit + '</span>') + extra + '</div>' +
-            (gas ? '<div class="s-sub">raw ' + Number(raw.value).toFixed(0) + '</div>' : '') +
+            (gas ? '<div class="s-sub">raw ' + Number(raw.value).toFixed(0) + '</div>' : '') + sub +
             sensorSpark(name) +
             '</div>';
         }).join("");

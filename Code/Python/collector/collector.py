@@ -175,6 +175,11 @@ TWIN_LOG_EVERY_TICKS = 60
 # Air readings for the dashboard: how often a row is kept for the history
 # lines, and how old a saved gas-index baseline may be and still be taken back.
 AIR_LOG_EVERY_TICKS = 20
+POWER_LOG_EVERY_TICKS = 20
+# The body's battery, from its fuel gauge. Passed through to the dashboard and
+# the e-paper only. The field does not read it.
+BATTERY_KEYS = ("battery_v", "battery_pct", "battery_rate")
+BATTERY_CHARGING_RATE = 0.5      # %/hr above which the e-paper says "chg"
 AIR_STATE_MAX_AGE_SECONDS = 12 * 3600
 # The e-paper on the body shows air readings and the Creature's headline
 # numbers. It is redrawn seldom: the panel wears with every refresh.
@@ -345,10 +350,17 @@ def paper_command(raw, voc_index, nox_index, state):
     ]
     metabolism = state.get("metabolism", {})
     counts = state.get("state_counts", {})
+    # The battery takes the emitter's line when the body has a fuel gauge.
+    battery_pct = raw.get("battery_pct")
+    if battery_pct is not None:
+        rate = raw.get("battery_rate") or 0.0
+        third = f"Batt {battery_pct:.0f}%" + (" chg" if rate > BATTERY_CHARGING_RATE else "")
+    else:
+        third = "Emit " + shown(state.get("emitter_activation"), "{:.2f}")
     right = [
         "Energy " + shown(metabolism.get("energy_reserve"), "{:.1f}"),
         "Memory " + shown(metabolism.get("memory_pressure"), "{:.2f}"),
-        "Emit " + shown(state.get("emitter_activation"), "{:.2f}"),
+        third,
         "St {}/{}/{}/{}".format(counts.get("active", 0), counts.get("resting", 0),
                                 counts.get("dormant", 0), counts.get("deep_sleep", 0)),
         "Links " + shown(metabolism.get("live_connections"), "{}/12"),
@@ -507,6 +519,18 @@ def setup_database(db_path):
         co2_ppm REAL, air_temp_c REAL, humidity_pct REAL,
         voc_raw REAL, nox_raw REAL,
         voc_index INTEGER, nox_index INTEGER
+    )
+    """)
+
+    # The battery, a row every POWER_LOG_EVERY_TICKS: cell voltage, state of
+    # charge, and charge rate in %/hr (negative while discharging). Not read by
+    # the field.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS power_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        logged_at TEXT NOT NULL,
+        battery_v REAL, battery_pct REAL, battery_rate REAL
     )
     """)
 
@@ -1017,6 +1041,13 @@ def log_air(cur, logged_at, tick, raw, voc_index, nox_index):
           raw["voc_raw"], raw["nox_raw"], voc_index, nox_index))
 
 
+def log_power(cur, logged_at, tick, raw):
+    cur.execute("""
+    INSERT INTO power_log (tick, logged_at, battery_v, battery_pct, battery_rate)
+    VALUES (?, ?, ?, ?, ?)
+    """, (tick, logged_at, raw["battery_v"], raw["battery_pct"], raw["battery_rate"]))
+
+
 def apply_retention_policy(cur):
     """Optional conservative retention for temporary observation tables."""
     if not RETENTION_ENABLED:
@@ -1111,7 +1142,8 @@ def main():
     latest_raw = {"light_lux": None, "sound_rms": None, "motion": None,
                   "temp_c": None, "pressure_hpa": None,
                   "co2_ppm": None, "air_temp_c": None, "humidity_pct": None,
-                  "voc_raw": None, "nox_raw": None}
+                  "voc_raw": None, "nox_raw": None,
+                  **{key: None for key in BATTERY_KEYS}}
     last_sample_at = None
 
     # Stop cleanly on Ctrl-C (SIGINT) and `systemctl stop` (SIGTERM).
@@ -1217,6 +1249,10 @@ def main():
             for raw_key in latest_raw:
                 if raw_key in sample:
                     latest_raw[raw_key] = float(sample[raw_key])
+                elif raw_key in BATTERY_KEYS:
+                    # The gauge is powered by the cell. When it stops
+                    # answering, show nothing rather than the last charge.
+                    latest_raw[raw_key] = None
             last_sample_at = now
             heard_at = now
             if forward is not None:
@@ -1476,6 +1512,8 @@ def main():
         if air_fresh and tick % AIR_LOG_EVERY_TICKS == 0 and (
                 latest_raw["co2_ppm"] is not None or latest_raw["voc_raw"] is not None):
             log_air(cur, logged_at, tick, latest_raw, latest_voc_index, latest_nox_index)
+        if air_fresh and tick % POWER_LOG_EVERY_TICKS == 0 and latest_raw["battery_pct"] is not None:
+            log_power(cur, logged_at, tick, latest_raw)
         if tick % RETENTION_EVERY_TICKS == 0:
             apply_retention_policy(cur)
         if tick % COMMIT_EVERY_TICKS == 0 or state.get("sleep_summary"):

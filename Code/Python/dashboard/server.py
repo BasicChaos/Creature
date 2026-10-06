@@ -57,6 +57,10 @@ SENSORS = {
     # VOC: 100 is this room's normal. NOx: 1 is normal.
     "voc_index": {"key": "voc_index", "unit": "index", "label": "VOC index"},
     "nox_index": {"key": "nox_index", "unit": "index", "label": "NOx index"},
+    # The body's LiPo, from its fuel gauge. Rate is negative while discharging.
+    "battery": {"key": "battery_pct", "unit": "%", "label": "Battery"},
+    "battery_voltage": {"key": "battery_v", "unit": "V", "label": "Battery voltage"},
+    "battery_rate": {"key": "battery_rate", "unit": "%/h", "label": "Battery charge rate"},
 }
 
 
@@ -217,6 +221,44 @@ def read_air_history(minutes):
         rows = []
     doc = {"minutes": minutes, "rows": rows}
     _air_history_cache[minutes] = (time.time(), doc)
+    return doc
+
+
+# The battery history, the same shape as the air history.
+POWER_HISTORY_MAX_MINUTES = 24 * 60
+POWER_HISTORY_COLUMNS = ("battery_v", "battery_pct", "battery_rate")
+_power_history_cache = {}
+
+
+def read_power_history(minutes):
+    """Recent battery readings for the sensor panel's history line, oldest first."""
+    minutes = max(1, min(POWER_HISTORY_MAX_MINUTES, int(minutes)))
+    cached = _power_history_cache.get(minutes)
+    if cached and time.time() - cached[0] < AIR_HISTORY_CACHE_SECONDS:
+        return cached[1]
+    rows = []
+    try:
+        conn = open_db_readonly()
+        found = conn.execute(
+            f"""
+            SELECT logged_at, {", ".join(POWER_HISTORY_COLUMNS)}
+            FROM power_log ORDER BY id DESC LIMIT ?
+            """,
+            (minutes * 3 + 10,),
+        ).fetchall()
+        conn.close()
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        for row in reversed(found):
+            try:
+                if datetime.fromisoformat(row["logged_at"]) < cutoff:
+                    continue
+            except ValueError:
+                continue
+            rows.append(dict(row))
+    except sqlite3.Error:
+        rows = []
+    doc = {"minutes": minutes, "rows": rows}
+    _power_history_cache[minutes] = (time.time(), doc)
     return doc
 
 
@@ -419,6 +461,15 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 minutes = 60
             self._send_json(read_air_history(minutes))
+            return
+
+        if path == "/api/power_history":
+            query = parse_qs(parsed.query)
+            try:
+                minutes = int(query.get("minutes", ["360"])[0])
+            except ValueError:
+                minutes = 360
+            self._send_json(read_power_history(minutes))
             return
 
         if path.startswith("/api/sensors/"):
