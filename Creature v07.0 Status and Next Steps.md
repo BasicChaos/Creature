@@ -192,8 +192,18 @@ Open from this step:
 
 ## The battery, step 3: the low-battery reflex on the body (7 October)
 
-Written on the evening of 7 October. The firmware compiles on the Mac. It is not
-committed, not flashed, and has not run on the body.
+Deployed on 7 October 2026 as commit `3054a49`: the body was flashed at 19:11 and
+the collector restarted at 19:14 with the same six settings (state loaded from
+tick 1219923, about four minutes down).
+
+Tested on the body over serial with the `BAT:` command, charger in:
+
+- `BAT:3.35`: the strip cap came on after 10 seconds (`strip_cap` 12).
+  `BAT:3.55`: it lifted one second later.
+- `BAT:3.25`: the cap after 10 seconds, `battery_sleep` after 30. The body was
+  silent for 68 seconds, looked at the gauge three times (`battery_woke` 3: two
+  on the test voltage, then the real cell, which was charging), booted and
+  joined WiFi by itself at -87 dBm. No reset was needed.
 
 After the run to flat the charger went back in and the body came back at 18:58,
 35 minutes after its last reading. For its first half minute the gauge answered
@@ -216,8 +226,10 @@ What was built, all in `Code/Firmware/esp-creature-core/src/main.cpp`:
 
 Not known:
 
-- Whether the body wakes cleanly from deep sleep and rejoins WiFi without a
-  reset. Josh has not yet said whether it needed a reset at 18:58.
+- The reflex has only run on a test voltage. It has not yet met a really low
+  cell, and the strip cap was seen as a system line, not looked at.
+- At 18:58 the body came back by itself when the charger went in, with no
+  reset (the reset of 4 October was not needed this time).
 - How much the body draws asleep. The PowerBoost, the strip's idle current and
   the sensors stay powered, so a sleeping body still drains the cell, slower.
 - Whether "Battery low" and the voltage fit the e-paper's column.
