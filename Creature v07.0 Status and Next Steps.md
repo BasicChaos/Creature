@@ -218,6 +218,32 @@ cell reads about 0.15 V higher on the charger, so the Creature brightens within
 a couple of minutes of being plugged in and dims the same way when the charger
 is pulled below about 3.75 V.
 
+## The voice: an audition tool (7 October, late evening)
+
+Written late on 7 October. Not committed and not flashed when written.
+
+Josh finds the beeps classic but not expressive. The voice today is one pure
+sine tone, pitch from balance over 220 to 440 Hz, length from tempo, volume
+fixed. The speaker is three to four times weaker below about 325 Hz, so the
+lower half of that range barely sounds.
+
+- Firmware: `VOX:` takes four more optional numbers, `attack_ms,release_ms,h2,h3`.
+  A release over 20 ms dies away on a curve, which is what makes a pluck. With
+  overtones the whole is scaled so its peak stays in the amp's clean range, so
+  the fundamental is quieter. Without the extra numbers the tone is sample for
+  sample the old one. It compiles on the Mac.
+- `tools/voice_audition.py` (new), run from the Mac with the collector stopped:
+  `sweep` (the speaker from 300 to 1905 Hz, a third of an octave apart, with
+  what the body heard of each), `shapes` (beep, pluck, swell, soft, bell),
+  `tones` (pure, then with overtones) and `one` (any single sound). Tried
+  against `fake_body.py` only.
+- Nothing in the mind is changed: the Creature still sends plain beeps.
+
+Open: the body's measure of its own tone listens at the fundamental across the
+whole tone. A pluck or an overtone mix will read quieter there than a beep of
+the same volume, which matters once the mind sends them and the sound model
+learns from the result.
+
 ## The strip's colour: the inner model (7 October, late evening)
 
 Deployed on 7 October 2026 as commit `f2d7fd5`. The collector was restarted at

@@ -313,7 +313,8 @@ void  applyLegacyStripBrightness(uint8_t brightness);
 void  applyPixels(const String& csv);
 void  ampSetup();
 void  ampSilence(int ms, ToneListen* listen = NULL);
-void  playTone(float freq, int ms, float vol);
+void  playTone(float freq, int ms, float vol, int attackMs = 10, int releaseMs = 10,
+                float h2 = 0.0f, float h3 = 0.0f);
 void  setupI2SMic();
 float readSoundRms();
 void  setupWifi();
@@ -378,14 +379,24 @@ void handleCommand(String command, const char* source)
 #if ENABLE_VOICE
   else if (command.startsWith("VOX:"))
   {
-    // VOX:freq,ms[,vol]   freq in Hz, ms duration, vol 0-1
+    // VOX:freq,ms[,vol[,attack_ms,release_ms[,h2,h3]]]
+    //   freq in Hz, ms duration, vol 0-1. The rest shape the tone and may be
+    //   left off: how long it takes to rise and to die away (10 ms each when
+    //   not given, the plain beep), and how much of the second and third
+    //   overtone is mixed in (0 to 1 each, none when not given).
     String args = command.substring(4);
-    int c1 = args.indexOf(',');
-    int c2 = (c1 >= 0) ? args.indexOf(',', c1 + 1) : -1;
-    float freq = (c1 >= 0 ? args.substring(0, c1) : args).toFloat();
-    int   ms   = (c1 >= 0) ? args.substring(c1 + 1, (c2 >= 0) ? c2 : args.length()).toInt() : 150;
-    float vol  = (c2 >= 0) ? args.substring(c2 + 1).toFloat() : 1.0f;
-    if (freq > 0.0f && ms > 0) playTone(freq, ms, vol);
+    float v[7] = {0.0f, 150.0f, 1.0f, 10.0f, 10.0f, 0.0f, 0.0f};
+    int start = 0;
+    for (int i = 0; i < 7 && start <= (int)args.length(); i++)
+    {
+      int comma = args.indexOf(',', start);
+      String part = (comma >= 0) ? args.substring(start, comma) : args.substring(start);
+      part.trim();
+      if (part.length() > 0) v[i] = part.toFloat();
+      if (comma < 0) break;
+      start = comma + 1;
+    }
+    if (v[0] > 0.0f && v[1] > 0.0f) playTone(v[0], (int)v[1], v[2], (int)v[3], (int)v[4], v[5], v[6]);
   }
 #endif
 }
@@ -1369,7 +1380,12 @@ void ampSilence(int ms, ToneListen* listen)
 // (warm first, ~10 ms fades, drain the tail); do not rediscover it. The old mic
 // uninstall was a wrong guess at the distortion. The real cause was amp VIN on
 // 3V3, fixed by moving VIN to 5V.
-void playTone(float freq, int ms, float vol)
+// One tone. It rises over attackMs and dies away over releaseMs (a straight
+// line up; on the way down a straight line for a short fade and a curve for a
+// long one, which is what makes a pluck sound plucked). h2 and h3 mix in the
+// second and third overtone; the whole is scaled so its peak stays where a
+// plain tone's is, inside the amp's clean range.
+void playTone(float freq, int ms, float vol, int attackMs, int releaseMs, float h2, float h3)
 {
   const int warmMs = 40;
   const int total = (AMP_SAMPLE_RATE * ms) / 1000;
@@ -1411,8 +1427,19 @@ void playTone(float freq, int ms, float vol)
 
   ampSilence(warmMs, listen);            // warm the amp before the tone
   const float dt = 2.0f * (float)M_PI * freq / AMP_SAMPLE_RATE;
-  const int fade = AMP_SAMPLE_RATE / 100; // ~10 ms fade, from the clean bench test
-  const float amp = TONE_AMP * constrain(vol, 0.0f, 1.0f);
+  // Never under 2 ms either way, so there is no click. 10 ms is the fade from
+  // the clean bench test.
+  int attack = (AMP_SAMPLE_RATE * constrain(attackMs, 2, 2000)) / 1000;
+  int release = (AMP_SAMPLE_RATE * constrain(releaseMs, 2, 4000)) / 1000;
+  if (attack + release > total)
+  {
+    attack = (int)((long)total * attack / (attack + release));
+    release = total - attack;
+  }
+  const bool curved = releaseMs > 20;
+  h2 = constrain(h2, 0.0f, 1.0f);
+  h3 = constrain(h3, 0.0f, 1.0f);
+  const float amp = TONE_AMP * constrain(vol, 0.0f, 1.0f) / (1.0f + h2 + h3);
   int16_t buf[256];
   int done = 0;
   while (done < total)
@@ -1422,9 +1449,16 @@ void playTone(float freq, int ms, float vol)
     {
       int idx = done + i;
       float env = 1.0f;
-      if (idx < fade) env = (float)idx / fade;
-      else if (idx > total - fade) env = (float)(total - idx) / fade;
-      buf[i] = (int16_t)(amp * 32767.0f * env * sinf(tonePhase));
+      if (idx < attack) env = (float)idx / attack;
+      else if (idx > total - release)
+      {
+        env = (float)(total - idx) / release;
+        if (curved) env *= env;
+      }
+      float wave = sinf(tonePhase);
+      if (h2 > 0.0f) wave += h2 * sinf(2.0f * tonePhase);
+      if (h3 > 0.0f) wave += h3 * sinf(3.0f * tonePhase);
+      buf[i] = (int16_t)(amp * 32767.0f * env * wave);
       tonePhase += dt;
       if (tonePhase > 2.0f * (float)M_PI) tonePhase -= 2.0f * (float)M_PI;
     }

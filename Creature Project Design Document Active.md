@@ -118,7 +118,12 @@ Emitters:
 - SK6812 RGBW strip, about 16 pixels, on GPIO 4 through a 470 ohm resistor. The
   field's skin and face. Driven by `PIX:` frames.
 - MAX98357A amplifier and a small speaker, I2S1. The field's voice. Driven by
-  optional `VOX:` tones.
+  optional `VOX:` tones: `VOX:freq,ms,vol`, and from the firmware of 7 October
+  2026 four more numbers that may be left off, `attack_ms,release_ms,h2,h3`: how
+  long the tone takes to rise and to die away, and how much of the second and
+  third overtone is mixed in. Left off, it is the plain beep as before. The
+  mind does not send them yet; `tools/voice_audition.py` does, to choose sounds
+  by ear.
 - Onboard NeoPixel on GPIO 38. A status pixel, driven by the legacy `LED:` command.
 - Waveshare 2.13inch e-Paper HAT V4, SPI, on the ESP's free edge: DIN 1, CLK 2,
   CS 42, DC 41, RST 40, BUSY 39. A readout, not part of the field's expression.
