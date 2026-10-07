@@ -191,8 +191,12 @@ Open from this step:
 
 ## The ceiling follows the cell's voltage (7 October, evening)
 
-Written on the evening of 7 October. Not committed and not on the Pi when
-written; the Pi still runs the percentage version.
+Deployed on 7 October 2026 as commit `84264ba`. The collector was restarted at
+19:31 with the same six settings (state loaded from tick 1220908, under a minute
+down). No flash and no dashboard restart. State from before the restart is next
+to the database as `*.pre-voltage.json`. With the cell at 3.58 V on the charger
+the reserve went from 1.3 (the percentage version's floor) to 2.2 against a
+ceiling of 2.4.
 
 - `mind/cell_field_v06.py`: `field.step()` takes `battery_v` in place of the
   charge in percent. The field smooths it over about two minutes
