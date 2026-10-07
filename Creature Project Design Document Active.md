@@ -278,23 +278,37 @@ at zero and learning starved. The twelve-cell values are start 4.0, max 6.0, ref
 ### The battery and the reserve
 
 Built on 7 October 2026, behind `CREATURE_BATTERY_CEILING=1` (off by default).
-The body's battery charge sets how much the shared reserve can hold: at 30 %
-charge its ceiling is 30 % of the maximum, and never less than a quarter. The
-collector passes the last charge the body reported into `field.step(charge=...)`
-each tick, and the same to the twin. With the setting off, or with no reading,
-the ceiling is whole.
+The body's battery sets how much the shared reserve can hold. The collector
+passes the last cell voltage the body reported into `field.step(battery_v=...)`
+each tick, and the same to the twin. The field smooths it over about two
+minutes and reads the ceiling from a three-point curve:
+
+| Cell voltage | Reserve's ceiling | Running time left (7 October) |
+|---|---|---|
+| 3.80 V and above | whole | two thirds or more |
+| 3.60 V | 43 % | about 4 hours |
+| 3.45 V and below | 25 %, the floor | about 1 hour |
+
+Straight lines between the points. With the setting off, or with no reading,
+the ceiling is whole. A gap in the readings keeps the last voltage for ten
+minutes before the ceiling goes back to whole.
 
 Nothing else in the field changes. The cells are still refilled in full, so they
 sense and learn as before. What a lower reserve does is dim the expression,
 through the decoder's energy gate (full above 40 % of the reserve's maximum, so
-dimming begins near 43 % charge and is deepest from 25 % down). Since this build
-the gate also scales the whole strip frame, not only arousal: arousal carries
-little of the strip's light, and without that the strip lost only 13 % of its
-light when arousal halved. At the floor the strip is sent about 40 % of its
-usual light and arousal is about half. The voice's volume is not touched; the
-amp needs its digital level kept in a clean range.
+the reserve falls from 3.80 V but the dimming begins near 3.60 V). Since this
+build the gate also scales the whole strip frame, not only arousal: arousal
+carries little of the strip's light, and without that the strip lost only 13 %
+of its light when arousal halved. At the floor the strip is sent about 40 % of
+its usual light and arousal is about half. The voice's volume is not touched;
+the amp needs its digital level kept in a clean range.
 
-Two designs failed first, and the limits come from them:
+The cell reads about 0.15 V higher on the charger, so plugging it in lifts the
+ceiling within a couple of minutes, and pulling the charger lowers it the same
+way. Below the mind's floor the body has its own reflex: it caps the strip at
+3.40 V and sleeps at 3.30 V (see "Design philosophy").
+
+Three designs failed first, and the limits come from them:
 
 - Scaling the refill rate did nothing until income fell under what the cells
   draw (about a third of normal). Below that everything went at once:
@@ -306,14 +320,18 @@ Two designs failed first, and the limits come from them:
   hours). The floor of a quarter keeps the reserve above that threshold. A
   drained Creature that rests and sleeps more is still wanted, but it needs a
   sleep that does not do this, which is its own piece of work.
+- The ceiling first followed the gauge's percentage and ran on the Pi that way
+  for a day. On the run to flat the percentage reached 5 % half-way through the
+  cell's real running time and 2 % with four hours left, so the Creature sat at
+  the floor for the second half of every charge.
 
-The gate is `python tools/field_lab_v06.py --battery`: a scripted charge (full,
-35 %, 10 %, back to full), control against variant. It passes 7/7 on seeds 1, 2,
-3 and 7. In that gate the field is open loop and stays identical to the control
-tick for tick. In the collector's own loop on the scripted body the dimmer strip
-is sensed, so the field's life differs a little: after 30 minutes the largest
-link gap was 0.025 and there were about 5 % fewer events, with no sleeps and the
-same tones.
+The gate is `python tools/field_lab_v06.py --battery`: a scripted cell (4.00 V,
+3.70, 3.52, 3.35, back to 4.00) with readings 20 mV either way and a minute with
+none, control against variant. It passes 9/9 on seeds 1, 2, 3 and 7. In that
+gate the field is open loop and stays identical to the control tick for tick. In
+the collector's own loop on the scripted body the dimmer strip is sensed, so the
+field's life differs a little: after 30 minutes the largest link gap was 0.010
+and there were up to 6 % fewer events, with no sleeps.
 
 ## Learning and forgetting
 

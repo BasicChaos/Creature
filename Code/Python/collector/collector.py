@@ -46,7 +46,7 @@ from mind.cell_field_v06 import (
     SOFT_CEILING,
     CEILING_KNEE,
     BATTERY_CEILING,
-    BATTERY_CEILING_FLOOR,
+    BATTERY_CEILING_CURVE,
 )
 from mind.expression_v06 import (
     ExpressionDecoderV06,
@@ -1200,8 +1200,9 @@ def main():
     else:
         print("Two-speed links: off")
     if BATTERY_CEILING:
-        print(f"Battery: the charge sets the energy reserve's ceiling, "
-              f"never under {BATTERY_CEILING_FLOOR:.0%}")
+        low, high = BATTERY_CEILING_CURVE[0], BATTERY_CEILING_CURVE[-1]
+        print(f"Battery: the cell's voltage sets the energy reserve's ceiling, "
+              f"whole at {high[0]:.2f} V, {low[1]:.0%} at {low[0]:.2f} V and under")
     else:
         print("Battery: logged only, the field does not read it")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
@@ -1323,9 +1324,9 @@ def main():
                 "weather": weather_value,
             },
             loop=(loop_result or {}).get("feel") if ENABLE_LOOP_FEEL else None,
-            # The last charge the body reported. The field uses it only when
-            # CREATURE_BATTERY_CEILING=1.
-            charge=latest_raw["battery_pct"],
+            # The last cell voltage the body reported. The field uses it only
+            # when CREATURE_BATTERY_CEILING=1.
+            battery_v=latest_raw["battery_v"],
         )
 
         # Curiosity proposes; nothing goes out while the field sleeps.
@@ -1418,7 +1419,7 @@ def main():
                         "weather": weather_value,
                     },
                     state,
-                    charge=latest_raw["battery_pct"],
+                    battery_v=latest_raw["battery_v"],
                 )
                 twin_block = twin.snapshot()
                 twin_block["step_ms"] = round((monotonic() - twin_started) * 1000.0, 2)

@@ -185,10 +185,34 @@ Open from this step:
    rests on the reserve's lowest level (1.30 against a threshold of 0.9).
 6. Step 3, the low-battery reflex on the body, is built but not flashed (see its
    own section).
-7. The reserve's ceiling follows the gauge's percentage, so the Creature is at
-   its dimmest for roughly the second half of the cell's real running time.
-   Following the voltage instead would be a behaviour change with its own gate
-   run.
+7. The reserve's ceiling followed the gauge's percentage, so the Creature was at
+   its dimmest for roughly the second half of the cell's real running time. The
+   voltage version is built (see its own section).
+
+## The ceiling follows the cell's voltage (7 October, evening)
+
+Written on the evening of 7 October. Not committed and not on the Pi when
+written; the Pi still runs the percentage version.
+
+- `mind/cell_field_v06.py`: `field.step()` takes `battery_v` in place of the
+  charge in percent. The field smooths it over about two minutes
+  (`BATTERY_SMOOTH_TICKS`) and reads the ceiling from `BATTERY_CEILING_CURVE`:
+  whole at 3.80 V and above, 43 % at 3.60 V, the floor of 25 % at 3.45 V and
+  below. A gap in the readings keeps the last voltage for ten minutes.
+- The collector and the twin pass the voltage. The start line now reads
+  `Battery: the cell's voltage sets the energy reserve's ceiling, ...`.
+- The gate is rewritten in volts, with a noisy gauge and a minute of no
+  readings. It passes 9/9 on seeds 1, 2, 3 and 7 and under the Pi's two-speed
+  settings. `--voice`, `--twin` and `--events` pass as before.
+- The collector on the scripted body, seeds 1, 2, 3 and 7: with the setting
+  off, identical to the committed code. With it on and the cell falling from
+  4.05 V to 3.35 V, the strip is sent 40 % of the control's light at the end;
+  largest link gap 0.010, up to 6 % fewer events, no sleeps.
+
+The curve's three points are read from one discharge under the body's load. The
+cell reads about 0.15 V higher on the charger, so the Creature brightens within
+a couple of minutes of being plugged in and dims the same way when the charger
+is pulled below about 3.75 V.
 
 ## The battery, step 3: the low-battery reflex on the body (7 October)
 

@@ -256,25 +256,44 @@ SOFT_CEILING = os.environ.get("CREATURE_SOFT_CEILING", "0") == "1"
 CEILING_KNEE = float(os.environ.get("CREATURE_CEILING_KNEE", "0.0"))
 
 # --- the battery (7 October 2026) ------------------------------------------
-# The shared reserve can hold as much as the body's battery does: at 30 %
-# charge its ceiling is 30 % of GLOBAL_ENERGY_MAX. Nothing else in the field
-# changes. The cells are still refilled in full, so they sense and learn as
-# before; what a lower reserve does is dim the expression, through the energy
-# gate expression_v06 already has (full above 40 % of the reserve's maximum).
+# The body's battery sets how much the shared reserve can hold. Nothing else in
+# the field changes. The cells are still refilled in full, so they sense and
+# learn as before; what a lower reserve does is dim the expression, through the
+# energy gate in expression_v06 (full above 40 % of the reserve's maximum).
 #
-# The ceiling never goes below BATTERY_CEILING_FLOOR. Under about 18 % the
-# reserve sits at LOW_RESERVE_SLEEP_THRESHOLD and the field goes to sleep every
+# The ceiling follows the cell's voltage, smoothed over about two minutes,
+# through BATTERY_CEILING_CURVE: (volts, share of GLOBAL_ENERGY_MAX), straight
+# lines between the points and flat beyond them. The curve comes from the run
+# to flat of 7 October 2026, read under the body's own load:
+#   3.80 V and above  the reserve is whole (about two thirds of the running
+#                     time left, or more)
+#   3.60 V            0.43, where the gate starts to dim (about 4 hours left)
+#   3.45 V and below  0.25, the floor (about 1 hour left; the body's own
+#                     reflex caps the strip at 3.40 V and sleeps at 3.30 V)
+# The cell reads about 0.15 V higher on the charger, so plugging it in lifts
+# the ceiling within a couple of minutes.
+#
+# It first followed the gauge's percentage. That number reached 5 % half-way
+# through the cell's real running time and 2 % with four hours left, so the
+# Creature sat at the floor for the second half of every charge.
+#
+# The floor is there because under a share of about 0.18 the reserve sits at
+# LOW_RESERVE_SLEEP_THRESHOLD, the field goes to sleep every
 # SLEEP_COOLDOWN_TICKS, and that much replay rewrites its links (mean weight
-# 0.46 to 1.0 in two hours, found on 7 October 2026).
+# 0.46 to 1.0 in two hours).
 #
-# The first design scaled the refill rate instead. It did nothing until income
-# fell under what the cells draw (about a third of normal), then everything at
-# once: expression fully dark, a sleep every four minutes, the links wiped.
+# The very first design scaled the refill rate instead. It did nothing until
+# income fell under what the cells draw (about a third of normal), then
+# everything at once: expression fully dark, a sleep every four minutes, the
+# links wiped.
 #
 # Off unless CREATURE_BATTERY_CEILING=1. Off, or with no reading, the ceiling
 # is whole and the field is as it was.
 BATTERY_CEILING = os.environ.get("CREATURE_BATTERY_CEILING", "0") == "1"
-BATTERY_CEILING_FLOOR = 0.25
+BATTERY_CEILING_CURVE = ((3.45, 0.25), (3.60, 0.43), (3.80, 1.0))
+BATTERY_SMOOTH_TICKS = 120      # the voltage is averaged over about this long
+BATTERY_VALID_VOLTS = (2.0, 4.6)  # outside this the gauge gave no reading
+BATTERY_HOLD_TICKS = 600        # with no reading, the last voltage stands this long
 
 # --- sleep and replay ------------------------------------------------------
 LOW_STIMULATION_TICKS = 160
@@ -386,12 +405,18 @@ def spectral_radius(matrix, iters=400):
     return math.exp(log_growth / counted) if counted else 0.0
 
 
-def ceiling_share_for_charge(charge_pct):
-    """The share of GLOBAL_ENERGY_MAX the reserve may hold at this battery
-    charge (0-100). 1.0 when the battery is not in play or gave no reading."""
-    if not BATTERY_CEILING or charge_pct is None:
+def ceiling_share_for_volts(volts):
+    """The share of GLOBAL_ENERGY_MAX the reserve may hold at this (smoothed)
+    cell voltage. 1.0 when the battery is not in play or gave no reading."""
+    if not BATTERY_CEILING or volts is None:
         return 1.0
-    return clamp(float(charge_pct) / 100.0, BATTERY_CEILING_FLOOR, 1.0)
+    curve = BATTERY_CEILING_CURVE
+    if volts <= curve[0][0]:
+        return curve[0][1]
+    for (v0, s0), (v1, s1) in zip(curve, curve[1:]):
+        if volts <= v1:
+            return s0 + (s1 - s0) * (volts - v0) / (v1 - v0)
+    return curve[-1][1]
 
 
 def ring_distance(i, j):
@@ -489,7 +514,9 @@ class CellField:
         self.last_sense = {s: 0.0 for s in SENSES}
 
         self.energy_reserve = GLOBAL_ENERGY_INIT
-        self.energy_ceiling_share = 1.0     # set each tick from the battery's charge
+        self.energy_ceiling_share = 1.0     # set each tick from the battery's voltage
+        self.battery_volts = None           # the smoothed cell voltage, None before a reading
+        self.battery_silent_ticks = 0       # ticks since the last reading
         self.memory_pressure = 0.0
         self.sleep_mode = "awake"
         self.sleep_ticks_remaining = 0
@@ -1059,11 +1086,11 @@ class CellField:
                 reverse=True,
             )[:keep]
 
-    def step(self, senses=None, loop=None, charge=None, **kw):
+    def step(self, senses=None, loop=None, battery_v=None, **kw):
         """
         Advance the field one tick on normalized sensor values (0-1).
 
-        `charge` is the body's battery charge in percent, or None. It sets how
+        `battery_v` is the body's cell voltage, or None. Smoothed, it sets how
         much the energy reserve can hold this tick (see BATTERY_CEILING).
 
         `senses` is a dict with keys sound, light, motion, weather. Missing
@@ -1092,7 +1119,19 @@ class CellField:
             "links_reinforced": 0,
             "events_reviewed": 0,
         }
-        self.energy_ceiling_share = ceiling_share_for_charge(charge)
+        if battery_v is not None and BATTERY_VALID_VOLTS[0] <= battery_v <= BATTERY_VALID_VOLTS[1]:
+            self.battery_silent_ticks = 0
+            if self.battery_volts is None:
+                self.battery_volts = float(battery_v)
+            else:
+                self.battery_volts += (battery_v - self.battery_volts) / BATTERY_SMOOTH_TICKS
+        else:
+            # A gap in the readings keeps the last voltage for a while, so one
+            # missed reading does not flash the strip to full.
+            self.battery_silent_ticks += 1
+            if self.battery_silent_ticks > BATTERY_HOLD_TICKS:
+                self.battery_volts = None
+        self.energy_ceiling_share = ceiling_share_for_volts(self.battery_volts)
         self._replenish_energy()
 
         cells = self.cells

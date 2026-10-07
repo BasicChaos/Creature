@@ -55,14 +55,14 @@ class Twin:
     def save(self, path):
         save_field(self.field, path)
 
-    def step(self, senses, real_state, charge=None):
+    def step(self, senses, real_state, battery_v=None):
         """One tick: the same senses as the real field, and the same battery
-        charge, then the gaps against `real_state`, the state the real field
+        voltage, then the gaps against `real_state`, the state the real field
         returned for this tick."""
         outer = random.getstate()
         random.setstate(self._stream)
         try:
-            state = self.field.step(dict(senses), charge=charge)
+            state = self.field.step(dict(senses), battery_v=battery_v)
         finally:
             self._stream = random.getstate()
             random.setstate(outer)
