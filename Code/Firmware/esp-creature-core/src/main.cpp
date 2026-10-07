@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <driver/i2s.h>
+#include <esp_sleep.h>
 #include <math.h>
 #include <SPI.h>
 #include <GxEPD2_BW.h>
@@ -39,6 +40,14 @@
 // A temporary "status" line prints every 2 seconds for bring-up debugging.
 // Accepts "LED:<0-255>\n" for the onboard NeoPixel over USB or TCP, mirrored
 // to the SK6812 strip as a v06 fallback. The full strip output is PIX:.
+//
+// Low battery (a reflex of the body, it protects the cell): when the cell stays
+// at or under BATTERY_WARN_V the strip's brightness is capped, and at or under
+// BATTERY_SLEEP_V the body goes dark, writes a last line to the e-paper and
+// deep-sleeps. It wakes every BATTERY_SLEEP_S to read the gauge and stays
+// asleep until the cell is charging or back above BATTERY_RESUME_V.
+// "BAT:<volts>" is a bench test: for two minutes the reflex acts on that
+// voltage instead of the cell's. The streamed battery_v stays the real one.
 //
 // WiFi is disabled unless CREATURE_WIFI_SSID is defined and non-empty. Keep real
 // credentials out of git by creating include/creature_wifi_secrets.h with:
@@ -142,8 +151,37 @@ unsigned long lastAirMs = 0;
 #define GAUGE_REG_CRATE     0x16   // charge rate, signed, 0.208 %/hr per count
 #define GAUGE_INTERVAL_MS   1000
 #define GAUGE_RETRY_MS      10000  // how often to look for a gauge that is missing
+// The low-battery reflex acts on cell voltage, not on the gauge's percentage,
+// which reached 2 % with four hours of running left (run to flat, 7 October
+// 2026). On that run the cell slid slowly down to 3.42 V and then fell off:
+// about 55 minutes were left at 3.4 V, 20 at 3.3 V, and nothing stopped it
+// until the cell's own protection at about 2.4 V.
+#define BATTERY_WARN_V        3.40f  // at or under this, cap the strip
+#define BATTERY_WARN_CLEAR_V  3.50f  // back above this, lift the cap
+#define BATTERY_SLEEP_V       3.30f  // at or under this, go dark and deep-sleep
+#define BATTERY_RESUME_V      3.60f  // asleep: wake for good at or above this
+#define BATTERY_CHARGING_RATE 2.0f   // %/hr: above this the cell is on the charger
+#define BATTERY_WARN_AFTER_S  10     // seconds the voltage must stay low
+#define BATTERY_SLEEP_AFTER_S 30
+#define BATTERY_SLEEP_S       300    // deep-sleep time between looks at the gauge
+#define BATTERY_VALID_MIN_V   2.0f   // the gauge reads 0 V for its first half minute
+#define BATTERY_VALID_MAX_V   4.6f
+#define BATTERY_TEST_MS       120000 // how long a BAT: test voltage stands
+#define BATTERY_TEST_SLEEP_S  20     // a test sleeps in short steps
+#define STRIP_LOW_BATTERY_BRIGHTNESS 12
 bool  gaugeReady = false;
 bool  haveBattery = false;         // false until a full reading has come back
+bool  batteryLow = false;          // the strip cap is on
+int   batteryWarnSeconds = 0;
+int   batterySleepSeconds = 0;
+float batteryTestVolts = 0.0f;     // a BAT: test voltage, 0 when there is none
+uint32_t batteryWokeLooks = 0;     // looks at the gauge in the sleep this boot ended
+unsigned long batteryTestMs = 0;
+// Kept through deep sleep.
+RTC_DATA_ATTR bool     batteryAsleep = false;
+RTC_DATA_ATTR uint32_t batterySleeps = 0;       // looks at the gauge this sleep
+RTC_DATA_ATTR float    batteryRtcTestVolts = 0.0f;
+RTC_DATA_ATTR int      batteryRtcTestWakes = 0; // wakes the test voltage still stands for
 float batteryVolts = 0.0f;
 float batteryPct = 0.0f;
 float batteryRate = 0.0f;          // %/hr: positive charging, negative discharging
@@ -174,6 +212,8 @@ GxEPD2_BW<EPD_DRIVER, EPD_DRIVER::HEIGHT>
 SemaphoreHandle_t paperLock = NULL;
 char paperText[2][PAPER_LINES][PAPER_LINE_CHARS];   // [column][line], guarded by paperLock
 volatile bool paperWanted = false;                  // new text is waiting to be drawn
+volatile bool paperUrgent = false;                  // draw it now, in full (the last text before sleep)
+volatile bool paperUrgentDone = false;
 volatile bool paperReportPending = false;           // a redraw finished; tell the collector
 volatile bool paperReportFull = false;
 volatile unsigned long paperReportMs = 0;
@@ -182,6 +222,7 @@ volatile unsigned long paperReportMs = 0;
 #define STRIP_PIN            4
 #define STRIP_COUNT          16
 #define STRIP_MAX_BRIGHTNESS 40   // current cap on USB/PowerBoost; never all-white
+uint8_t stripCap = STRIP_MAX_BRIGHTNESS;   // lowered while the battery is low
 Adafruit_NeoPixel strip(STRIP_COUNT, STRIP_PIN, NEO_GRBW + NEO_KHZ800);
 
 // ---- MAX98357A amp emitter (I2S1, GPIO 15/16/17) --------------------------
@@ -263,6 +304,8 @@ void  setupPaper();
 void  setPaperText(const String& text);
 void  reportPaper();
 void  serviceAir(unsigned long now);
+void  batteryReflex();
+void  batteryWakeCheck();
 void  setupStrip();
 void  stripProof();
 void  stripBootIdle();
@@ -318,6 +361,18 @@ void handleCommand(String command, const char* source)
   else if (command.startsWith("EPD:"))
   {
     setPaperText(command.substring(4));
+  }
+#endif
+#if ENABLE_BATTERY
+  else if (command.startsWith("BAT:"))
+  {
+    // Bench test of the low-battery reflex: act on this voltage for two minutes.
+    batteryTestVolts = command.substring(4).toFloat();
+    batteryTestMs = millis();
+    String response = "{\"system\":\"battery_test\",\"volts\":";
+    response += String(batteryTestVolts, 2);
+    response += "}";
+    writeSystemLineToTransports(response);
   }
 #endif
 #if ENABLE_VOICE
@@ -810,10 +865,163 @@ void serviceGauge(unsigned long now)
     haveBattery = false;
     return;
   }
-  batteryVolts = vcell * 78.125e-6f;
+  float volts = vcell * 78.125e-6f;
+  if (volts < BATTERY_VALID_MIN_V || volts > BATTERY_VALID_MAX_V)
+  {
+    // Not a reading. The gauge answers with zeros for about half a minute
+    // after the cell comes back.
+    haveBattery = false;
+    return;
+  }
+  batteryVolts = volts;
   batteryPct = soc / 256.0f;
   batteryRate = (int16_t)crate * 0.208f;
   haveBattery = true;
+  batteryReflex();
+}
+
+// Read the gauge once, outside the normal loop. False when it gives no reading.
+bool gaugeReadOnce(float& volts, float& rate)
+{
+  uint16_t vcell = 0, crate = 0;
+  if (!gaugeRead16(GAUGE_REG_VCELL, vcell) || !gaugeRead16(GAUGE_REG_CRATE, crate))
+  {
+    return false;
+  }
+  volts = vcell * 78.125e-6f;
+  rate = (int16_t)crate * 0.208f;
+  return volts >= BATTERY_VALID_MIN_V && volts <= BATTERY_VALID_MAX_V;
+}
+
+// Go dark and deep-sleep until the next look at the gauge. Does not return.
+void batterySleep(float volts, bool test)
+{
+  String line = "{\"system\":\"battery_sleep\",\"battery_v\":";
+  line += String(volts, 3);
+  line += ",\"wake_s\":";
+  line += test ? BATTERY_TEST_SLEEP_S : BATTERY_SLEEP_S;
+  line += test ? ",\"test\":true}" : "}";
+  writeSystemLineToTransports(line);
+
+#if ENABLE_STRIP
+  strip.clear();
+  strip.show();
+#endif
+  pixel.clear();
+  pixel.show();
+#if ENABLE_PAPER
+  // The panel keeps its image with no power, so this stays readable.
+  String text = "Battery low;";
+  text += String(volts, 2);
+  text += " V;Asleep|Plug in the;charger";
+  setPaperText(text);
+  paperUrgentDone = false;
+  paperUrgent = true;
+  for (int i = 0; i < 150 && !paperUrgentDone; i++)
+  {
+    delay(100);
+  }
+#endif
+#if ENABLE_AIR
+  if (scdReady)
+  {
+    sensirionCommand(SCD_ADDR, 0x3F86);   // stop measuring: it draws less
+  }
+#endif
+  delay(200);                              // let the last line leave
+
+  batteryAsleep = true;
+  batterySleeps = 0;
+  batteryRtcTestVolts = test ? volts : 0.0f;
+  batteryRtcTestWakes = test ? 2 : 0;
+  esp_sleep_enable_timer_wakeup((uint64_t)(test ? BATTERY_TEST_SLEEP_S : BATTERY_SLEEP_S) * 1000000ULL);
+  esp_deep_sleep_start();
+}
+
+// Called once a second, after each good reading of the gauge.
+void batteryReflex()
+{
+  bool test = batteryTestVolts > 0.0f && millis() - batteryTestMs < BATTERY_TEST_MS;
+  if (!test)
+  {
+    batteryTestVolts = 0.0f;
+  }
+  float volts = test ? batteryTestVolts : batteryVolts;
+  bool charging = !test && batteryRate > BATTERY_CHARGING_RATE;
+
+  batteryWarnSeconds = (volts <= BATTERY_WARN_V && !charging) ? batteryWarnSeconds + 1 : 0;
+  batterySleepSeconds = (volts <= BATTERY_SLEEP_V && !charging) ? batterySleepSeconds + 1 : 0;
+
+  if (!batteryLow && batteryWarnSeconds >= BATTERY_WARN_AFTER_S)
+  {
+    batteryLow = true;
+    stripCap = STRIP_LOW_BATTERY_BRIGHTNESS;
+#if ENABLE_STRIP
+    strip.setBrightness(stripCap);
+    strip.show();
+#endif
+    String line = "{\"system\":\"battery_low\",\"battery_v\":";
+    line += String(volts, 3);
+    line += ",\"strip_cap\":";
+    line += stripCap;
+    line += "}";
+    writeSystemLineToTransports(line);
+  }
+  else if (batteryLow && (volts >= BATTERY_WARN_CLEAR_V || charging))
+  {
+    batteryLow = false;
+    stripCap = STRIP_MAX_BRIGHTNESS;
+    String line = "{\"system\":\"battery_ok\",\"battery_v\":";
+    line += String(volts, 3);
+    line += "}";
+    writeSystemLineToTransports(line);
+  }
+
+  if (batterySleepSeconds >= BATTERY_SLEEP_AFTER_S)
+  {
+    batterySleep(volts, test);
+  }
+}
+
+// First thing at boot. After a timer wake from a battery sleep, look at the
+// gauge and go straight back to sleep unless the cell is charging or has
+// recovered. No reading means boot normally.
+void batteryWakeCheck()
+{
+  if (!batteryAsleep || esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER)
+  {
+    batteryAsleep = false;       // a reset or a power cycle: boot normally
+    batteryRtcTestWakes = 0;
+    return;
+  }
+  batterySleeps++;
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  float volts = 0.0f, rate = 0.0f;
+  bool read = false;
+  for (int i = 0; i < 5 && !read; i++)
+  {
+    read = gaugeReadOnce(volts, rate);
+    if (!read)
+    {
+      delay(100);
+    }
+  }
+  bool test = batteryRtcTestWakes > 0;
+  if (test)
+  {
+    batteryRtcTestWakes--;
+    volts = batteryRtcTestVolts;
+    rate = 0.0f;
+    read = true;
+  }
+  if (read && volts < BATTERY_RESUME_V && rate <= BATTERY_CHARGING_RATE)
+  {
+    esp_sleep_enable_timer_wakeup((uint64_t)(test ? BATTERY_TEST_SLEEP_S : BATTERY_SLEEP_S) * 1000000ULL);
+    esp_deep_sleep_start();
+  }
+  // Awake for good. The start line reports how many looks it took.
+  batteryWokeLooks = batterySleeps;
+  batteryAsleep = false;
 }
 
 // ---- e-paper ---------------------------------------------------------------
@@ -875,7 +1083,8 @@ void paperTask(void* unused)
   for (;;)
   {
     vTaskDelay(pdMS_TO_TICKS(250));
-    if (!paperWanted || (redraws > 0 && millis() - lastDrawMs < PAPER_MIN_GAP_MS))
+    bool urgent = paperUrgent;
+    if (!paperWanted || (!urgent && redraws > 0 && millis() - lastDrawMs < PAPER_MIN_GAP_MS))
     {
       continue;
     }
@@ -884,7 +1093,7 @@ void paperTask(void* unused)
     paperWanted = false;
     xSemaphoreGive(paperLock);
 
-    bool full = (redraws % PAPER_FULL_EVERY) == 0;
+    bool full = urgent || (redraws % PAPER_FULL_EVERY) == 0;
     if (full)
     {
       paper.setFullWindow();
@@ -917,6 +1126,11 @@ void paperTask(void* unused)
     paperReportMs = lastDrawMs - started;
     paperReportFull = full;
     paperReportPending = true;
+    if (urgent)
+    {
+      paperUrgent = false;
+      paperUrgentDone = true;
+    }
   }
 }
 
@@ -990,7 +1204,7 @@ void stripBootIdle()
 // mean "onboard pixel"; for v06 it also gives the SK6812 a visible fallback.
 void applyLegacyStripBrightness(uint8_t brightness)
 {
-  uint8_t capped = min((int)brightness, STRIP_MAX_BRIGHTNESS);
+  uint8_t capped = min((int)brightness, (int)stripCap);
   strip.setBrightness(capped);
   if (brightness == 0)
   {
@@ -1010,7 +1224,7 @@ void applyLegacyStripBrightness(uint8_t brightness)
 // (0-255 each). The decoder builds the frame; the body only renders it.
 void applyPixels(const String& csv)
 {
-  strip.setBrightness(STRIP_MAX_BRIGHTNESS);
+  strip.setBrightness(stripCap);
   String s = csv;
   s.trim();
   s += ",";                          // sentinel so the final value flushes
@@ -1336,6 +1550,9 @@ float readSoundRms()
 void setup()
 {
   Serial.begin(115200);
+#if ENABLE_BATTERY
+  batteryWakeCheck();            // may go straight back to sleep
+#endif
   delay(1000);
 
   pixel.begin();
@@ -1409,6 +1626,9 @@ void setup()
 #if ENABLE_BATTERY
   startLine += ",\"gauge_ready\":";
   startLine += gaugeReady ? "true" : "false";
+  // Looks at the gauge during the battery sleep this boot ended, 0 for none.
+  startLine += ",\"battery_woke\":";
+  startLine += batteryWokeLooks;
 #endif
 #if ENABLE_PAPER
   startLine += ",\"paper\":true";

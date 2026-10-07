@@ -154,6 +154,24 @@ What was checked:
 - The live reserve has not been under 5.78 in the last 72 hours, so the strip
   change does nothing on the Pi until the ceiling is switched on.
 
+The run to flat, 7 October. The charger came out again at 13:13 with the gauge
+at 15.7 % and the cell ran until the body went silent at 18:23, five hours and
+ten minutes later:
+
+- The gauge's percentage is badly skewed at the bottom. It fell to 2 % by 14:30
+  (3.59 V) and then crawled for nearly four hours while the body ran normally.
+  With the morning's run, the gauge reached 5 % about half-way through the
+  cell's real running time.
+- The voltage is the usable signal. It slid slowly from 3.65 V to 3.42 V over
+  four hours, then fell off: 3.35 V at 17:58, 3.2 V at 18:11, 3.0 V at 18:17,
+  and the last reading was 2.386 V at 18:23:30. From 3.4 V there was about
+  55 minutes left, from 3.3 V about 20, from 3.2 V about 12.
+- Nothing stopped the discharge until about 2.4 V, which is the cell's own
+  protection and well below the 3.0 V a LiPo should not go under. Running to
+  flat harms the cell and should not be repeated.
+- The body streamed and held WiFi to the end. The collector went to
+  `Reconnect failed` and kept retrying.
+
 Open from this step:
 
 1. The dimming has not been watched on the body. Whether a dimmer strip
@@ -165,7 +183,46 @@ Open from this step:
    real body. Where the body actually cuts out, in percent, is not yet known.
 5. The gate's day scenario has no sleeps in it, so "no sleep from a low reserve"
    rests on the reserve's lowest level (1.30 against a threshold of 0.9).
-6. Step 3, the low-battery reflex on the body, is not started.
+6. Step 3, the low-battery reflex on the body, is built but not flashed (see its
+   own section).
+7. The reserve's ceiling follows the gauge's percentage, so the Creature is at
+   its dimmest for roughly the second half of the cell's real running time.
+   Following the voltage instead would be a behaviour change with its own gate
+   run.
+
+## The battery, step 3: the low-battery reflex on the body (7 October)
+
+Written on the evening of 7 October. The firmware compiles on the Mac. It is not
+committed, not flashed, and has not run on the body.
+
+After the run to flat the charger went back in and the body came back at 18:58,
+35 minutes after its last reading. For its first half minute the gauge answered
+with 0 V and 0 %, which the body streamed as readings.
+
+What was built, all in `Code/Firmware/esp-creature-core/src/main.cpp`:
+
+- A reading outside 2.0 to 4.6 V is no longer streamed or acted on.
+- At or under 3.40 V for 10 seconds (and not charging): the strip's brightness
+  cap drops from 40 to 12. It lifts above 3.50 V or on the charger. The body
+  sends a `battery_low` and a `battery_ok` system line.
+- At or under 3.30 V for 30 seconds (and not charging): strip and status pixel
+  dark, "Battery low" drawn on the e-paper in full, the CO2 sensor stopped, a
+  `battery_sleep` system line, then deep sleep.
+- Every 5 minutes it wakes, reads the gauge before anything else, and sleeps
+  again unless the charge rate is above 2 %/hr or the cell is at 3.60 V or
+  more. The start line carries `battery_woke`, the number of looks it took.
+- `BAT:<volts>`: a bench test. The reflex acts on that voltage for two minutes;
+  a test sleep is two 20 second steps and then the real cell decides.
+
+Not known:
+
+- Whether the body wakes cleanly from deep sleep and rejoins WiFi without a
+  reset. Josh has not yet said whether it needed a reset at 18:58.
+- How much the body draws asleep. The PowerBoost, the strip's idle current and
+  the sensors stay powered, so a sleeping body still drains the cell, slower.
+- Whether "Battery low" and the voltage fit the e-paper's column.
+- Whether a cell asleep at 3.30 V rebounds far enough, with no charger, to pass
+  3.60 V and wake the body, which would then sag and sleep again.
 
 ## Build v07.0: air senses and e-paper (4 October)
 

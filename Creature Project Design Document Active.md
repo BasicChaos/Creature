@@ -870,8 +870,25 @@ Creature/
 
 The ESP stays simple and stable: read sensors, stream raw values, receive commands,
 drive outputs. Nothing more. It does not store memory, make decisions, or interpret
-meaning. It may have body-level safety reflexes later, such as capping brightness on
-low battery, because those protect hardware.
+meaning. It may have body-level safety reflexes, because those protect hardware.
+
+It has one, built on 7 October 2026: the low-battery reflex. It acts on the
+cell's voltage, not on the gauge's percentage, which read 2 % with four hours of
+running left. When the cell stays at or under 3.40 V for ten seconds the body
+caps the strip's brightness (12 in place of 40), whatever frames it is sent,
+until the cell is back above 3.50 V or charging. When it stays at or under
+3.30 V for thirty seconds the body darkens the strip, draws "Battery low" on
+the e-paper (the panel keeps its image with no power), and deep-sleeps. Every
+five minutes it wakes for a moment, reads the gauge, and sleeps again unless the
+cell is charging or at 3.60 V or more; then it boots as usual and the collector
+reconnects by itself. With no reading from the gauge the reflex does nothing.
+The levels come from the run to flat of 7 October: about 55 minutes were left at
+3.4 V and 20 at 3.3 V, and nothing stopped the discharge until the cell's own
+protection near 2.4 V. Deep sleep does not cut the power. The PowerBoost, the
+strip's idle current and the sensors still draw from the cell, so the reflex
+buys time and does not replace the charger. `BAT:<volts>` is a bench test: for
+two minutes the reflex acts on that voltage, and a test sleep is two 20 second
+steps.
 
 The Pi holds everything that changes: normalization, the field, learning,
 expression, persistence. This lets the senses and the output stay stable while the
