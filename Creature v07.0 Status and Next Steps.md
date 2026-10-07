@@ -97,11 +97,21 @@ to settle slowly, so how fast it shows a plug-in is not measured. The e-paper's
 
 ## The battery, step 2: the charge sets the reserve's ceiling (7 October)
 
-Written on 7 October. Not committed and not on the Pi when written.
+Deployed on 7 October 2026 as commit `07c4add`. The collector was restarted at
+12:43 with `CREATURE_BATTERY_CEILING=1` added to its settings (state loaded from
+tick 1198759). No flash and no dashboard restart. State from before the restart
+is next to the database as `*.pre-ceiling.json`. At that moment the cell read
+5.2 %, so the ceiling started at its floor: reserve 1.3 against a ceiling of
+1.5. The charger went back in at about 12:43.
 
 The first real discharge record: the charger came out at about 07:35 on
-7 October at 94.7 %. The cell fell steadily at about 14 % an hour (59 % at
-10:11), which puts a full charge at roughly seven hours.
+7 October at 94.7 %. The gauge fell at about 14 % an hour down to 55 %, then
+faster, about 25 % an hour, reaching 5 % at 12:40: five hours in all. The cell
+was still at 3.61 V at 5 %, and the body was still running.
+
+With the ceiling at its floor, memory pressure rose from about 0.34 to 0.40,
+because the reserve's level is a small part of it. Its highest in the 72 hours
+before was 0.36, and the sleep threshold is 0.58.
 
 What was built:
 
@@ -146,7 +156,8 @@ What was checked:
 
 Open from this step:
 
-1. Deploying it means adding `CREATURE_BATTERY_CEILING=1` to the start command.
+1. The dimming has not been watched on the body. Whether a dimmer strip
+   measurably slows the drain is not known.
 2. A drained Creature does not rest or sleep more, and learning does not slow.
    That needs a low-energy sleep that does not rewrite the links.
 3. The voice is as loud at low charge as at full.
@@ -505,11 +516,12 @@ Deploying to the Pi. Push `main`, then on the Pi fast-forward its `v06` branch t
 session, start it again. Before each restart the saved state was copied next to
 the database with a name such as `.pre-twospeed.json` on the end.
 
-The start command in force since 4 October, typed in the tmux pane (in
+The start command in force since 7 October, typed in the tmux pane (in
 `~/Creature/Code/Python`, venv active). Leave any part out and that part is off:
 
     CREATURE_EXPRESSION_MODEL=relative CREATURE_SLOW_MIX=0.25 \
     CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0 CREATURE_SLOW_LEAK=4.13e-7 \
+    CREATURE_BATTERY_CEILING=1 \
     python collector/collector.py tcp://creature-esp.local:7777
 
 To start a fresh twin, stop the collector first, then move
