@@ -255,6 +255,27 @@ SLOW_LEAK = float(os.environ.get("CREATURE_SLOW_LEAK", "0.0"))
 SOFT_CEILING = os.environ.get("CREATURE_SOFT_CEILING", "0") == "1"
 CEILING_KNEE = float(os.environ.get("CREATURE_CEILING_KNEE", "0.0"))
 
+# --- the battery (7 October 2026) ------------------------------------------
+# The shared reserve can hold as much as the body's battery does: at 30 %
+# charge its ceiling is 30 % of GLOBAL_ENERGY_MAX. Nothing else in the field
+# changes. The cells are still refilled in full, so they sense and learn as
+# before; what a lower reserve does is dim the expression, through the energy
+# gate expression_v06 already has (full above 40 % of the reserve's maximum).
+#
+# The ceiling never goes below BATTERY_CEILING_FLOOR. Under about 18 % the
+# reserve sits at LOW_RESERVE_SLEEP_THRESHOLD and the field goes to sleep every
+# SLEEP_COOLDOWN_TICKS, and that much replay rewrites its links (mean weight
+# 0.46 to 1.0 in two hours, found on 7 October 2026).
+#
+# The first design scaled the refill rate instead. It did nothing until income
+# fell under what the cells draw (about a third of normal), then everything at
+# once: expression fully dark, a sleep every four minutes, the links wiped.
+#
+# Off unless CREATURE_BATTERY_CEILING=1. Off, or with no reading, the ceiling
+# is whole and the field is as it was.
+BATTERY_CEILING = os.environ.get("CREATURE_BATTERY_CEILING", "0") == "1"
+BATTERY_CEILING_FLOOR = 0.25
+
 # --- sleep and replay ------------------------------------------------------
 LOW_STIMULATION_TICKS = 160
 SLEEP_DURATION_TICKS = 30
@@ -365,6 +386,14 @@ def spectral_radius(matrix, iters=400):
     return math.exp(log_growth / counted) if counted else 0.0
 
 
+def ceiling_share_for_charge(charge_pct):
+    """The share of GLOBAL_ENERGY_MAX the reserve may hold at this battery
+    charge (0-100). 1.0 when the battery is not in play or gave no reading."""
+    if not BATTERY_CEILING or charge_pct is None:
+        return 1.0
+    return clamp(float(charge_pct) / 100.0, BATTERY_CEILING_FLOOR, 1.0)
+
+
 def ring_distance(i, j):
     """Steps around the ring between two cells (the shorter way)."""
     d = abs(i - j)
@@ -460,6 +489,7 @@ class CellField:
         self.last_sense = {s: 0.0 for s in SENSES}
 
         self.energy_reserve = GLOBAL_ENERGY_INIT
+        self.energy_ceiling_share = 1.0     # set each tick from the battery's charge
         self.memory_pressure = 0.0
         self.sleep_mode = "awake"
         self.sleep_ticks_remaining = 0
@@ -629,6 +659,7 @@ class CellField:
             "mode": self.sleep_mode,
             "energy_reserve": round(self.energy_reserve, 4),
             "energy_reserve_max": GLOBAL_ENERGY_MAX,
+            "energy_ceiling": round(GLOBAL_ENERGY_MAX * self.energy_ceiling_share, 4),
             "energy_avg": round(sum(c.energy for c in cells) / len(cells), 4),
             "fatigue_avg": round(sum(c.fatigue for c in cells) / len(cells), 4),
             "memory_pressure": round(self.memory_pressure, 4),
@@ -648,7 +679,7 @@ class CellField:
         self.energy_reserve = clamp(
             self.energy_reserve + GLOBAL_REPLENISH_PER_TICK,
             0.0,
-            GLOBAL_ENERGY_MAX,
+            GLOBAL_ENERGY_MAX * self.energy_ceiling_share,
         )
 
         def priority(cell):
@@ -1028,9 +1059,12 @@ class CellField:
                 reverse=True,
             )[:keep]
 
-    def step(self, senses=None, loop=None, **kw):
+    def step(self, senses=None, loop=None, charge=None, **kw):
         """
         Advance the field one tick on normalized sensor values (0-1).
+
+        `charge` is the body's battery charge in percent, or None. It sets how
+        much the energy reserve can hold this tick (see BATTERY_CEILING).
 
         `senses` is a dict with keys sound, light, motion, weather. Missing
         senses default to 0.0. Keyword form also works: step(sound=.5, light=.2).
@@ -1058,6 +1092,7 @@ class CellField:
             "links_reinforced": 0,
             "events_reviewed": 0,
         }
+        self.energy_ceiling_share = ceiling_share_for_charge(charge)
         self._replenish_energy()
 
         cells = self.cells

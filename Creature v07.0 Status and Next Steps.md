@@ -95,6 +95,67 @@ and the tile's 20 % low mark are first guesses; the gauge's charge rate is known
 to settle slowly, so how fast it shows a plug-in is not measured. The e-paper's
 `Batt` line has not been looked at on the panel.
 
+## The battery, step 2: the charge sets the reserve's ceiling (7 October)
+
+Written on 7 October. Not committed and not on the Pi when written.
+
+The first real discharge record: the charger came out at about 07:35 on
+7 October at 94.7 %. The cell fell steadily at about 14 % an hour (59 % at
+10:11), which puts a full charge at roughly seven hours.
+
+What was built:
+
+- `mind/cell_field_v06.py`: `field.step()` takes the battery charge. With
+  `CREATURE_BATTERY_CEILING=1` the reserve's ceiling is the charge as a share of
+  its maximum, never under a quarter (`BATTERY_CEILING_FLOOR`). Off by default.
+  The metabolism block has a new `energy_ceiling`.
+- `mind/expression_v06.py`: the energy gate now scales the whole strip frame as
+  well as arousal. With a healthy reserve the gate is 1 and nothing changes.
+- `mind/twin_v06.py` and the collector: the same charge goes to the field and to
+  the twin. The collector prints a `Battery:` line at start.
+- `tools/field_lab_v06.py --battery`: the gate.
+
+What was found:
+
+- Scaling the refill rate, the design first proposed, fails. Nothing happens
+  down to a third of normal income, then expression goes fully dark, the field
+  sleeps every four minutes and the links are wiped.
+- A ceiling under about 18 % makes the field sleep every 240 ticks from low
+  energy, and that much replay drives the links up (mean 0.46 to 1.0 in two
+  hours), under the Pi's two-speed settings as well. Hence the floor.
+- Arousal carries little of the strip's light. With the gate on arousal alone
+  the strip lost 13 % of its light when arousal halved; the first run of the
+  gate failed on that.
+
+What was checked:
+
+- `--battery` passes 7/7 on seeds 1, 2, 3 and 7, and on seed 1 under the Pi's
+  two-speed settings. Strip light is about 83 % of the control's at 35 % charge
+  and 40 % at 10 %; arousal about half at the floor; all back to 100 % once
+  charged. The field itself is identical to the control on every tick.
+- `--voice`, `--twin` and `--events` pass as before. `--express` fails 8/9 both
+  before and after this change.
+- The collector on the scripted body with a draining battery, seeds 1, 2, 3 and
+  7: with the setting off, identical to the committed code apart from the new
+  `energy_ceiling` key. With it on, the strip is sent 40 % of the control's
+  light at the end, and because the loop is closed the field's life differs a
+  little (largest link gap 0.025 after 30 minutes, about 5 % fewer events, no
+  sleeps, the same tones).
+- The live reserve has not been under 5.78 in the last 72 hours, so the strip
+  change does nothing on the Pi until the ceiling is switched on.
+
+Open from this step:
+
+1. Deploying it means adding `CREATURE_BATTERY_CEILING=1` to the start command.
+2. A drained Creature does not rest or sleep more, and learning does not slow.
+   That needs a low-energy sleep that does not rewrite the links.
+3. The voice is as loud at low charge as at full.
+4. The floor of a quarter and the gate's 40 % knee are not tuned against the
+   real body. Where the body actually cuts out, in percent, is not yet known.
+5. The gate's day scenario has no sleeps in it, so "no sleep from a low reserve"
+   rests on the reserve's lowest level (1.30 against a threshold of 0.9).
+6. Step 3, the low-battery reflex on the body, is not started.
+
 ## Build v07.0: air senses and e-paper (4 October)
 
 What was added, in the order it was built:

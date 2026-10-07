@@ -45,6 +45,8 @@ from mind.cell_field_v06 import (
     SLOW_LEAK,
     SOFT_CEILING,
     CEILING_KNEE,
+    BATTERY_CEILING,
+    BATTERY_CEILING_FLOOR,
 )
 from mind.expression_v06 import (
     ExpressionDecoderV06,
@@ -1197,6 +1199,11 @@ def main():
         print(f"Two-speed links: mix {SLOW_MIX:g}, slow leak {SLOW_LEAK:g}, soft ceiling {ceiling}")
     else:
         print("Two-speed links: off")
+    if BATTERY_CEILING:
+        print(f"Battery: the charge sets the energy reserve's ceiling, "
+              f"never under {BATTERY_CEILING_FLOOR:.0%}")
+    else:
+        print("Battery: logged only, the field does not read it")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -1316,6 +1323,9 @@ def main():
                 "weather": weather_value,
             },
             loop=(loop_result or {}).get("feel") if ENABLE_LOOP_FEEL else None,
+            # The last charge the body reported. The field uses it only when
+            # CREATURE_BATTERY_CEILING=1.
+            charge=latest_raw["battery_pct"],
         )
 
         # Curiosity proposes; nothing goes out while the field sleeps.
@@ -1408,6 +1418,7 @@ def main():
                         "weather": weather_value,
                     },
                     state,
+                    charge=latest_raw["battery_pct"],
                 )
                 twin_block = twin.snapshot()
                 twin_block["step_ms"] = round((monotonic() - twin_started) * 1000.0, 2)

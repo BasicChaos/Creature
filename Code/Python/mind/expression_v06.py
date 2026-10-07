@@ -275,6 +275,7 @@ class ExpressionDecoderV06:
             int(state.get("tick", 0) or 0),
             act_scale,
             centre,
+            gate,
         )
 
         out = {
@@ -306,13 +307,16 @@ class ExpressionDecoderV06:
         return None, 0.0, False
 
     def _render(self, activations, warm_by_cell, cool_by_cell, arousal, balance, tempo, event_n, event_sig, tick,
-                act_scale=1.0, centre=None):
+                act_scale=1.0, centre=None, energy=1.0):
         k = self.knobs
         act_gain = k["ACT_GAIN"] * act_scale
         count = len(activations)
         n_pixels = max(1, self.pixels)
         self.pulse_pos = (self.pulse_pos + k["PULSE_BASE"] + k["PULSE_SPEED"] * tempo) % 1.0
-        scale = clamp(float(k["LED_CAP"]) / 255.0, 0.0, 1.0)
+        # `energy` is the energy gate (1.0 with a healthy reserve). Arousal
+        # alone carries little of the strip's light, most of it comes from each
+        # cell's own activity, so a drained reserve also dims the whole frame.
+        scale = clamp(float(k["LED_CAP"]) / 255.0, 0.0, 1.0) * clamp(energy, 0.0, 1.0)
         out = []
 
         for p in range(n_pixels):

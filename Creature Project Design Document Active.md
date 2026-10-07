@@ -275,6 +275,46 @@ unlike the mostly dormant 111-cell field. At the old sizing the reserve deadlock
 at zero and learning starved. The twelve-cell values are start 4.0, max 6.0, refill
 0.6 per tick.
 
+### The battery and the reserve
+
+Built on 7 October 2026, behind `CREATURE_BATTERY_CEILING=1` (off by default).
+The body's battery charge sets how much the shared reserve can hold: at 30 %
+charge its ceiling is 30 % of the maximum, and never less than a quarter. The
+collector passes the last charge the body reported into `field.step(charge=...)`
+each tick, and the same to the twin. With the setting off, or with no reading,
+the ceiling is whole.
+
+Nothing else in the field changes. The cells are still refilled in full, so they
+sense and learn as before. What a lower reserve does is dim the expression,
+through the decoder's energy gate (full above 40 % of the reserve's maximum, so
+dimming begins near 43 % charge and is deepest from 25 % down). Since this build
+the gate also scales the whole strip frame, not only arousal: arousal carries
+little of the strip's light, and without that the strip lost only 13 % of its
+light when arousal halved. At the floor the strip is sent about 40 % of its
+usual light and arousal is about half. The voice's volume is not touched; the
+amp needs its digital level kept in a clean range.
+
+Two designs failed first, and the limits come from them:
+
+- Scaling the refill rate did nothing until income fell under what the cells
+  draw (about a third of normal). Below that everything went at once:
+  expression fully dark, a sleep every four minutes, and the links wiped (mean
+  weight 0.33 to 0.02 in two hours).
+- A ceiling with no floor is safe down to about 20 %. Under about 18 % the
+  reserve sits at the low-energy sleep threshold, the field sleeps every 240
+  ticks, and that much replay rewrites its links (mean weight 0.46 to 1.0 in two
+  hours). The floor of a quarter keeps the reserve above that threshold. A
+  drained Creature that rests and sleeps more is still wanted, but it needs a
+  sleep that does not do this, which is its own piece of work.
+
+The gate is `python tools/field_lab_v06.py --battery`: a scripted charge (full,
+35 %, 10 %, back to full), control against variant. It passes 7/7 on seeds 1, 2,
+3 and 7. In that gate the field is open loop and stays identical to the control
+tick for tick. In the collector's own loop on the scripted body the dimmer strip
+is sensed, so the field's life differs a little: after 30 minutes the largest
+link gap was 0.025 and there were about 5 % fewer events, with no sleeps and the
+same tones.
+
 ## Learning and forgetting
 
 Two changes accumulate in the trainable connection weights.
@@ -859,9 +899,10 @@ the Creature evolve without rewriting hardware.
   produce no surprise. Only the loop keeps that side alive.
 - Bias and novelty steering are not wired to the body, so the live Creature records
   its autobiography but is not yet steered by it.
-- Metabolism is still simulated. The fuel gauge is on the body since 6 October
-  2026 and its readings are logged, but the field's energy reserve does not
-  depend on them yet. That step needs its own gate.
+- The battery reaches the Creature only as dimmer light, and only when
+  `CREATURE_BATTERY_CEILING=1`. A drained Creature does not rest or sleep more,
+  and learning does not slow: both first attempts at that damaged the links
+  (see "The battery and the reserve"). The voice is as loud at 10 % as at full.
 - A steady self-loop is as predictable as a steady room, so the predictive field
   habituates to it unless the probe stays unpredictable.
 - The air sensors and the e-paper (v07.0) sit on the body but outside the

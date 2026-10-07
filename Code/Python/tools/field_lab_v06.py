@@ -2858,6 +2858,189 @@ def twin_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The battery sets how much the energy reserve can hold (7 October 2026)
+# ---------------------------------------------------------------------------
+#
+# The body has a fuel gauge since 6 October 2026. Here its charge sets the
+# ceiling of the field's shared energy reserve (cell_field_v06.BATTERY_CEILING).
+# The claim is narrow: a draining cell dims the expression through the energy
+# gate the decoder already has, and changes nothing else. The field senses,
+# learns and sleeps exactly as it would have.
+#
+# Control (the ceiling whole) against variant (the ceiling follows the charge),
+# same seed, same room, same scripted charge: full, down to a half-way hold,
+# down to a hold under the floor, charged back up, full again.
+
+BATTERY_SCRIPT = [            # (ticks, charge at the start, charge at the end)
+    (3600, 90.0, 90.0),       # full
+    (1800, 90.0, 35.0),
+    (1800, 35.0, 35.0),       # mid
+    (1800, 35.0, 10.0),
+    (3600, 10.0, 10.0),       # low, under the floor
+    (1800, 10.0, 90.0),       # on the charger
+    (3600, 90.0, 90.0),       # full again
+]
+BATTERY_HOLDS = {"full": 0, "mid": 2, "low": 4, "again": 6}
+BATTERY_WINDOW = 1200         # each hold is judged on its last ticks
+
+
+def _battery_charge():
+    for ticks, a, b in BATTERY_SCRIPT:
+        for t in range(ticks):
+            yield a + (b - a) * t / ticks
+
+
+def _battery_windows():
+    out, at = {}, 0
+    ends = []
+    for ticks, _, _ in BATTERY_SCRIPT:
+        at += ticks
+        ends.append(at)
+    for name, i in BATTERY_HOLDS.items():
+        out[name] = (ends[i] - BATTERY_WINDOW, ends[i])
+    return out
+
+
+def _battery_run(seed, scenario, ceiling, charged=True):
+    """One life through the charge script. The field is read by two decoders,
+    the relative model the Pi runs and the fixed one."""
+    was = cf.BATTERY_CEILING
+    cf.BATTERY_CEILING = ceiling
+    try:
+        random.seed(seed)
+        field = cf.build_field()
+        decoders = {m: ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": m})
+                    for m in ("relative", "fixed")}
+        ticks = sum(n for n, _, _ in BATTERY_SCRIPT)
+        ends = set()
+        at = 0
+        for n, _, _ in BATTERY_SCRIPT:
+            at += n
+            ends.add(at)
+        out = {"A": {m: [] for m in decoders}, "light": {m: [] for m in decoders},
+               "tones": {m: [] for m in decoders}, "vol": {m: [] for m in decoders},
+               "reserve": [], "events": [], "sleeps": [], "weights": [], "digest": []}
+        last = {m: -FORWARD_VOICE_GAP for m in decoders}
+        asleep = False
+        inputs = scenario_inputs(scenario, ticks, random.Random(seed + 1))
+        for t, (values, charge) in enumerate(zip(inputs, _battery_charge()), 1):
+            state = field.step(values, charge=charge if charged else None)
+            speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+            for m, decoder in decoders.items():
+                signal = decoder.read(state)
+                out["A"][m].append(signal["A"])
+                out["light"][m].append(sum(sum(px) for px in signal["pixels"])
+                                       / (255.0 * 4 * len(signal["pixels"])))
+                tone = voice_params_from_signal(signal, speaker)
+                if tone and t - last[m] >= FORWARD_VOICE_GAP:
+                    out["tones"][m].append(t)
+                    out["vol"][m].append(tone["vol"])
+                    last[m] = t
+            out["reserve"].append(field.energy_reserve)
+            out["events"].append(len(field.last_events))
+            now_asleep = field.sleep_mode == "sleep"
+            if now_asleep and not asleep:
+                out["sleeps"].append(t)
+            asleep = now_asleep
+            # Everything of the field but the reserve's own level.
+            seen = (state["cells"], state["connections"], state["emitter_activations"],
+                    state["events"])
+            out["digest"].append(hashlib.blake2b(repr(seen).encode(), digest_size=8).digest())
+            if t in ends:
+                out["weights"].append(dict(field.weights))
+        return out
+    finally:
+        cf.BATTERY_CEILING = was
+
+
+def battery_probe(args):
+    """The battery gate: with the charge setting the reserve's ceiling, the
+    expression dims as the cell drains and comes back as it charges, never
+    goes dark, and the field itself is the same field."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | THE BATTERY SETS THE RESERVE'S CEILING | "
+          f"seed={args.seed}, {args.scenario} scenario, floor {cf.BATTERY_CEILING_FLOOR:.0%}")
+    control = _battery_run(args.seed, args.scenario, False)
+    variant = _battery_run(args.seed, args.scenario, True)
+    unread = _battery_run(args.seed, args.scenario, True, charged=False)
+    windows = _battery_windows()
+
+    def mean(series, name):
+        a, b = windows[name]
+        return statistics.mean(series[a:b])
+
+    def share(key, model, name):
+        base = mean(control[key][model], name)
+        return mean(variant[key][model], name) / base if base > 1e-9 else 1.0
+
+    def tones(run_, model, name):
+        a, b = windows[name]
+        picked = [(t, v) for t, v in zip(run_["tones"][model], run_["vol"][model]) if a < t <= b]
+        vol = statistics.mean(v for _, v in picked) if picked else 0.0
+        return len(picked), vol
+
+    for model in ("relative", "fixed"):
+        print(f"\n  {model} expression model" + (" (what the Pi runs)" if model == "relative" else ""))
+        print("    hold    charge  reserve   arousal            strip light        tones (volume)")
+        for name, i in BATTERY_HOLDS.items():
+            charge = BATTERY_SCRIPT[i][1]
+            cn, cv = tones(control, model, name)
+            vn, vv = tones(variant, model, name)
+            print(f"    {name:6s} {charge:5.0f}%  {mean(variant['reserve'], name):6.2f}   "
+                  f"{mean(control['A'][model], name):.3f} -> {mean(variant['A'][model], name):.3f}"
+                  f" ({share('A', model, name) * 100:3.0f}%)  "
+                  f"{mean(control['light'][model], name):.3f} -> {mean(variant['light'][model], name):.3f}"
+                  f" ({share('light', model, name) * 100:3.0f}%)  "
+                  f"{cn} ({cv:.2f}) -> {vn} ({vv:.2f})")
+
+    full_end = BATTERY_SCRIPT[0][0]
+    same_full = all(control[k][m][:full_end] == variant[k][m][:full_end]
+                    for k in ("A", "light") for m in ("relative", "fixed"))
+    link_gap = max(abs(a[key] - b[key])
+                   for a, b in zip(control["weights"], variant["weights"]) for key in a)
+    same_field = control["digest"] == variant["digest"]
+    low_reserve = min(variant["reserve"])
+    unread_same = (unread["digest"] == control["digest"] and unread["reserve"] == control["reserve"]
+                   and unread["A"] == control["A"] and unread["light"] == control["light"])
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("at high charge nothing changes", same_full,
+          f"the first {full_end} ticks at {BATTERY_SCRIPT[0][1]:.0f}% charge, arousal and strip, "
+          f"both models: {'identical' if same_full else 'different'}")
+    mid, low = share("light", "relative", "mid"), share("light", "relative", "low")
+    check("the strip dims as the cell drains", low <= 0.7 and low < mid <= 1.0,
+          f"strip light {mid * 100:.0f}% of the control's at 35% charge, {low * 100:.0f}% at 10%")
+    low_a = share("A", "relative", "low")
+    check("it does not go dark", low_a >= 0.2 and mean(variant["light"]["relative"], "low") > 0.0,
+          f"arousal {low_a * 100:.0f}% of the control's at the floor")
+    check("no sleep from a low reserve",
+          variant["sleeps"] == control["sleeps"] and low_reserve > cf.LOW_RESERVE_SLEEP_THRESHOLD,
+          f"{len(variant['sleeps'])} sleeps against {len(control['sleeps'])}, at the same ticks: "
+          f"{variant['sleeps'] == control['sleeps']}; the reserve's lowest {low_reserve:.2f} "
+          f"(sleep at {cf.LOW_RESERVE_SLEEP_THRESHOLD})")
+    check("the field is the same field", same_field and link_gap == 0.0,
+          f"cells, links, emitters and events on every tick: "
+          f"{'identical' if same_field else 'different'}; largest link gap {link_gap:.6f}")
+    again_a, again_l = share("A", "relative", "again"), share("light", "relative", "again")
+    check("it comes back on the charger", abs(again_a - 1.0) <= 0.05 and abs(again_l - 1.0) <= 0.05,
+          f"arousal {again_a * 100:.0f}% and strip light {again_l * 100:.0f}% of the control's "
+          f"once full again")
+    check("no reading, no change", unread_same,
+          f"the ceiling on but no charge given: {'identical to' if unread_same else 'different from'} "
+          f"the control")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -2936,6 +3119,9 @@ def main():
                    help="run the history gate (how long a newborn field needs to "
                         "become indistinguishable from an elder; measures only); "
                         "with --replay and --state, on recorded senses")
+    p.add_argument("--battery", action="store_true",
+                   help="the battery gate: the charge sets the reserve's ceiling; control "
+                        "against variant through a scripted drain and recharge")
     p.add_argument("--twin", action="store_true",
                    help="run the twin gate (the Creature is the same with the "
                         "newborn twin beside it, in the field and in the collector)")
@@ -2983,6 +3169,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.twin:
         ok = twin_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.battery:
+        ok = battery_probe(args)
         sys.exit(0 if ok else 1)
     if args.express:
         ok = express_probe(args)
