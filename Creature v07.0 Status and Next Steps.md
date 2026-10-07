@@ -218,6 +218,42 @@ cell reads about 0.15 V higher on the charger, so the Creature brightens within
 a couple of minutes of being plugged in and dims the same way when the charger
 is pulled below about 3.75 V.
 
+## The strip's colour: the inner model (7 October, late evening)
+
+Written late on 7 October. Not committed and not on the Pi when written.
+
+Josh found the strip's bright white annoying and asked for more varied colour
+that is still the Creature's own expression, at about a third of the brightness.
+
+- Why it was white: the blue-to-orange blend passes through grey-white in its
+  middle, where the field mostly sits. The W channel was nearly off.
+- `mind/expression_v06.py` has a second colour model, `inner`, behind
+  `CREATURE_COLOUR_MODEL=inner` (default `blend`, unchanged). The reservoir
+  pushes one hue around the colour wheel; the hue leans warm or cool along the
+  strip; brightness still follows activity; the frame is at 0.6 of the blend's
+  scale. The expression block of the snapshot gains `hue`.
+- `tools/field_lab_v06.py --colour` is its gate: 9/9 on seeds 1, 2, 3 and 7.
+  `--voice`, `--battery` and `--twin` pass as before; `--express` fails 8/9 as
+  before.
+- `tools/strip_swatch.py` (new) puts a fixed test palette on the real strip. It
+  needs the collector stopped.
+- The collector on the scripted body, seeds 1, 2, 3 and 7: with the default
+  model, identical to the committed code. With `inner`, 39 % of the blend's
+  light and no white; and because that body's light sensor sees the strip
+  strongly, 30 to 50 % more events and a largest link gap of 0.08 after 30
+  minutes.
+
+Open:
+
+1. It has not been seen on the real strip. The firmware's own brightness cap
+   (40 of 255) leaves only about ten steps per channel at this brightness, so
+   colours may look coarse.
+2. How much the real light sensor sees the colour changes is not known. If it
+   sees them well, the field will mark more events.
+3. The rate (1.5 degrees a tick), the lean (50 degrees) and the brightness (0.6)
+   are first choices, to be set by eye.
+4. The hue starts again at red after every restart.
+
 ## The first real run of the whole chain (7 October, 19:36 to 20:22)
 
 The charger came out at 19:36 after about half an hour of charging, and the body

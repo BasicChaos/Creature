@@ -28,6 +28,7 @@ Same seed + same input + same overrides = same result. The field uses only the
 """
 
 import argparse
+import colorsys
 import hashlib
 import json
 import math
@@ -3072,6 +3073,162 @@ def battery_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Where the strip's colour comes from (7 October 2026)
+# ---------------------------------------------------------------------------
+#
+# The strip read as bright white on the body. The W channel was not the cause:
+# the palette is a straight RGB line between blue and orange, whose middle is
+# grey-white, and the field sits near the middle. The "inner" colour model
+# gives the strip one hue that the field's reservoir pushes around the colour
+# wheel, at about a third of the light.
+#
+# Control (the blend) against variant (inner), the same field read by both.
+
+COLOUR_TICKS = 7200
+COLOUR_SETTLE = 600
+COLOUR_LIT = 12            # a pixel under this is dark and has no colour to judge
+COLOUR_WHITE_SAT = 0.3     # saturation under this reads as white
+
+
+def _colour_run(seed, scenario, ticks, battery_v=None):
+    """One life read by both colour models. Per tick: the signal without its
+    pixels, the frame, the frame's light."""
+    was = cf.BATTERY_CEILING
+    cf.BATTERY_CEILING = battery_v is not None
+    try:
+        random.seed(seed)
+        field = cf.build_field()
+        decoders = {m: ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": "relative", "COLOUR_MODEL": m})
+                    for m in ("blend", "inner")}
+        out = {m: {"signal": [], "frames": [], "light": [], "hue": []} for m in decoders}
+        for values in scenario_inputs(scenario, ticks, random.Random(seed + 1)):
+            state = field.step(values, battery_v=battery_v)
+            for m, decoder in decoders.items():
+                signal = decoder.read(state)
+                o = out[m]
+                o["signal"].append((signal["A"], signal["B"], signal["T"], signal["event"],
+                                    repr(signal.get("voice"))))
+                o["frames"].append(signal["pixels"])
+                o["light"].append(sum(sum(px) for px in signal["pixels"]) / len(signal["pixels"]))
+                o["hue"].append(signal.get("hue"))
+        return out
+    finally:
+        cf.BATTERY_CEILING = was
+
+
+def _colour_stats(frames):
+    """Share of lit pixels that read as white, the share of the coloured ones in
+    each twelfth of the wheel, and the usual spread of hue along one frame."""
+    lit = white = 0
+    sectors = [0] * 12
+    spreads = []
+    for frame in frames:
+        hues = []
+        for r, g, b, w in frame:
+            if max(r, g, b) + w < COLOUR_LIT:
+                continue
+            lit += 1
+            h, sat, _ = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+            if sat < COLOUR_WHITE_SAT or w > max(r, g, b):
+                white += 1
+            else:
+                sectors[int(h * 12) % 12] += 1
+                hues.append(h * 360.0)
+        if len(hues) >= 2:
+            # the widest gap between neighbouring hues, taken off the full circle
+            hues.sort()
+            gaps = [b - a for a, b in zip(hues, hues[1:])] + [hues[0] + 360.0 - hues[-1]]
+            spreads.append(360.0 - max(gaps))
+    coloured = max(1, sum(sectors))
+    return {"white": white / max(1, lit),
+            "sectors": [c / coloured for c in sectors],
+            "spread": statistics.median(spreads) if spreads else 0.0}
+
+
+def _corr(a, b):
+    ma, mb = statistics.mean(a), statistics.mean(b)
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 0.0 or vb <= 0.0:
+        return 0.0
+    return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / math.sqrt(va * vb)
+
+
+def colour_probe(args):
+    """The colour gate: under the inner model the strip is hardly ever white,
+    uses the whole colour wheel, never flickers, is about a third as bright,
+    still follows the field's activity, draws nothing by chance, and leaves the
+    rest of the expression alone."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | WHERE THE STRIP'S COLOUR COMES FROM | "
+          f"seed={args.seed}, {args.scenario} scenario, {COLOUR_TICKS} ticks")
+    run_ = _colour_run(args.seed, args.scenario, COLOUR_TICKS)
+    again = _colour_run(args.seed, args.scenario, COLOUR_TICKS)
+    other = _colour_run(args.seed + 100, args.scenario, COLOUR_TICKS)
+    low = _colour_run(args.seed, args.scenario, 1800, battery_v=3.35)
+    blend, inner = run_["blend"], run_["inner"]
+    skip = COLOUR_SETTLE
+    stats = {m: _colour_stats(run_[m]["frames"][skip:]) for m in run_}
+
+    for m, name in (("blend", "blend (control)"), ("inner", "inner (variant)")):
+        st = stats[m]
+        used = sum(1 for share in st["sectors"] if share >= 0.02)
+        print(f"\n  {name}")
+        print(f"    light per pixel {statistics.mean(run_[m]['light'][skip:]):6.1f} | white "
+              f"{st['white'] * 100:3.0f}% of lit pixels | {used}/12 of the wheel | "
+              f"hue spread along the strip {st['spread']:.0f} degrees")
+        print("    share of each twelfth: " + " ".join(f"{share * 100:2.0f}" for share in st["sectors"]))
+
+    hue = inner["hue"]
+    steps = [min(abs(a - b), 360.0 - abs(a - b)) for a, b in zip(hue[skip:], hue[skip + 1:])]
+    hour = [len({int(h // 30) % 12 for h in hue[i:i + 3600]}) for i in range(0, len(hue) - 3599, 3600)]
+    ratio = statistics.mean(inner["light"][skip:]) / statistics.mean(blend["light"][skip:])
+    follow = _corr(inner["light"][skip:], blend["light"][skip:])
+    used = sum(1 for share in stats["inner"]["sectors"] if share >= 0.02)
+    low_ratio = (statistics.mean(low["inner"]["light"][skip:])
+                 / statistics.mean(inner["light"][skip:1800]))
+    rate_max = ExpressionDecoderV06().knobs["HUE_RATE_MAX"]
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("the rest of the expression is untouched", blend["signal"] == inner["signal"],
+          "arousal, balance, tempo, events and the voice's decisions on every tick: "
+          + ("identical" if blend["signal"] == inner["signal"] else "different"))
+    check("hardly ever white", stats["inner"]["white"] <= 0.02,
+          f"{stats['inner']['white'] * 100:.0f}% of lit pixels read as white, against "
+          f"{stats['blend']['white'] * 100:.0f}%")
+    check("the whole colour wheel", used >= 10 and min(hour) >= 6,
+          f"{used}/12 of the wheel holds at least 2% of the coloured pixels (the blend: "
+          f"{sum(1 for share in stats['blend']['sectors'] if share >= 0.02)}/12); "
+          f"the hue visits {min(hour)} to {max(hour)} twelfths in an hour")
+    check("no flicker", max(steps) <= rate_max + 1e-6,
+          f"the hue turns {statistics.mean(steps):.1f} degrees a tick on average, "
+          f"{max(steps):.1f} at most")
+    check("about a third as bright", 0.25 <= ratio <= 0.45,
+          f"{ratio * 100:.0f}% of the blend's light")
+    check("brightness still follows the field", follow >= 0.8,
+          f"the two models' light rises and falls together, correlation {follow:.2f}")
+    check("the strip is not one flat colour", stats["inner"]["spread"] >= 15.0,
+          f"a usual frame spans {stats['inner']['spread']:.0f} degrees of hue from its warm "
+          f"end to its cool end")
+    check("nothing by chance",
+          again["inner"]["frames"] == inner["frames"] and other["inner"]["hue"][-1] != hue[-1],
+          f"the same life twice: {'identical' if again['inner']['frames'] == inner['frames'] else 'different'} "
+          f"frames; another life ends on hue {other['inner']['hue'][-1]:.0f}, this one on {hue[-1]:.0f}")
+    check("a low battery still dims it", low_ratio <= 0.7,
+          f"at 3.35 V the strip is sent {low_ratio * 100:.0f}% of its usual light")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -3153,6 +3310,9 @@ def main():
     p.add_argument("--battery", action="store_true",
                    help="the battery gate: the cell's voltage sets the reserve's ceiling; "
                         "control against variant through a scripted drain and recharge")
+    p.add_argument("--colour", action="store_true",
+                   help="the colour gate: the strip's hue from the reservoir against the "
+                        "blue-to-orange blend")
     p.add_argument("--twin", action="store_true",
                    help="run the twin gate (the Creature is the same with the "
                         "newborn twin beside it, in the field and in the collector)")
@@ -3203,6 +3363,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.battery:
         ok = battery_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.colour:
+        ok = colour_probe(args)
         sys.exit(0 if ok else 1)
     if args.express:
         ok = express_probe(args)

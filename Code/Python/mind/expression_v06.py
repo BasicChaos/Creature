@@ -11,8 +11,12 @@ The decoder keeps no memory except a travelling pulse phase for the strip and,
 from v06.9, the little the voice needs to know when to speak: its usual level of
 arousal, how long since something surprised the field, and whether it has
 already spoken on this rise. It does not feed back into the field.
+
+Under the "inner" colour model (7 October 2026) it also keeps a hue, which the
+field's reservoir pushes around the colour wheel.
 """
 
+import colorsys
 import math
 import os
 
@@ -74,6 +78,28 @@ KNOBS = {
     "AROUSAL_USUAL": 0.30,        # where usual arousal may sit at most
     "BALANCE_SPREAD_GAIN": 2.5,   # balance this many usual swings from usual reads as 1
     "BALANCE_SPREAD_MIN": 0.08,   # smallest swing treated as real
+    # Where the strip's colour comes from.
+    #   "blend"  a straight line in RGB between COOL and WARM, placed by
+    #            balance. Blue and orange are near opposites, so the middle of
+    #            that line is grey-white (81, 84, 81), and the field spends most
+    #            of its time near the middle. The glow, the pulse, the shimmer
+    #            and the event flash add more white.
+    #   "inner"  one hue for the whole strip, pushed around the colour wheel by
+    #            the field's reservoir: a fixed reading of its six cells, taken
+    #            against its own usual level, turns the hue one way while it is
+    #            above usual and back while it is below. Nothing is drawn by
+    #            chance: the same life gives the same colours. Along the strip
+    #            the hue leans one way where the warm senses are active and the
+    #            other way at the cool ones. Brightness still comes from each
+    #            cell's activity. The pulse is a paler streak of the same hue,
+    #            an event flashes the opposite hue, and the W channel is off.
+    "COLOUR_MODEL": os.environ.get("CREATURE_COLOUR_MODEL", "blend"),
+    "HUE_AXIS": (1.0, -1.0, 1.0, -1.0, 1.0, -1.0),   # the reading of the reservoir
+    "HUE_RATE": 1.5,              # degrees a tick when the reading is one usual swing from usual
+    "HUE_RATE_MAX": 4.0,          # and never faster than this
+    "HUE_WARMTH_SPREAD": 50.0,    # degrees the hue leans at a fully warm or cool pixel
+    "INNER_BRIGHTNESS": 0.6,      # the whole frame, against the blend model's
+    "PULSE_PALE": 0.35,           # how much colour the pulse's streak gives up
 }
 
 
@@ -136,6 +162,11 @@ class ExpressionDecoderV06:
         self.usual_balance = None
         self.balance_spread = None
         self.usual_steps = 0
+        # The inner colour model's hue, and the reservoir reading's usual level.
+        self.hue = None
+        self.hue_usual = None
+        self.hue_swing = 0.0
+        self.hue_steps = 0
 
     def _step_usual(self, ripple, level, balance):
         """Move the running medians one step toward this tick. Each is judged
@@ -158,6 +189,28 @@ class ExpressionDecoderV06:
         self.balance_spread += rate * (abs(balance - self.usual_balance) - self.balance_spread)
         self.usual_balance += rate if balance > self.usual_balance else -rate
         self.usual_balance = clamp(self.usual_balance, -1.0, 1.0)
+
+    def _step_hue(self, state):
+        """Turn the hue by what the reservoir says this tick. The reading is
+        judged against its own running level first and that level stepped
+        after, with the same warm start as the other usual levels."""
+        k = self.knobs
+        cells = (state.get("reservoir") or {}).get("state") or []
+        if self.hue is None:
+            self.hue = 0.0
+        if not cells:
+            return
+        reading = sum(a * float(r) for a, r in zip(k["HUE_AXIS"], cells))
+        self.hue_steps += 1
+        rate = max(k["USUAL_RATE"], min(k["USUAL_RATE_MAX"], k["USUAL_WARM"] / self.hue_steps))
+        if self.hue_usual is None:
+            self.hue_usual = reading
+            return
+        away = reading - self.hue_usual
+        turn = k["HUE_RATE"] * away / max(self.hue_swing, 0.005)
+        self.hue = (self.hue + clamp(turn, -k["HUE_RATE_MAX"], k["HUE_RATE_MAX"])) % 360.0
+        self.hue_usual += rate * away
+        self.hue_swing += rate * (abs(away) - self.hue_swing)
 
     def _relative_balance(self, balance):
         """Balance as warmer (+) or cooler (-) than the field's usual."""
@@ -262,6 +315,8 @@ class ExpressionDecoderV06:
                 balance = centre(raw_balance)
             self._step_usual(ripple, level, raw_balance)
 
+        if k["COLOUR_MODEL"] == "inner":
+            self._step_hue(state)
         event_n, event_sig, event_flag = self._event_origin(state, count)
         pixels = self._render(
             activations,
@@ -285,6 +340,8 @@ class ExpressionDecoderV06:
             "pixels": pixels,
             "event": event_flag,
         }
+        if self.hue is not None:
+            out["hue"] = round(self.hue, 1)
         if self.knobs["VOICE_MODEL"] == "relative":
             # The decision is made here, once per tick, and carried in the
             # signal. voice_params_from_signal reads it instead of re-deciding.
@@ -317,6 +374,9 @@ class ExpressionDecoderV06:
         # alone carries little of the strip's light, most of it comes from each
         # cell's own activity, so a drained reserve also dims the whole frame.
         scale = clamp(float(k["LED_CAP"]) / 255.0, 0.0, 1.0) * clamp(energy, 0.0, 1.0)
+        inner = k["COLOUR_MODEL"] == "inner" and self.hue is not None
+        if inner:
+            scale *= k["INNER_BRIGHTNESS"]
         out = []
 
         for p in range(n_pixels):
@@ -329,6 +389,23 @@ class ExpressionDecoderV06:
             if centre is not None:
                 warmth = centre(warmth)
             warmth = clamp(0.62 * warmth + 0.38 * balance, -1.0, 1.0)
+
+            if inner:
+                value = k["FLOOR"] + (1.0 - k["FLOOR"]) * clamp(local_a * act_gain + arousal * 0.22, 0.0, 1.0)
+                d = min(abs(x - self.pulse_pos), abs(x - self.pulse_pos + 1.0), abs(x - self.pulse_pos - 1.0))
+                pulse = math.exp(-((d / k["PULSE_WIDTH"]) ** 2)) * tempo * k["PULSE_STRENGTH"]
+                shimmer = math.sin(tick * 0.73 + p * 2.31) * k["SHIMMER"] * tempo / 255.0
+                hue = self.hue + k["HUE_WARMTH_SPREAD"] * warmth
+                flash = 0.0
+                if event_n is not None:
+                    flash = clamp(math.exp(-((pos - event_n) / k["EVENT_WIDTH"]) ** 2) * event_sig, 0.0, 1.0)
+                    hue += 180.0 * flash        # the opposite hue, at the event's own place
+                value = clamp(value + 0.5 * pulse + shimmer + 0.5 * flash, 0.0, 1.0)
+                sat = clamp(1.0 - k["PULSE_PALE"] * pulse, 0.0, 1.0)
+                red, green, blue = colorsys.hsv_to_rgb((hue % 360.0) / 360.0, sat, value)
+                out.append((int(red * 255.0 * scale), int(green * 255.0 * scale),
+                            int(blue * 255.0 * scale), 0))
+                continue
 
             mix = (warmth + 1.0) * 0.5
             red = k["COOL"][0] * (1.0 - mix) + k["WARM"][0] * mix

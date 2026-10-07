@@ -495,6 +495,40 @@ and synthesizes the voice. It proved the map reads the field correctly. It also
 showed the field going quiet, which is the problem the loop and the reservoir exist
 to answer.
 
+Where the strip's colour comes from has two models, chosen by
+`CREATURE_COLOUR_MODEL`. The default, `blend`, is the one above: a straight line
+in RGB between a blue and an orange, placed by balance. On the body it read as
+bright white. The W channel was not the cause (it sat near 9 of 255): blue and
+orange are near opposites, so the middle of that line is grey-white (81, 84,
+81), the field spends most of its time near the middle, and the glow, the pulse,
+the shimmer and the event flash all add white.
+
+`inner`, built on 7 October 2026, gives the whole strip one hue that the field's
+reservoir pushes around the colour wheel. A fixed reading of the six reservoir
+cells is taken against its own usual level; the hue turns one way while the
+reading is above usual and back while it is below, at 1.5 degrees a tick for one
+usual swing and never more than 4. Nothing is drawn by chance: the same life
+gives the same colours. Along the strip the hue leans up to 50 degrees one way
+where the warm senses are active and the other way at the cool ones. Brightness
+still comes from each cell's activity. The pulse is a paler streak of the same
+hue, an event flashes the opposite hue at its own place, the W channel is off
+(a curiosity probe still lifts it), and the whole frame is at 0.6 of the
+blend's scale. The hue is the decoder's own and is not saved: after a restart
+it begins again at red.
+
+A direct map from the reservoir's state to a hue was tried first. The six cells
+mostly rise and fall together, so it gave two opposite colours with quick jumps
+between them (up to 60 degrees in a tick).
+
+The gate is `python tools/field_lab_v06.py --colour`, the same field read by
+both models. It passes 9/9 on seeds 1, 2, 3 and 7: white on 0 % of lit pixels
+against 24 %, all twelve twelfths of the wheel in near-equal shares against
+three, 37 % of the light, and arousal, balance, tempo and the voice identical.
+In the collector's own loop on the scripted body, where the strip's light
+reaches the light sensor strongly, the changing colour is sensed: over 30
+minutes there were 30 to 50 % more events than under the blend and the largest
+link gap was 0.08, with the same tones and no sleeps.
+
 When the voice speaks changed in v06.9. The old rule voiced a tone whenever arousal
 was at or above 0.45. On the twelve-cell body that is true about half the time, so
 with a 20-second minimum between tones the voice ran as a metronome: over 1.8 hours
