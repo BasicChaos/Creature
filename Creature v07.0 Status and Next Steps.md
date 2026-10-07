@@ -218,6 +218,28 @@ cell reads about 0.15 V higher on the charger, so the Creature brightens within
 a couple of minutes of being plugged in and dims the same way when the charger
 is pulled below about 3.75 V.
 
+## The first real run of the whole chain (7 October, 19:36 to 20:22)
+
+The charger came out at 19:36 after about half an hour of charging, and the body
+was left to run down:
+
+- 19:36: the cell read 3.59 V on the charger and 3.45 V the moment it was out.
+  The reserve followed the smoothed voltage down from 2.27 to its floor of 1.29
+  in about six minutes, with no jumps, on readings that bounced by 20 to 30 mV.
+- 19:47: the cell reached 3.40 V. Whether the body's strip cap came on is not
+  known: the readings hovered either side of 3.40 V, the collector does not
+  record the body's `battery_low` line, and nobody was watching.
+- 20:12: the body slept at 3.30 V (last reading 3.296 V at 20:12:29), 25
+  minutes after 3.40 V. The strip was dark and the e-paper read "Battery low /
+  3.30 V / Asleep" and "Plug in the charger", both inside their columns.
+- Asleep, the power LEDs on the gauge, the SGP41, the IMU and the ESP board
+  stayed lit: the 3.3 V rail is up and the sensors still draw from the cell.
+- The charger went back in at about 20:20. The body woke at 20:22:48, within
+  one or two looks at the gauge, reading 3.607 V and +11.2 %/hr. It booted,
+  joined WiFi and the collector reconnected, with no reset.
+- After the ten minute gap the reserve stayed at the floor for a couple of
+  minutes while the smoothed voltage caught up.
+
 ## The battery, step 3: the low-battery reflex on the body (7 October)
 
 Deployed on 7 October 2026 as commit `3054a49`: the body was flashed at 19:11 and
@@ -254,13 +276,13 @@ What was built, all in `Code/Firmware/esp-creature-core/src/main.cpp`:
 
 Not known:
 
-- The reflex has only run on a test voltage. It has not yet met a really low
-  cell, and the strip cap was seen as a system line, not looked at.
+- The strip cap has been seen as a system line on a test voltage, not looked
+  at. The sleep and the wake have since run on a really low cell (see the
+  section above).
 - At 18:58 the body came back by itself when the charger went in, with no
   reset (the reset of 4 October was not needed this time).
 - How much the body draws asleep. The PowerBoost, the strip's idle current and
   the sensors stay powered, so a sleeping body still drains the cell, slower.
-- Whether "Battery low" and the voltage fit the e-paper's column.
 - Whether a cell asleep at 3.30 V rebounds far enough, with no charger, to pass
   3.60 V and wake the body, which would then sag and sleep again.
 
