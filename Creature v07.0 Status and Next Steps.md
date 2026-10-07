@@ -220,7 +220,13 @@ is pulled below about 3.75 V.
 
 ## The strip's colour: the inner model (7 October, late evening)
 
-Written late on 7 October. Not committed and not on the Pi when written.
+Deployed on 7 October 2026 as commit `f2d7fd5`. The collector was restarted at
+20:48 with `CREATURE_COLOUR_MODEL=inner` added to its settings, seven in all
+(state loaded from tick 1224805, under a minute down). State from before the
+restart is next to the database as `*.pre-colour.json`. A minute in, the frames
+it sent were magenta to violet, the hue turning from 292 to 312 degrees in 15
+seconds, the W channel at 0. To go back to the blend, restart without the
+setting.
 
 Josh found the strip's bright white annoying and asked for more varied colour
 that is still the Creature's own expression, at about a third of the brightness.
@@ -676,7 +682,7 @@ The start command in force since 7 October, typed in the tmux pane (in
 
     CREATURE_EXPRESSION_MODEL=relative CREATURE_SLOW_MIX=0.25 \
     CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0 CREATURE_SLOW_LEAK=4.13e-7 \
-    CREATURE_BATTERY_CEILING=1 \
+    CREATURE_BATTERY_CEILING=1 CREATURE_COLOUR_MODEL=inner \
     python collector/collector.py tcp://creature-esp.local:7777
 
 To start a fresh twin, stop the collector first, then move
