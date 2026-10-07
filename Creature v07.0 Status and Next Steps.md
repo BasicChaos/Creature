@@ -247,8 +247,11 @@ speaker, volume 0.70, what the body heard at each pitch: 300 Hz 7,900; 378 Hz
 overtones and chose: fewer beeps, more swells and soft tones, a mix of
 overtones, and the top half only very lightly because it is piercing.
 
-The open palette, built the same evening. Not committed and not on the Pi when
-written:
+The open palette, built the same evening and deployed as commit `92d3ecc`: the
+collector was restarted at 21:24 with `CREATURE_VOICE_PALETTE=open` added, eight
+settings in all (state loaded from tick 1226624, under a minute down; no flash).
+State from before the restart is next to the database as `*.pre-palette.json`.
+No tone had been heard under it when this was written. What was built:
 
 - `mind/expression_v06.py`: `CREATURE_VOICE_PALETTE=open` (default `beep`,
   unchanged). Five main notes from 450 to 750 Hz, three light high ones, swells
@@ -748,6 +751,7 @@ The start command in force since 7 October, typed in the tmux pane (in
     CREATURE_EXPRESSION_MODEL=relative CREATURE_SLOW_MIX=0.25 \
     CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0 CREATURE_SLOW_LEAK=4.13e-7 \
     CREATURE_BATTERY_CEILING=1 CREATURE_COLOUR_MODEL=inner \
+    CREATURE_VOICE_PALETTE=open \
     python collector/collector.py tcp://creature-esp.local:7777
 
 To start a fresh twin, stop the collector first, then move
