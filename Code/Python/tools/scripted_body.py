@@ -44,7 +44,7 @@ PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
 
-from tools.fake_body import voice_response
+from tools.fake_body import voice_response, vox_tone
 
 SAMPLE_SECONDS = 0.1
 COUPLING = (20.0, 35.0, 10.0, 60.0)    # lux at the sensor per strip channel at full
@@ -116,11 +116,10 @@ class ScriptedBody:
                                                for c in range(4)]))
                 del self.frames[:-4]
         elif line.startswith("VOX:"):
-            parts = line[4:].split(",")
-            freq, ms = float(parts[0]), int(parts[1])
-            vol = float(parts[2]) if len(parts) > 2 else 1.0
+            tone = vox_tone(line)
+            freq, ms, vol = tone["freq"], tone["ms"], tone["vol"]
             self.blocked_until = self.now + (40 + ms + 150) / 1000.0
-            own = ECHO * voice_response(freq) * vol * (0.9 + 0.2 * self.rng.random())
+            own = ECHO * voice_response(freq) * vol * tone["level"] * (0.9 + 0.2 * self.rng.random())
             self.spike = 10.0 * own
             room_heard = 150.0 + 200.0 * self.rng.random()
             self.report = {"vox": {

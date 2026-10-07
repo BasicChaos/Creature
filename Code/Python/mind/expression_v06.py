@@ -100,6 +100,29 @@ KNOBS = {
     "HUE_WARMTH_SPREAD": 50.0,    # degrees the hue leans at a fully warm or cool pixel
     "INNER_BRIGHTNESS": 0.6,      # the whole frame, against the blend model's
     "PULSE_PALE": 0.35,           # how much colour the pulse's streak gives up
+    # What a tone sounds like. When the voice speaks is the same under both.
+    #   "beep"  a plain sine with 10 ms fades, 220 to 440 Hz from balance. On
+    #           the body's small speaker that range is its weakest corner: it is
+    #           12 times louder at 476 Hz than at 300 (sweep of 7 October 2026).
+    #   "open"  a note from a five-note scale where the speaker speaks evenly,
+    #           placed by balance; three higher notes only at the very top,
+    #           quiet and bare, because the top of the range is piercing. No
+    #           beeps: a calm moment swells slowly, a busy one is shorter and
+    #           softer-edged. Two overtones are mixed in by where the strip's
+    #           hue stands, so the tone's colour moves with the light's.
+    #           Balance and tempo are read against the last OPEN_MEMORY times
+    #           it spoke, not as they come: it speaks when something surprises
+    #           it, which is nearly always a warm, busy moment, and read as they
+    #           come three tones in four were high and none was a swell (first
+    #           run of the gate). Needs the firmware of 7 October 2026.
+    "VOICE_PALETTE": os.environ.get("CREATURE_VOICE_PALETTE", "beep"),
+    "OPEN_NOTES": (450.0, 506.2, 562.5, 675.0, 750.0),
+    "OPEN_LIGHT_NOTES": (900.0, 1125.0, 1350.0),
+    "OPEN_LIGHT_ABOVE": 0.94,     # the light notes: the very top of where it has spoken
+    "OPEN_MEMORY": 32,            # how many of its own tones it reads the next against
+    "OPEN_VOLUME": 0.70,
+    "OPEN_LIGHT_VOLUME": 0.40,
+    "OPEN_OVERTONES": (0.5, 0.35),  # the most of the second and of the third
 }
 
 
@@ -167,6 +190,8 @@ class ExpressionDecoderV06:
         self.hue_usual = None
         self.hue_swing = 0.0
         self.hue_steps = 0
+        # The open palette: balance and tempo at the last times it spoke.
+        self.spoken = []
 
     def _step_usual(self, ripple, level, balance):
         """Move the running medians one step toward this tick. Each is judged
@@ -247,7 +272,25 @@ class ExpressionDecoderV06:
         if self.ticks_since_event > k["VOICE_EVENT_TICKS"]:
             return None
         self.voice_armed = False
-        return voice_tone(balance, tempo)
+        if k["VOICE_PALETTE"] != "open":
+            return voice_tone(balance, tempo)
+        # Balance and tempo are often pinned at their ends when it speaks.
+        # Among equals, how far arousal stood above usual decides.
+        place = self._standing(0, (balance, above))
+        pace = self._standing(1, (tempo, above))
+        self.spoken.append(((balance, above), (tempo, above)))
+        del self.spoken[:-int(k["OPEN_MEMORY"])]
+        return voice_tone_open(place, pace, self.hue, k)
+
+    def _standing(self, which, value):
+        """Where a value stands among the last times it spoke, 0 (lowest) to 1.
+        The middle until there are a few to stand among."""
+        past = [entry[which] for entry in self.spoken]
+        if len(past) < 4:
+            return 0.5
+        below = sum(1 for x in past if x < value)
+        level = sum(1 for x in past if x == value)
+        return (below + 0.5 * level) / len(past)
 
     def read(self, state):
         cells = sorted(state.get("cells") or [], key=lambda c: c.get("n", 0))
@@ -487,6 +530,75 @@ def voice_tone(balance, tempo):
     return {"freq": round(freq, 1), "ms": ms, "vol": round(vol, 2)}
 
 
+def tone_level(tone):
+    """How much of a plain tone's level a shaped one has at its own pitch, taken
+    over its whole length: the mean of its rise and fall, times the share of the
+    sound that is the fundamental. The body listens at the fundamental, so this
+    is what its report should scale with. 1.0 for a tone with no shape given."""
+    if "attack" not in tone:
+        return 1.0
+    total = max(1.0, float(tone["ms"]))
+    attack = min(max(float(tone["attack"]), 2.0), 2000.0)
+    release = min(max(float(tone["release"]), 2.0), 4000.0)
+    curved = float(tone["release"]) > 20.0
+    if attack + release > total:
+        attack = total * attack / (attack + release)
+        release = total - attack
+    envelope = (0.5 * attack + (total - attack - release) + release * (1.0 / 3.0 if curved else 0.5)) / total
+    return envelope / (1.0 + float(tone.get("h2", 0.0)) + float(tone.get("h3", 0.0)))
+
+
+def voice_tone_open(place, pace, hue=None, knobs=None):
+    """The open palette's tone. `place` (0 to 1) picks the note, `pace` (0 to 1)
+    the shape, the strip's hue the overtones. The decoder gives where balance
+    and tempo stand among the last times it spoke."""
+    k = knobs or KNOBS
+    place = clamp(float(place or 0.0), 0.0, 1.0)
+    tempo = clamp(float(pace or 0.0), 0.0, 1.0)
+    notes, light_notes, edge = k["OPEN_NOTES"], k["OPEN_LIGHT_NOTES"], k["OPEN_LIGHT_ABOVE"]
+    light = place > edge
+    if light:
+        index = min(len(light_notes) - 1, int((place - edge) / (1.0 - edge) * len(light_notes)))
+        freq, vol, h2, h3 = light_notes[index], k["OPEN_LIGHT_VOLUME"], 0.0, 0.0
+    else:
+        index = min(len(notes) - 1, int(place / edge * len(notes)))
+        freq, vol = notes[index], k["OPEN_VOLUME"]
+        angle = math.radians(hue if hue is not None else 45.0)
+        h2 = k["OPEN_OVERTONES"][0] * 0.5 * (1.0 + math.sin(angle))
+        h3 = k["OPEN_OVERTONES"][1] * 0.5 * (1.0 + math.cos(angle))
+    # Calm: a long swell. Busy: shorter, with a quicker rise and a longer tail.
+    tone = {
+        "freq": round(freq, 1),
+        "ms": int(600 - 200 * tempo) if not light else int(320 - 60 * tempo),
+        "vol": round(vol, 2),
+        "attack": int(450 - 330 * tempo) if not light else 100,
+        "release": int(120 + 130 * tempo) if not light else 180,
+        "h2": round(h2, 2),
+        "h3": round(h3, 2),
+    }
+    tone["level"] = round(tone_level(tone), 4)
+    return tone
+
+
+def tone_for(balance, tempo, hue=None, knobs=None):
+    """The tone for this expression under the palette in force, for a caller
+    with no memory of earlier tones (the fixed voice rule): balance and tempo
+    are taken as they come."""
+    k = knobs or KNOBS
+    if k["VOICE_PALETTE"] == "open":
+        return voice_tone_open((clamp(float(balance or 0.0), -1.0, 1.0) + 1.0) * 0.5, tempo, hue, k)
+    return voice_tone(balance, tempo)
+
+
+def voice_command(tone):
+    """The VOX line for a tone. The shape and overtones go only when it has any."""
+    line = f"VOX:{tone['freq']:.1f},{tone['ms']},{tone['vol']:.2f}"
+    if "attack" in tone:
+        line += (f",{int(tone['attack'])},{int(tone['release'])},"
+                 f"{tone.get('h2', 0.0):.2f},{tone.get('h3', 0.0):.2f}")
+    return line + "\n"
+
+
 def voice_params_from_signal(signal, speaker_activation):
     """The tone the body would voice this tick as {"freq","ms","vol"}, or None
     when it stays silent. The forward model records these as what was emitted.
@@ -499,11 +611,11 @@ def voice_params_from_signal(signal, speaker_activation):
     arousal = max(float(signal.get("A", 0.0) or 0.0), float(speaker_activation or 0.0))
     if arousal < float(os.environ.get("CREATURE_VOICE_THRESHOLD", "0.45")):
         return None
-    return voice_tone(signal.get("B", 0.0), signal.get("T", 0.0))
+    return tone_for(signal.get("B", 0.0), signal.get("T", 0.0), signal.get("hue"))
 
 
 def voice_command_from_signal(signal, speaker_activation):
     params = voice_params_from_signal(signal, speaker_activation)
     if params is None:
         return None
-    return f"VOX:{params['freq']:.1f},{params['ms']},{params['vol']:.2f}\n"
+    return voice_command(params)

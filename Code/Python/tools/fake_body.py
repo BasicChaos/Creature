@@ -32,7 +32,15 @@ import json
 import math
 import random
 import socket
+import sys
 import time
+from pathlib import Path
+
+PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
+
+from mind.expression_v06 import tone_level
 
 def fake_air(seconds):
     """Made-up air readings: a slow CO2 swell, and every 90 s a 20 s VOC event
@@ -58,8 +66,25 @@ def fake_battery(seconds):
 
 
 # How loud the speaker is across its range, relative to its usual echo.
+# Up to 440 Hz from 2 October 2026; above that from the sweep of 7 October, a
+# third of an octave apart, joined on at 440 Hz.
 VOICE_RESPONSE = [(220.0, 0.15), (250.0, 0.20), (290.0, 0.25), (325.0, 1.00),
-                  (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00)]
+                  (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00),
+                  (476.0, 1.6), (600.0, 1.75), (756.0, 3.4), (952.0, 5.8),
+                  (1200.0, 4.2), (1512.0, 4.0), (1905.0, 3.0)]
+
+
+def vox_tone(line):
+    """A VOX line as the tone dict the mind uses, with its level at its own pitch."""
+    parts = line[4:].split(",")
+    tone = {"freq": float(parts[0]), "ms": int(float(parts[1])),
+            "vol": float(parts[2]) if len(parts) > 2 else 1.0}
+    if len(parts) > 4:
+        tone.update(attack=float(parts[3]), release=float(parts[4]),
+                    h2=float(parts[5]) if len(parts) > 5 else 0.0,
+                    h3=float(parts[6]) if len(parts) > 6 else 0.0)
+    tone["level"] = tone_level(tone)
+    return tone
 
 
 def voice_response(freq):
@@ -141,11 +166,11 @@ def main():
                             frames.append((now, [sum(px[c] for px in pixels) / (255.0 * len(pixels))
                                                  for c in range(4)]))
                     elif line.startswith("VOX:"):
-                        parts = line[4:].split(",")
-                        freq, ms = float(parts[0]), int(parts[1])
-                        vol = float(parts[2]) if len(parts) > 2 else 1.0
+                        tone = vox_tone(line)
+                        freq, ms, vol = tone["freq"], tone["ms"], tone["vol"]
                         blocked_until = now + (40 + ms + 150) / 1000.0
-                        own = args.echo * voice_response(freq) * vol * (0.9 + 0.2 * rng.random())
+                        own = (args.echo * voice_response(freq) * vol * tone["level"]
+                               * (0.9 + 0.2 * rng.random()))
                         spike = 10.0 * own
                         room_heard = 150.0 + 200.0 * rng.random()
                         if not args.old_firmware:

@@ -27,6 +27,8 @@ after the last one. Plain Python, seeded, no numpy.
 import os
 import random
 
+from mind import forward_model_v06 as fm
+from mind.expression_v06 import tone_level
 from mind.forward_model_v06 import SOUND_PITCH_BINS, pitch_bin_center
 
 # Boredom starts this many ticks after the last significant event, and is full
@@ -45,6 +47,7 @@ VOICE_PROBE_CHANCE = float(os.environ.get("CREATURE_PROBE_VOICE_CHANCE", "0.003"
 VOICE_PROBE_GAP_TICKS = int(os.environ.get("CREATURE_PROBE_VOICE_GAP_TICKS", "120"))
 VOICE_PROBE_MS = 300
 VOICE_PROBE_VOLUME = 0.75
+OPEN_PROBE = {"ms": 400, "vol": 0.70, "attack": 120, "release": 250, "h2": 0.0, "h3": 0.0}
 
 
 def boredom(ticks_since_event):
@@ -68,16 +71,17 @@ class Curiosity:
         """Half the time the band it has tried least, otherwise the band it has
         recently been most wrong about. A little jitter inside the band, so the
         same band is not always the same note."""
-        bands = list(range(SOUND_PITCH_BINS))
+        bands = [i for i in range(SOUND_PITCH_BINS)
+                 if fm.SOUND_PROBE_TOP is None or pitch_bin_center(i) <= fm.SOUND_PROBE_TOP]
         if sound_model is None:
             index = self.rng.choice(bands)
         elif self.rng.random() < 0.5:
-            fewest = min(sound_model.pitch_n)
+            fewest = min(sound_model.pitch_n[i] for i in bands)
             index = self.rng.choice([i for i in bands if sound_model.pitch_n[i] == fewest])
         else:
-            worst = max(sound_model.pitch_err)
+            worst = max(sound_model.pitch_err[i] for i in bands)
             index = self.rng.choice([i for i in bands if sound_model.pitch_err[i] == worst])
-        jitter = 2.0 ** (self.rng.uniform(-0.4, 0.4) / SOUND_PITCH_BINS)
+        jitter = 2.0 ** (self.rng.uniform(-0.4, 0.4) * fm.SOUND_PITCH_OCTAVES / SOUND_PITCH_BINS)
         return round(pitch_bin_center(index) * jitter, 1)
 
     def step(self, ticks_since_event, sound_model=None, voice_allowed=True):
@@ -101,6 +105,10 @@ class Curiosity:
                     "ms": VOICE_PROBE_MS,
                     "vol": VOICE_PROBE_VOLUME,
                 }
+                if fm.VOICE_PALETTE == "open":
+                    # No beeps under the open palette: a probe is a soft tone.
+                    voice.update(OPEN_PROBE)
+                    voice["level"] = round(tone_level(voice), 4)
 
         self.last = {"bored": round(bored, 4), "light": round(light, 4), "voice": voice}
         return self.last

@@ -68,8 +68,29 @@ LIGHT_ACTED_THRESHOLD = 0.004
 SOUND_MU = 0.1
 SOUND_EPS = 1e-3
 SOUND_AMBIENT_ALPHA = 0.05  # room level, tracked only while not speaking
+SOUND_PITCH_BINS = 8        # bands across the voice's range
+# The range the bands cover follows the voice's palette (see expression_v06):
+# the plain beep's octave above 220 Hz, or the open palette's two octaves above
+# 450 Hz. Probe tones keep under SOUND_PROBE_TOP, so curiosity does not go
+# looking for the piercing top of the speaker's range at night.
+VOICE_PALETTE = "beep"
 SOUND_PITCH_LOW = 220.0     # Hz, the bottom of the voice's range
-SOUND_PITCH_BINS = 8        # bands across the octave above that
+SOUND_PITCH_OCTAVES = 1.0
+SOUND_PROBE_TOP = None
+
+
+def set_voice_palette(name):
+    """Point the pitch bands at a palette's range. Called once at import from
+    CREATURE_VOICE_PALETTE; the gates call it to compare the two."""
+    global VOICE_PALETTE, SOUND_PITCH_LOW, SOUND_PITCH_OCTAVES, SOUND_PROBE_TOP
+    VOICE_PALETTE = name
+    if name == "open":
+        SOUND_PITCH_LOW, SOUND_PITCH_OCTAVES, SOUND_PROBE_TOP = 450.0, 2.0, 800.0
+    else:
+        SOUND_PITCH_LOW, SOUND_PITCH_OCTAVES, SOUND_PROBE_TOP = 220.0, 1.0, None
+
+
+set_voice_palette(os.environ.get("CREATURE_VOICE_PALETTE", "beep"))
 SOUND_BIN_ERR_ALPHA = 0.2   # per-band memory of how wrong the last few tones were
 
 # How a loop is felt. A sensed echo always registers a little; the rest of the
@@ -97,12 +118,13 @@ def pitch_bin(freq):
     """Which band of the voice's range a pitch falls in, 0 to SOUND_PITCH_BINS-1."""
     if freq <= SOUND_PITCH_LOW:
         return 0
-    return min(SOUND_PITCH_BINS - 1, int(math.log2(freq / SOUND_PITCH_LOW) * SOUND_PITCH_BINS))
+    return min(SOUND_PITCH_BINS - 1,
+               int(math.log2(freq / SOUND_PITCH_LOW) * SOUND_PITCH_BINS / SOUND_PITCH_OCTAVES))
 
 
 def pitch_bin_center(index):
     """The pitch in the middle of a band, in Hz."""
-    return SOUND_PITCH_LOW * 2.0 ** ((index + 0.5) / SOUND_PITCH_BINS)
+    return SOUND_PITCH_LOW * 2.0 ** ((index + 0.5) * SOUND_PITCH_OCTAVES / SOUND_PITCH_BINS)
 
 
 def _feel(strength, error_fraction):
@@ -270,7 +292,9 @@ class SoundModel:
 
     def _step_pitch(self, voice, heard):
         """A tone the body listened to while playing. `heard` is its report."""
-        vol = float(voice.get("vol", 0.0) or 0.0)
+        # A shaped tone carries less at its own pitch than a plain one of the
+        # same volume; `level` is by how much (expression_v06.tone_level).
+        vol = float(voice.get("vol", 0.0) or 0.0) * float(voice.get("level", 1.0) or 1.0)
         freq = float(voice.get("freq", SOUND_PITCH_LOW) or SOUND_PITCH_LOW)
         index = pitch_bin(freq)
         own = float(heard.get("heard", 0.0) or 0.0) - float(heard.get("room_heard", 0.0) or 0.0)
@@ -324,7 +348,7 @@ class SoundModel:
                          "pred": round(pred, 1), "err": round(err, 1)}
             return self.last
 
-        vol = float(voice.get("vol", 0.0) or 0.0)
+        vol = float(voice.get("vol", 0.0) or 0.0) * float(voice.get("level", 1.0) or 1.0)
         pred = self.quiet_excess + self.gain * vol
         err = excess - pred
         self.gain += SOUND_MU * err * vol / (SOUND_EPS + vol * vol)
@@ -372,6 +396,7 @@ class SoundModel:
             "pitch_err": self.pitch_err, "pitch_err_ema": self.pitch_err_ema,
             "pitch_null_ema": self.pitch_null_ema, "pitch_voiced": self.pitch_voiced,
             "echo_scale": self.echo_scale,
+            "pitch_low": SOUND_PITCH_LOW, "pitch_octaves": SOUND_PITCH_OCTAVES,
         }
 
     def load_dict(self, data):
@@ -387,7 +412,11 @@ class SoundModel:
         gains = [float(x) for x in data.get("pitch_gain", [])]
         counts = [int(x) for x in data.get("pitch_n", [])]
         errors = [float(x) for x in data.get("pitch_err", [])]
-        if len(gains) == len(counts) == len(errors) == SOUND_PITCH_BINS:
+        # Bands learned over another range (the other voice palette) do not
+        # carry over either.
+        same_range = (float(data.get("pitch_low", 220.0)) == SOUND_PITCH_LOW
+                      and float(data.get("pitch_octaves", 1.0)) == SOUND_PITCH_OCTAVES)
+        if same_range and len(gains) == len(counts) == len(errors) == SOUND_PITCH_BINS:
             self.pitch_gain, self.pitch_n, self.pitch_err = gains, counts, errors
             self.pitch_err_ema = float(data.get("pitch_err_ema", 0.0))
             self.pitch_null_ema = float(data.get("pitch_null_ema", 0.0))

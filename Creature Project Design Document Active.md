@@ -534,6 +534,40 @@ reaches the light sensor strongly, the changing colour is sensed: over 30
 minutes there were 30 to 50 % more events than under the blend and the largest
 link gap was 0.08, with the same tones and no sleeps.
 
+What a tone sounds like has two palettes, chosen by `CREATURE_VOICE_PALETTE`.
+The default, `beep`, is one plain sine with 10 ms fades, 220 to 440 Hz from
+balance. A sweep of the real speaker on 7 October 2026 showed that range is its
+weakest corner: it is 12 times louder at 476 Hz than at 300, 42 times at its
+peak near 950 Hz, and within a factor of four from 470 to 1900 Hz.
+
+`open`, built on 7 October 2026 from what Josh chose by ear with
+`tools/voice_audition.py`, changes what a tone is and not when one is spoken:
+
+- The note is one of five (450, 506, 562, 675, 750 Hz), placed by balance.
+  Three higher notes (900, 1125, 1350 Hz) are reached only at the very top, and
+  are played at volume 0.40 with no overtones, because the top of the range is
+  piercing. The main notes are at 0.70.
+- No beeps. A calm moment is a long swell (up to 450 ms to rise, 600 ms long), a
+  busy one is shorter with a quicker rise and a longer tail.
+- Two overtones are mixed in by where the strip's hue stands, so the tone's
+  colour moves with the light's.
+- Balance and tempo are read against the last 32 times it spoke, not as they
+  come. It speaks when something surprises it, which is nearly always a warm,
+  busy moment: read as they come, three tones in four were high and none was a
+  swell. Among equals, how far arousal stood above usual decides.
+
+The sound model follows: its eight pitch bands cover two octaves above 450 Hz
+under this palette (bands learned over the other range are not carried over),
+and it is told each tone's `level`, how much of a plain tone's strength a shaped
+one has at its own pitch, since that is where the body listens. Curiosity's
+probe tones become soft tones and keep under 800 Hz.
+
+The gate is `python tools/field_lab_v06.py --palette`. It passes 9/9 on seeds
+1, 2, 3 and 7: the same moments of speech, all five main notes in use, 6 to 8 %
+of tones high, about 45 % long swells, and the sound model explaining 87 to 89 %
+of its own voice. In the collector's own loop on the scripted body, an hour, the
+field's life is close to the beep's (largest link gap 0.013).
+
 When the voice speaks changed in v06.9. The old rule voiced a tone whenever arousal
 was at or above 0.45. On the twelve-cell body that is true about half the time, so
 with a 20-second minimum between tones the voice ran as a metronome: over 1.8 hours

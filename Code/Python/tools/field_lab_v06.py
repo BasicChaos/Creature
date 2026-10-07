@@ -44,6 +44,7 @@ if str(PROJECT_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PYTHON_ROOT))
 
 from mind import cell_field_v06 as cf
+from mind import forward_model_v06 as fm
 from mind.expression_v06 import (
     ExpressionDecoderV06,
     lift_white,
@@ -1215,7 +1216,10 @@ FORWARD_PITCH_ECHO = 15000.0                  # mic level at the tone's own pitc
 # How loud the speaker is across its range, shaped like the real one measured on
 # 2 October 2026: weak at the bottom, peaks near 330 and 400 Hz, a dip between.
 FORWARD_VOICE_RESPONSE = [(220.0, 0.15), (250.0, 0.20), (290.0, 0.25), (325.0, 1.00),
-                          (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00)]
+                          (350.0, 0.90), (370.0, 0.30), (400.0, 1.20), (440.0, 1.00),
+                          # above 440 Hz from the sweep of 7 October 2026
+                          (476.0, 1.6), (600.0, 1.75), (756.0, 3.4), (952.0, 5.8),
+                          (1200.0, 4.2), (1512.0, 4.0), (1905.0, 3.0)]
 
 
 def _voice_response(freq):
@@ -1235,7 +1239,7 @@ def _heard(voice, room, burst=0.0, muffle=1.0):
     # on the one the creature is listening for.
     room_heard = 150.0 + 100.0 * room.random() + 0.004 * burst * room.random()
     own = (FORWARD_PITCH_ECHO * _voice_response(voice["freq"]) * voice["vol"]
-           * (0.85 + 0.3 * room.random()) * muffle)
+           * voice.get("level", 1.0) * (0.85 + 0.3 * room.random()) * muffle)
     return {"freq": voice["freq"], "heard": own + room_heard * (0.5 + room.random()),
             "room_heard": room_heard}
 
@@ -3229,6 +3233,147 @@ def colour_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# What a tone sounds like (7 October 2026)
+# ---------------------------------------------------------------------------
+#
+# The voice was one plain sine beep, 220 to 440 Hz, the small speaker's weakest
+# corner. Josh auditioned shapes, overtones and the range on the real speaker:
+# fewer beeps, more swells and soft tones, a mix of overtones, and the top of
+# the range only very lightly. The "open" palette is that.
+#
+# Control (beep) against variant (open), the same field read by both, under the
+# relative voice rule and the inner colour model as on the Pi.
+
+PALETTE_TICKS = 14400
+
+
+def _palette_run(seed, scenario, ticks):
+    random.seed(seed)
+    field = cf.build_field()
+    decoders = {m: ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": "relative", "COLOUR_MODEL": "inner",
+                                               "VOICE_MODEL": "relative", "VOICE_PALETTE": m})
+                for m in ("beep", "open")}
+    tones = {m: [] for m in decoders}
+    last = {m: -FORWARD_VOICE_GAP for m in decoders}
+    for t, values in enumerate(scenario_inputs(scenario, ticks, random.Random(seed + 1))):
+        state = field.step(values)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        for m, decoder in decoders.items():
+            tone = voice_params_from_signal(decoder.read(state), speaker)
+            if tone and t - last[m] >= FORWARD_VOICE_GAP:
+                tones[m].append((t, tone))
+                last[m] = t
+    return tones
+
+
+def _palette_learn(tones, seed, use_level=True):
+    """A sound model hearing these tones from the simulated speaker. Returns how
+    much of its own voice it explains at the end."""
+    room = random.Random(seed + 5)
+    model = fm.SoundModel()
+    for _, tone in tones:
+        told = dict(tone) if use_level else {k: v for k, v in tone.items() if k != "level"}
+        model.step(told, None, None, heard=_heard(tone, room))
+    return model.explained()
+
+
+def palette_probe(args):
+    """The palette gate: under the open palette the voice speaks at the same
+    moments, never as a beep, on a small scale where the speaker speaks, with
+    the high notes rare and light and the overtones a mix, and the sound model
+    still learns to predict its own voice."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | WHAT A TONE SOUNDS LIKE | seed={args.seed}, "
+          f"{args.scenario} scenario, {PALETTE_TICKS} ticks")
+    tones = _palette_run(args.seed, args.scenario, PALETTE_TICKS)
+    knobs = ExpressionDecoderV06().knobs
+    main_notes, light_notes = set(knobs["OPEN_NOTES"]), set(knobs["OPEN_LIGHT_NOTES"])
+    main_notes = {round(n, 1) for n in main_notes}
+    light_notes = {round(n, 1) for n in light_notes}
+
+    for name in ("beep", "open"):
+        ts = [tone for _, tone in tones[name]]
+        freqs = sorted({tone["freq"] for tone in ts})
+        print(f"\n  {name} palette" + (" (control)" if name == "beep" else " (variant)"))
+        print(f"    {len(ts)} tones, {len(freqs)} different pitches, "
+              f"{freqs[0]:.0f} to {freqs[-1]:.0f} Hz" if ts else "    no tones")
+        if name == "open" and ts:
+            counts = {f: sum(1 for tone in ts if tone["freq"] == f) for f in freqs}
+            print("    notes: " + ", ".join(f"{f:.0f} Hz x{n}" for f, n in counts.items()))
+            print(f"    rise {min(t['attack'] for t in ts)} to {max(t['attack'] for t in ts)} ms, "
+                  f"fall {min(t['release'] for t in ts)} to {max(t['release'] for t in ts)} ms, "
+                  f"length {min(t['ms'] for t in ts)} to {max(t['ms'] for t in ts)} ms")
+
+    beeps, opens = tones["beep"], [tone for _, tone in tones["open"]]
+    light = [t for t in opens if t["freq"] in light_notes]
+    main = [t for t in opens if t["freq"] in main_notes]
+    swells = sum(1 for t in main if t["attack"] >= 300)
+    h2 = [t["h2"] for t in main]
+    h3 = [t["h3"] for t in main]
+    shapes = {(t["freq"], t["attack"] // 60, round(t["h2"], 1), round(t["h3"], 1)) for t in opens}
+
+    was = (fm.VOICE_PALETTE,)
+    fm.set_voice_palette("beep")
+    learn_beep = _palette_learn(beeps, args.seed)
+    fm.set_voice_palette("open")
+    learn_open = _palette_learn(tones["open"], args.seed)
+    learn_blind = _palette_learn(tones["open"], args.seed, use_level=False)
+    probe = Curiosity(seed=args.seed + 7)
+    probes = []
+    model = fm.SoundModel()
+    for _ in range(40000):
+        out = probe.step(10 ** 6, model)
+        if out["voice"]:
+            probes.append(out["voice"])
+            probe.note_voice()
+            model.pitch_n[fm.pitch_bin(out["voice"]["freq"])] += 1
+    fm.set_voice_palette(was[0])
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    same_when = [t for t, _ in beeps] == [t for t, _ in tones["open"]]
+    check("it speaks at the same moments", same_when and len(opens) >= 10,
+          f"{len(opens)} tones against {len(beeps)}, at the same ticks: {same_when}")
+    check("no beeps", all(t["attack"] >= 100 and t["release"] >= 100 for t in opens),
+          f"every tone rises over at least {min(t['attack'] for t in opens)} ms and falls over at "
+          f"least {min(t['release'] for t in opens)} ms; {swells} of {len(main)} are long swells")
+    check("where the speaker speaks", all(t["freq"] in main_notes | light_notes for t in opens)
+          and min(t["freq"] for t in opens) >= 450.0,
+          f"every pitch is one of {len(main_notes) + len(light_notes)} notes, none under 450 Hz "
+          f"(the beep: all at or under {max(tone['freq'] for _, tone in beeps):.0f} Hz)")
+    check("it uses its scale", len({t["freq"] for t in main}) >= 4,
+          f"{len({t['freq'] for t in main})} of the {len(main_notes)} main notes heard")
+    check("the high notes are rare and light",
+          len(light) <= 0.15 * len(opens) and all(t["vol"] <= 0.4 and t["h2"] == 0.0 for t in light)
+          and all(t["vol"] <= 0.7 for t in main),
+          f"{len(light)} of {len(opens)} tones are high, at volume "
+          f"{max([t['vol'] for t in light], default=0.0):.2f} with no overtones; the rest at "
+          f"{max(t['vol'] for t in main):.2f}")
+    check("a mix of overtones", max(h2) - min(h2) >= 0.25 and max(h3) - min(h3) >= 0.15,
+          f"the second from {min(h2):.2f} to {max(h2):.2f}, the third from {min(h3):.2f} to {max(h3):.2f}")
+    check("more than a handful of sounds", len(shapes) >= 3 * len({tone["freq"] for _, tone in beeps}) or len(shapes) >= 20,
+          f"{len(shapes)} tones that differ in note, rise or overtones")
+    check("it still learns its own voice", learn_open >= 0.5 and learn_open >= learn_blind,
+          f"the sound model explains {learn_open * 100:.0f}% of what it hears of itself "
+          f"({learn_beep * 100:.0f}% under the beep; {learn_blind * 100:.0f}% if it is not told a "
+          f"tone's shape)")
+    check("curiosity's probes are soft and keep to the main range",
+          bool(probes) and all(p.get("attack", 0) >= 100 and p["freq"] <= 800.0 for p in probes),
+          f"{len(probes)} probe tones, {min(p['freq'] for p in probes):.0f} to "
+          f"{max(p['freq'] for p in probes):.0f} Hz, each rising over {probes[0].get('attack', 0)} ms"
+          if probes else "no probe tones")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -3310,6 +3455,9 @@ def main():
     p.add_argument("--battery", action="store_true",
                    help="the battery gate: the cell's voltage sets the reserve's ceiling; "
                         "control against variant through a scripted drain and recharge")
+    p.add_argument("--palette", action="store_true",
+                   help="the palette gate: what a tone sounds like, the open palette against "
+                        "the plain beep")
     p.add_argument("--colour", action="store_true",
                    help="the colour gate: the strip's hue from the reservoir against the "
                         "blue-to-orange blend")
@@ -3366,6 +3514,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.colour:
         ok = colour_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.palette:
+        ok = palette_probe(args)
         sys.exit(0 if ok else 1)
     if args.express:
         ok = express_probe(args)

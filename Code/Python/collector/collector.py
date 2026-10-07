@@ -52,6 +52,8 @@ from mind.expression_v06 import (
     ExpressionDecoderV06,
     lift_white,
     pixels_to_pix_command,
+    KNOBS as EXPRESSION_KNOBS,
+    voice_command,
     voice_command_from_signal,
     voice_params_from_signal,
 )
@@ -663,8 +665,7 @@ def make_body_sender(transport):
             ):
                 # A probe tone, only when the field itself has nothing to say.
                 tone = probe["voice"]
-                transport.write(
-                    f"VOX:{tone['freq']:.1f},{tone['ms']},{tone['vol']:.2f}\n".encode("utf-8"))
+                transport.write(voice_command(tone).encode("utf-8"))
                 last["voice_at"] = now
                 voice_sent = True
                 voice = dict(tone)
@@ -1199,6 +1200,8 @@ def main():
         print(f"Two-speed links: mix {SLOW_MIX:g}, slow leak {SLOW_LEAK:g}, soft ceiling {ceiling}")
     else:
         print("Two-speed links: off")
+    print(f"Voice palette: {EXPRESSION_KNOBS['VOICE_PALETTE']}, "
+          f"colour model: {EXPRESSION_KNOBS['COLOUR_MODEL']}")
     if BATTERY_CEILING:
         low, high = BATTERY_CEILING_CURVE[0], BATTERY_CEILING_CURVE[-1]
         print(f"Battery: the cell's voltage sets the energy reserve's ceiling, "

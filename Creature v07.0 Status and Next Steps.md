@@ -239,7 +239,46 @@ lower half of that range barely sounds.
   against `fake_body.py` only.
 - Nothing in the mind is changed: the Creature still sends plain beeps.
 
-Open: the body's measure of its own tone listens at the fundamental across the
+The body was flashed with this at 20:58 on 7 October (commit `b7c5dc4`) and the
+collector restarted at 21:02 with its seven settings. The sweep on the real
+speaker, volume 0.70, what the body heard at each pitch: 300 Hz 7,900; 378 Hz
+28,900; 476 Hz 94,200; 600 Hz 100,900; 756 Hz 195,800; 952 Hz 333,100; 1200 Hz
+241,600; 1512 Hz 229,400; 1905 Hz 172,300. Josh listened to the shapes and
+overtones and chose: fewer beeps, more swells and soft tones, a mix of
+overtones, and the top half only very lightly because it is piercing.
+
+The open palette, built the same evening. Not committed and not on the Pi when
+written:
+
+- `mind/expression_v06.py`: `CREATURE_VOICE_PALETTE=open` (default `beep`,
+  unchanged). Five main notes from 450 to 750 Hz, three light high ones, swells
+  and soft tones, overtones from the strip's hue, balance and tempo read against
+  its own last 32 tones.
+- `mind/forward_model_v06.py`: the pitch bands follow the palette, and the model
+  is told a tone's `level`. The saved file gains `pitch_low` and
+  `pitch_octaves`; bands learned over the other range start fresh.
+- `mind/curiosity_v06.py`: under the open palette a probe is a soft tone and
+  keeps under 800 Hz.
+- The collector sends the longer `VOX:` line and prints a `Voice palette:` line.
+- `tools/fake_body.py`, `tools/scripted_body.py` and the lab's simulated speaker
+  follow the sweep above 440 Hz and scale what is heard by a tone's level.
+- `tools/field_lab_v06.py --palette` is the gate: 9/9 on seeds 1, 2, 3 and 7.
+  Its first run failed (three tones in four high, no swells), which is why
+  balance and tempo are read against its own past tones. `--voice`, `--colour`,
+  `--battery`, `--twin`, `--forward`, `--curious` and `--feel` pass.
+- The collector on the scripted body, seeds 1, 2, 3 and 7: with the default
+  palette, identical to the committed code apart from the two new keys in the
+  forward model file. With `open`, an hour: the same number of tones, the
+  largest link gap 0.013, the sound model explaining 0.84 against 0.73.
+- A mistake caught by the twin gate: a start-up print in the collector used a
+  name that does not exist there, and the collector crashed at launch.
+
+Open from the palette: the light notes are at volume 0.40, below the 0.65 to
+0.90 the bench notes call the amp's clean range, and have not been heard. The
+Pi's sound model has learned 220 to 440 Hz and will start its bands again. The
+shapes have only been heard in the audition, not as the Creature uses them.
+
+Also open: the body's measure of its own tone listens at the fundamental across the
 whole tone. A pluck or an overtone mix will read quieter there than a beep of
 the same volume, which matters once the mind sends them and the sound model
 learns from the result.
