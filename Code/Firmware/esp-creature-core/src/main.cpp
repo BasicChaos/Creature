@@ -203,7 +203,7 @@ unsigned long lastGaugeMs = 0;
 #define PAPER_LINES          5
 #define PAPER_LINE_CHARS     20
 #define PAPER_MIN_GAP_MS     60000   // never redraw more often than this
-#define PAPER_FULL_EVERY     10      // every Nth redraw is a full one, to clear ghosting
+#define PAPER_FULL_EVERY     3     // every Nth redraw is a full one, to clear ghosting
 // GxEPD2_213_BN also drives this panel, but its partial refresh left faint grey
 // text and heavy ghosting on the V4.
 #define EPD_DRIVER GxEPD2_213_GDEY0213B74
