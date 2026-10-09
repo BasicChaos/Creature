@@ -56,12 +56,13 @@ class ScriptedBody:
 
     description = "scripted body"
 
-    def __init__(self, seconds, seed, loud_every):
+    def __init__(self, seconds, seed, loud_every, dark_after=0):
         self.rng = random.Random(seed + 1000)
         self.start = 1000.0
         self.now = self.start               # the pretend clock, in seconds
         self.end = self.start + seconds
         self.loud_every = loud_every
+        self.dark_after = dark_after        # the room's light goes out at this second (0: never)
         self.frames = [(0.0, [0.0] * 4)]    # (time, channel means) of the last frames shown
         self.blocked_until = 0.0            # a tone blocks the real body's loop
         self.spike = 0.0
@@ -90,6 +91,8 @@ class ScriptedBody:
         # The room: light that rises and falls over ten minutes, and now and then
         # three loud seconds with something moving.
         lux = 300.0 + 250.0 * math.sin(2.0 * math.pi * t / 600.0)
+        if self.dark_after and t >= self.dark_after:
+            lux = 0.3
         lux += sum(COUPLING[i] * u[i] for i in range(4)) + self.rng.gauss(0.0, 0.4)
         lux = round(lux / 0.83) * 0.83
         rms = 4000.0 + 300.0 * self.rng.random() + self.spike
@@ -161,7 +164,7 @@ def run(args):
     from collector import collector
     from mind.curiosity_v06 import Curiosity
 
-    body = ScriptedBody(args.seconds, args.seed, args.loud_every)
+    body = ScriptedBody(args.seconds, args.seed, args.loud_every, args.dark_after)
     collector.monotonic = lambda: body.now
     collector.open_esp_transport = lambda target: body
     collector.Curiosity = lambda: Curiosity(seed=args.seed + 7)
@@ -265,6 +268,9 @@ def main():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--loud-every", type=int, default=47,
                    help="three loud seconds with motion every N seconds (0 = never)")
+    p.add_argument("--dark-after", type=int, default=0,
+                   help="the room's light goes out after this many seconds (0 = never), "
+                        "for the dark-room rule (CREATURE_DARK_CALM=1)")
     p.add_argument("--out", help="save everything the run did as JSON")
     p.add_argument("--twin-check", action="store_true",
                    help="run with CREATURE_TWIN=0 and =1 and compare everything the Creature did")

@@ -50,7 +50,7 @@ Hardware/                       KiCad, wiring, bench notes
 
 From `Code/Python`:
 
-- A gate: `python tools/field_lab_v06.py --voice` (also `--forward`, `--events`, `--feel`, `--curious`, `--history`, `--twin`, `--battery`, `--colour`, `--palette`, and the older ones). `--history` measures the memory horizon; with `--json` then `--compare` it judges a variant against a control. Use `--history-hours 72` on recorded senses.
+- A gate: `python tools/field_lab_v06.py --voice` (also `--forward`, `--events`, `--feel`, `--curious`, `--history`, `--twin`, `--battery`, `--colour`, `--palette`, `--dark`, and the older ones). `--history` measures the memory horizon; with `--json` then `--compare` it judges a variant against a control. Use `--history-hours 72` on recorded senses.
 - A replay on recorded senses: add `--replay data/replay/<csv> --state data/replay/<json>` to `--events` or `--voice`.
 - The collector against no hardware: start `tools/fake_body.py`, then run the collector with `CREATURE_DB_PATH` and `CREATURE_STATE_JSON_PATH` pointed at a scratch folder. Its docstring has the commands.
 

@@ -60,6 +60,7 @@ from mind.expression_v06 import (
 from mind.expression_memory_v06 import ExpressionMemory
 from mind.forward_model_v06 import ForwardModel, frame_rgbw
 from mind.curiosity_v06 import Curiosity
+from mind.calm_v06 import DarkCalm
 from mind.twin_v06 import Twin
 from mind.normalize import RollingNormalizer
 from mind.gas_index import GasIndex
@@ -167,6 +168,10 @@ ENABLE_LOOP_FEEL = ENABLE_LOOP and os.environ.get("CREATURE_LOOP_FEEL", "1") == 
 # both off; CREATURE_PROBE_VOICE=0 keeps the light probe and drops the tone.
 ENABLE_PROBE = ENABLE_LOOP and os.environ.get("CREATURE_PROBE", "1") == "1"
 ENABLE_PROBE_VOICE = os.environ.get("CREATURE_PROBE_VOICE", "1") == "1"
+# A calm strip in a dark room (9 October 2026): the darker the room, the dimmer
+# and slower the strip, with the room's level worked out wherever the strip sits
+# (mind/calm_v06.py). Off by default. Set CREATURE_DARK_CALM=1 to switch it on.
+ENABLE_DARK_CALM = os.environ.get("CREATURE_DARK_CALM", "0") == "1"
 
 # --- Newborn twin ---
 # A second field, born fresh, that gets the same four senses each tick and never
@@ -600,8 +605,9 @@ def ensure_columns(cur, table, columns):
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
-def make_body_sender(transport):
-    """Return send(state, brightness, now) for all v06 body outputs."""
+def make_body_sender(transport, calm=None):
+    """Return send(state, brightness, now) for all v06 body outputs. `calm` is
+    the dark-room rule, or None."""
     decoder = ExpressionDecoderV06(
         pixels=STRIP_PIXELS,
         knobs={"LED_CAP": STRIP_VALUE_CAP},
@@ -642,6 +648,9 @@ def make_body_sender(transport):
                 # recorded as emitted is what the strip showed.
                 probe_light = float(probe["light"])
                 expression["pixels"] = lift_white(expression["pixels"], probe_light, STRIP_VALUE_CAP)
+            if calm is not None:
+                # Last of all, so the frame recorded as emitted is the one shown.
+                expression["pixels"] = calm.frame(expression["pixels"])
             pix_command = pixels_to_pix_command(expression["pixels"])
             strip_sent = write_changed("pix", pix_command)
             if sent_brightness is None:
@@ -1114,6 +1123,7 @@ def main():
     loop_window = ReturnWindow(LOOP_SETTLE_SECONDS)
     last_action = None
     curiosity = Curiosity() if ENABLE_PROBE else None
+    calm = DarkCalm() if ENABLE_DARK_CALM and ENABLE_STRIP else None
 
     twin = Twin() if ENABLE_TWIN else None
     if twin is not None:
@@ -1169,7 +1179,7 @@ def main():
         print("   or: python collector/collector.py tcp://creature-esp.local:7777")
         raise error
 
-    body_send = make_body_sender(esp)
+    body_send = make_body_sender(esp, calm)
 
     # Always save the slow field state on exit, however we leave.
     atexit.register(lambda: save_field(field, FIELD_STATE_PATH))
@@ -1194,6 +1204,7 @@ def main():
           f"curiosity probes: {'on' if ENABLE_PROBE else 'off'}"
           f"{'' if ENABLE_PROBE_VOICE or not ENABLE_PROBE else ' (light only)'}")
     print(f"Newborn twin: {'on' if ENABLE_TWIN else 'off'}")
+    print(f"Dark-room calm: {'on' if calm is not None else 'off'}")
     print(f"E-paper: {'on, new text every ' + str(PAPER_EVERY_TICKS) + ' ticks' if ENABLE_PAPER else 'off'}")
     if SLOW_MIX > 0.0 or SLOW_LEAK > 0.0 or SOFT_CEILING:
         ceiling = f"on above {CEILING_KNEE:g}" if SOFT_CEILING else "off"
@@ -1230,7 +1241,7 @@ def main():
             esp = reconnect_esp_transport(transport_target, stop)
             if esp is None:
                 break
-            body_send = make_body_sender(esp)
+            body_send = make_body_sender(esp, calm)
             heard_at = monotonic()
             continue
 
@@ -1243,6 +1254,9 @@ def main():
                 loop_window.add_vox(vox_report)
         if sample is not None:
             lux = float(sample["light_lux"])
+            if calm is not None:
+                # The reading as it comes, the strip's own light still in it.
+                calm.note_lux(lux)
             if ENABLE_LOOP_FEEL and last_action is not None and lux >= 0.0:
                 # The light sense is for the room. Whatever the model can
                 # account for as the strip's own light is taken out first (and
@@ -1278,7 +1292,7 @@ def main():
             esp = reconnect_esp_transport(transport_target, stop)
             if esp is None:
                 break
-            body_send = make_body_sender(esp)
+            body_send = make_body_sender(esp, calm)
             heard_at = monotonic()
             continue
 
@@ -1344,6 +1358,9 @@ def main():
             if metabolism_now.get("mode") == "sleep":
                 probe = None
 
+        if calm is not None:
+            calm.step()
+
         emitter_values = state.get("emitter_activations") or {}
         led_activation = emitter_values.get("led", field.emitter_activation)
         brightness = emitter_to_brightness(led_activation, LED_MAX_BRIGHTNESS)
@@ -1369,7 +1386,7 @@ def main():
             esp = reconnect_esp_transport(transport_target, stop)
             if esp is None:
                 break
-            body_send = make_body_sender(esp)
+            body_send = make_body_sender(esp, calm)
             heard_at = monotonic()
 
         # Record what the body expressed into the lasting autobiography. Passive:
@@ -1511,6 +1528,8 @@ def main():
             "curiosity": curiosity.snapshot() if curiosity is not None else None,
             "twin": twin_block,
         }
+        if calm is not None:
+            snapshot["calm"] = calm.snapshot()
         write_json_atomic(STATE_JSON_PATH, snapshot)
 
         # History log. Commits are batched: WAL keeps readers happy, and a

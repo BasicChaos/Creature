@@ -61,6 +61,9 @@ from mind.forward_model_v06 import (
     SOUND_PITCH_BINS,
 )
 from mind.curiosity_v06 import Curiosity
+# The dark-room rule the collector applies to each frame when CREATURE_DARK_CALM=1.
+from mind import calm_v06
+from mind.calm_v06 import DarkCalm
 # The newborn twin the collector runs beside the real field.
 from mind.twin_v06 import Twin
 # The expression gate closes the light loop through the collector's normalizer.
@@ -3374,6 +3377,339 @@ def palette_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# A calm strip in a dark room (9 October 2026)
+# ---------------------------------------------------------------------------
+#
+# Josh does not want the strip flashy in a dark room, and the strip sits at
+# different distances from the light sensor at different times. The rule
+# (mind/calm_v06.py) works out the room's own level, with the strip's light
+# taken out as far as it has learned what the sensor sees of the strip, and,
+# the darker that is, shows each frame dimmer and follows it more slowly.
+#
+# The first design took the room's level from the lowest reading of the last
+# minute alone and failed this gate 7 of 14: with the strip close, its own
+# light made a dark room read as lit.
+#
+# Control (no rule) against variant (the rule), the same seed and the same room:
+# a lit hour, a dark and still hour, a dark hour with the day's sound and motion
+# in it, then the light back on. The body is the Pi's: the relative expression
+# model, the inner colour model, the loop felt, curiosity probing. The light
+# sensor sits beside one part of the strip and sees each channel as the loop
+# probe of 9 October measured it. It is run at three distances.
+#
+# The strip is judged as the body shows it: the firmware scales every value by
+# its brightness cap (40 of 255), so a value under 7 is dark.
+
+DARK_SEEN = (62.6, 137.8, 36.5, 240.0)   # lux per channel at value 200, the probe of 9 October 2026
+DARK_DISTANCES = (
+    ("far, as on 3 October", 1.54 / 410.9),
+    ("an inch or two, as on 9 October", 1.0),
+    ("closer still", 2.0),
+)
+DARK_HOME = 1                 # the distance the gate is judged at
+DARK_PHASES = (("lit", 3600), ("dark and still", 3600), ("dark and busy", 3600), ("lit again", 1800))
+DARK_ROOM_LIT = 150.0         # lux, the room on the evening of 9 October with the strip dark
+DARK_ROOM_DARK = 0.3
+DARK_SETTLE = 300             # ticks into a phase before it is judged
+DARK_BORN = (("dark and busy", 900),)   # a start in a dark room
+DARK_FIRMWARE_CAP = 40        # the body's STRIP_MAX_BRIGHTNESS
+
+
+def _dark_script(seed, phases=DARK_PHASES):
+    """Per tick: (phase, the room's senses, the room's own lux)."""
+    total = sum(n for _, n in phases)
+    day = scenario_inputs("day", total, random.Random(seed + 1))
+    night = _still_night(total)
+    for phase, (name, ticks) in enumerate(phases):
+        for _ in range(ticks):
+            busy, still = next(day), next(night)
+            if name.startswith("lit"):
+                # the room's own light keeps the day's rise and fall
+                yield phase, busy, DARK_ROOM_LIT + 300.0 * busy["light"]
+            elif name == "dark and still":
+                yield phase, still, DARK_ROOM_DARK
+            else:
+                yield phase, dict(busy, light=0.0), DARK_ROOM_DARK
+
+
+def _dark_shown(pixels):
+    """The frame as the body's strip shows it, after the firmware's cap."""
+    return [tuple((c * (DARK_FIRMWARE_CAP + 1)) >> 8 for c in px) for px in pixels]
+
+
+def _dark_seen(pixels, nearness):
+    """Lux the strip adds at a sensor beside part of it, from what the strip
+    really shows. Nearby pixels count most."""
+    total = [0.0] * 4
+    weight = 0.0
+    full = (200 * (DARK_FIRMWARE_CAP + 1)) >> 8
+    for p, px in enumerate(_dark_shown(pixels)):
+        wt = math.exp(-((p - EXPRESS_SENSOR_PIXEL) / EXPRESS_SENSOR_WIDTH) ** 2)
+        weight += wt
+        for ch in range(4):
+            total[ch] += wt * px[ch] / full
+    return nearness * sum(DARK_SEEN[ch] * total[ch] / weight for ch in range(4))
+
+
+def _dark_run(seed, nearness, rule, phases=DARK_PHASES):
+    """One life through the phases. Returns per-tick tracks."""
+    random.seed(seed)
+    room = random.Random(seed + 2)
+    field = cf.build_field()
+    decoder = ExpressionDecoderV06(knobs={"EXPRESSION_MODEL": "relative", "COLOUR_MODEL": "inner"})
+    model = ForwardModel()
+    curiosity = Curiosity(seed + 3)
+    calm = DarkCalm() if rule else None
+    light = RollingNormalizer(EXPRESS_LIGHT_WINDOW, EXPRESS_LIGHT_ALPHA, EXPRESS_LIGHT_MIN_RANGE)
+
+    own = 0.0
+    action = None
+    last_voice = -FORWARD_VOICE_GAP
+    out = {"phase": [], "sent": [], "shown": [], "calm": [], "room": [], "own": [], "events": [],
+           "arousal": [], "asleep": [], "probe": [], "tones": 0}
+    for t, (phase, values, room_lux) in enumerate(_dark_script(seed, phases)):
+        seen = []
+        for i in range(10):          # the body samples at about 10 Hz
+            lux = max(0.0, room_lux + own + room.gauss(0.0, 0.4))
+            seen.append(lux)
+            if calm is not None:
+                calm.note_lux(lux)
+            # as the collector: what the model credits to the strip is taken out
+            light.add(max(0.0, lux - model.light.own_lux((action or {}).get("rgbw"))), t + i / 10.0)
+        rms_mean = 4000.0 + 800.0 * room.random()
+        returned = {"lux": statistics.mean(seen), "rms_mean": rms_mean,
+                    "rms_max": rms_mean + 1500.0 * room.random(), "vox": None}
+        result = model.step(action, returned) if action is not None else None
+        state = field.step(dict(values, light=light.normalized()), loop=(result or {}).get("feel"))
+        asleep = state["metabolism"]["mode"] == "sleep"
+
+        probe = curiosity.step(state["metabolism"]["ticks_since_event"], model.sound)
+        if asleep:
+            probe = None
+        signal = decoder.read(state)
+        pixels = signal["pixels"]
+        if probe and probe["light"]:
+            pixels = lift_white(pixels, probe["light"], 200)
+        if calm is not None:
+            calm.step()
+            pixels = calm.frame(pixels)
+
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        voice = voice_params_from_signal(signal, speaker)
+        if voice and t - last_voice < FORWARD_VOICE_GAP:
+            voice = None
+        elif not voice and probe and probe["voice"] and t - last_voice >= FORWARD_VOICE_GAP:
+            voice = dict(probe["voice"])
+        if voice:
+            last_voice = t
+            curiosity.note_voice()
+            out["tones"] += 1
+        # The tone is not heard back here: this gate is about the light.
+        action = {"rgbw": frame_rgbw(pixels), "voice": None}
+        own = _dark_seen(pixels, nearness)
+
+        out["phase"].append(phase)
+        out["sent"].append(pixels)
+        out["shown"].append(_dark_shown(pixels))
+        out["calm"].append(calm.calm if calm is not None else 0.0)
+        out["room"].append(calm.room_lux if calm is not None else None)
+        out["own"].append(own)
+        out["events"].append(bool(field.last_events))
+        out["arousal"].append(float(signal.get("A", 0.0) or 0.0))
+        out["asleep"].append(asleep)
+        out["probe"].append(probe["light"] if probe else 0.0)
+    out["ring"] = ring_metrics(field)
+    return out
+
+
+def _dark_stats(run_, phase, settle=DARK_SETTLE):
+    """One phase, judged once it has settled, as the body's strip shows it."""
+    ticks = [t for t, ph in enumerate(run_["phase"]) if ph == phase][settle:]
+    light = [sum(sum(px) for px in run_["shown"][t]) for t in ticks]
+    # The biggest change in any one pixel from one tick to the next, and the
+    # change in the whole strip's light.
+    pixel_jump = []
+    strip_jump = []
+    for t in ticks[1:]:
+        was, now = run_["shown"][t - 1], run_["shown"][t]
+        pixel_jump.append(max(abs(sum(a) - sum(b)) for a, b in zip(was, now)))
+        strip_jump.append(abs(sum(sum(px) for px in now) - sum(sum(px) for px in was)))
+    lux = [run_["own"][t] for t in ticks]
+    lux_jump = [abs(a - b) for a, b in zip(lux, lux[1:])]
+    return {
+        "light": statistics.mean(light),
+        "light_max": max(light),
+        "lit_pixels": statistics.mean(sum(1 for px in run_["shown"][t] if sum(px) > 0) for t in ticks),
+        "dark_frames": sum(1 for v in light if v == 0) / len(light),
+        "pixel_jump": max(pixel_jump),
+        "strip_jump": max(strip_jump),
+        "strip_jump_usual": statistics.mean(strip_jump),
+        "moving": sum(1 for v in strip_jump if v > 0) / len(strip_jump),
+        "white": max(px[3] for t in ticks for px in run_["shown"][t]),
+        "lux": statistics.mean(lux),
+        "lux_jump": max(lux_jump),
+        "lux_jump_usual": statistics.mean(lux_jump),
+        "events": sum(run_["events"][t] for t in ticks) / len(ticks),
+        "arousal": statistics.mean(run_["arousal"][t] for t in ticks),
+        "pinned": sum(1 for t in ticks if run_["arousal"][t] > 0.99) / len(ticks),
+        "asleep": sum(run_["asleep"][t] for t in ticks) / len(ticks),
+        "probes": sum(1 for t in ticks if run_["probe"][t] > 0.05),
+        "calm": statistics.mean(run_["calm"][t] for t in ticks),
+    }
+
+
+def dark_probe(args):
+    """The dark-room gate: with the rule the strip is dim and slow in a dark
+    room, whether the room is still or busy and wherever the strip sits; a lit
+    room is left exactly as it was; and the field is not harmed."""
+    apply_overrides(args.set)
+    seed = args.seed
+    starts = [0]
+    for _, n in DARK_PHASES:
+        starts.append(starts[-1] + n)
+    print(f"field {cf.FIELD_VERSION} | A CALM STRIP IN A DARK ROOM | seed={seed} | "
+          + ", ".join(f"{name} {n}" for name, n in DARK_PHASES) + " ticks")
+    print(f"  rule: dark at {calm_v06.DARK_LUX:g} lux, lit at {calm_v06.LIT_LUX:g}; in the dark "
+          f"{calm_v06.DARK_BRIGHTNESS:g} of the brightness, {calm_v06.DARK_FOLLOW:g} of the way "
+          f"to each new frame; the strip credited {calm_v06.OWN_MARGIN:g} over what was learned")
+
+    runs = {}
+    for d, (name, nearness) in enumerate(DARK_DISTANCES):
+        runs[d] = {"control": _dark_run(seed, nearness, False), "variant": _dark_run(seed, nearness, True)}
+    again = _dark_run(seed, DARK_DISTANCES[DARK_HOME][1], True)
+    # A restart in the dark: nothing of the rule is saved, so it starts not
+    # knowing what the sensor sees of the strip.
+    born = [_dark_run(seed, nearness, True, DARK_BORN) for _, nearness in DARK_DISTANCES]
+
+    stats = {d: {k: [_dark_stats(run_, ph) for ph in range(len(DARK_PHASES))] for k, run_ in pair.items()}
+             for d, pair in runs.items()}
+    for d, (name, nearness) in enumerate(DARK_DISTANCES):
+        full = nearness * sum(DARK_SEEN)
+        print(f"\n  the strip {name} ({full:.1f} lux at the sensor with every channel at 200)")
+        print("                              strip light   lit px   biggest jump   usual jump   "
+              "moving   own lux   events   arousal   asleep   calm")
+        for ph, (phase, _) in enumerate(DARK_PHASES):
+            for k, label in (("control", "no rule"), ("variant", "rule")):
+                st = stats[d][k][ph]
+                print(f"    {phase:15s} {label:8s} {st['light']:8.1f}   {st['lit_pixels']:6.1f}   "
+                      f"{st['strip_jump']:8d}       {st['strip_jump_usual']:6.2f}     "
+                      f"{st['moving'] * 100:4.0f}%   {st['lux']:7.2f}   {st['events'] * 100:5.1f}%   "
+                      f"{st['arousal']:.3f}     {st['asleep'] * 100:4.0f}%   {st['calm']:.2f}")
+
+    home = runs[DARK_HOME]
+    control, variant = stats[DARK_HOME]["control"], stats[DARK_HOME]["variant"]
+    LIT, STILL, BUSY, BACK = range(4)
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    same = all(runs[d]["control"]["sent"][:starts[1]] == runs[d]["variant"]["sent"][:starts[1]]
+               for d in runs)
+    check("a lit room is left alone", same,
+          "every frame of the lit hour, at all three distances: "
+          + ("identical with and without the rule" if same else "different"))
+
+    def times(ph, key):
+        return variant[ph][key] / max(1e-9, control[ph][key])
+
+    for ph, name in ((STILL, "dark and still"), (BUSY, "dark and busy")):
+        check(f"{name}: no flashes",
+              variant[ph]["strip_jump"] <= 0.2 * control[ph]["strip_jump"]
+              and variant[ph]["pixel_jump"] <= min(4, 0.2 * control[ph]["pixel_jump"]),
+              f"the biggest change of the whole strip in one tick is {variant[ph]['strip_jump']} "
+              f"against {control[ph]['strip_jump']} without the rule; of one pixel "
+              f"{variant[ph]['pixel_jump']} against {control[ph]['pixel_jump']}")
+        check(f"{name}: slow",
+              variant[ph]["strip_jump_usual"] <= 0.25 * control[ph]["strip_jump_usual"],
+              f"from tick to tick the strip's light changes by {variant[ph]['strip_jump_usual']:.2f} "
+              f"on average against {control[ph]['strip_jump_usual']:.2f}; it changes at all on "
+              f"{variant[ph]['moving'] * 100:.0f}% of ticks against {control[ph]['moving'] * 100:.0f}%")
+        check(f"{name}: dim",
+              variant[ph]["light"] <= 0.5 * control[ph]["light"],
+              f"{times(ph, 'light') * 100:.0f}% of the light it shows without the rule "
+              f"({variant[ph]['light']:.1f} against {control[ph]['light']:.1f})")
+        check(f"{name}: the probe's white does not show",
+              variant[ph]["white"] <= 1,
+              f"the white channel reaches {variant[ph]['white']} on the strip against "
+              f"{control[ph]['white']} without the rule ({control[ph]['probes']} bursts proposed there, "
+              f"{variant[ph]['probes']} here)")
+    check("dark and busy: it is still there",
+          variant[BUSY]["dark_frames"] <= 0.5,
+          f"some of the strip is lit on {(1 - variant[BUSY]['dark_frames']) * 100:.0f}% of ticks, "
+          f"{variant[BUSY]['lit_pixels']:.1f} pixels on average (still room: "
+          f"{(1 - variant[STILL]['dark_frames']) * 100:.0f}%, {variant[STILL]['lit_pixels']:.1f} pixels)")
+
+    def reach(run_, start, level, above):
+        for i, c in enumerate(run_["calm"][start:]):
+            if (c >= level) if above else (c <= level):
+                return i
+        return None
+
+    falls = [reach(runs[d]["variant"], starts[1], 0.9, True) for d in runs]
+    holds = [min(runs[d]["variant"]["calm"][starts[1] + 120:starts[3]]) for d in runs]
+    check("it knows the dark wherever the strip sits",
+          all(f is not None and f <= 120 for f in falls) and min(holds) >= 0.9,
+          "calm from " + ", ".join(
+              f"{'never' if f is None else f} ticks" for f in falls)
+          + " after the light goes, and never under "
+          + ", ".join(f"{h:.2f}" for h in holds) + " for the rest of the dark (far, near, closer)")
+    starts_dark = [reach(run_, 0, 0.9, True) for run_ in born]
+    held = [min(run_["calm"][300:]) for run_ in born]
+    check("started in the dark, it finds out",
+          all(f is not None and f <= 300 for f in starts_dark) and min(held) >= 0.9,
+          "calm " + ", ".join(f"{'never' if f is None else f}" for f in starts_dark)
+          + " ticks after a start in a dark busy room, and never under "
+          + ", ".join(f"{h:.2f}" for h in held) + " from five minutes in")
+    wakes = [reach(runs[d]["variant"], starts[3], 0.0, False) for d in runs]
+    check("light again, it lets go",
+          all(w is not None and w <= 180 for w in wakes)
+          and variant[BACK]["light"] >= 0.6 * control[BACK]["light"],
+          "calm is gone " + ", ".join(f"{'never' if w is None else w}" for w in wakes)
+          + f" ticks after the light returns; the strip then shows "
+          f"{times(BACK, 'light') * 100:.0f}% of what it shows without the rule")
+    # Judged against the creature whose sensor does not see its strip: for it
+    # too a dark still room is a quiet one. That was the Creature's whole life
+    # up to October 2026.
+    far = stats[0]["control"]
+    ring_far = runs[0]["control"]["ring"]
+    ring_c, ring_v = home["control"]["ring"], home["variant"]["ring"]
+    pinned = max(variant[ph]["pinned"] for ph in range(len(DARK_PHASES)))
+    pinned_far = max(far[ph]["pinned"] for ph in range(len(DARK_PHASES)))
+    # Full arousal on under a tenth of the ticks is the --curious gate's bar
+    # for a creature that sees its own light without being pinned by it.
+    check("the field is not harmed",
+          pinned < 0.1
+          and variant[BUSY]["events"] >= 0.5 * control[BUSY]["events"]
+          and variant[BACK]["events"] >= 0.5 * control[BACK]["events"]
+          and ring_v["live_links"] >= ring_far["live_links"]
+          and ring_v["weight_mean_all"] >= 0.9 * ring_far["weight_mean_all"],
+          f"at full arousal on at most {pinned * 100:.1f}% of a phase's ticks ({pinned_far * 100:.1f}% "
+          f"with a far strip and no rule); events in the busy dark on {variant[BUSY]['events'] * 100:.1f}% "
+          f"of ticks against {control[BUSY]['events'] * 100:.1f}%, after the light returns "
+          f"{variant[BACK]['events'] * 100:.1f}% against {control[BACK]['events'] * 100:.1f}%; "
+          f"{ring_v['live_links']} live links, mean weight {ring_v['weight_mean_all']:.3f} "
+          f"({ring_far['weight_mean_all']:.3f} with a far strip)")
+    # Not a check: the price. In a still dark room a strip the sensor sees
+    # keeps the creature stirring; a calm strip does not.
+    print(f"         the price, in the still dark: events on {variant[STILL]['events'] * 100:.1f}% of ticks "
+          f"against {control[STILL]['events'] * 100:.1f}% without the rule, mean arousal "
+          f"{variant[STILL]['arousal']:.3f} against {control[STILL]['arousal']:.3f}, asleep "
+          f"{variant[STILL]['asleep'] * 100:.0f}% against {control[STILL]['asleep'] * 100:.0f}%, and the "
+          f"links end at a mean weight of {ring_v['weight_mean_all']:.3f} against {ring_c['weight_mean_all']:.3f}")
+    check("nothing by chance", again["sent"] == home["variant"]["sent"],
+          "the same life twice: " + ("identical frames" if again["sent"] == home["variant"]["sent"]
+                                     else "different frames"))
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -3458,6 +3794,9 @@ def main():
     p.add_argument("--palette", action="store_true",
                    help="the palette gate: what a tone sounds like, the open palette against "
                         "the plain beep")
+    p.add_argument("--dark", action="store_true",
+                   help="run the dark-room gate: with the rule in mind/calm_v06.py the strip is "
+                        "dim and slow in a dark room, at any distance from the light sensor")
     p.add_argument("--colour", action="store_true",
                    help="the colour gate: the strip's hue from the reservoir against the "
                         "blue-to-orange blend")
@@ -3511,6 +3850,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.battery:
         ok = battery_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.dark:
+        ok = dark_probe(args)
         sys.exit(0 if ok else 1)
     if args.colour:
         ok = colour_probe(args)
