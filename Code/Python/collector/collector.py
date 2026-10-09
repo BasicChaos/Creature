@@ -652,14 +652,14 @@ def make_body_sender(transport):
             if expression is None:
                 expression = decoder.read(state)
             speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
-            voice_command = voice_command_from_signal(expression, speaker)
-            if voice_command and now - last["voice_at"] >= VOICE_MIN_INTERVAL_SECONDS:
-                transport.write(voice_command.encode("utf-8"))
+            field_command = voice_command_from_signal(expression, speaker)
+            if field_command and now - last["voice_at"] >= VOICE_MIN_INTERVAL_SECONDS:
+                transport.write(field_command.encode("utf-8"))
                 last["voice_at"] = now
                 voice_sent = True
                 voice = voice_params_from_signal(expression, speaker)
             elif (
-                not voice_command
+                not field_command
                 and probe.get("voice")
                 and now - last["voice_at"] >= VOICE_MIN_INTERVAL_SECONDS
             ):
