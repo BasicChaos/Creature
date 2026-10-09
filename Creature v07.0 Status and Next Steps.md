@@ -90,12 +90,24 @@ due (the design doc and the dashboard legend still say the light loop is open).
 Item 2, one weight per pixel for the light model, is now the main thing. Not yet
 done: the same probe in a dark room.
 
-## A calm strip in a dark room: built, gated, not switched on (9 October, evening)
+## A calm strip in a dark room: switched on at the Pi (9 October, 20:07)
 
 Josh does not want the strip flashy in a dark room. `mind/calm_v06.py` (new) is
 a rule for that: the darker the room, the dimmer and slower the strip. The
 collector applies it when started with `CREATURE_DARK_CALM=1`. It is off by
-default. **Nothing was deployed or committed: the Pi runs as before.**
+default.
+
+**It is on at the Pi.** The Pi runs commit `6098dfd`. The collector was
+restarted at 20:07 on 9 October with nine settings, the eight from before plus
+`CREATURE_DARK_CALM=1` (state loaded from tick 1348495, under a minute down).
+State from before the restart is next to the database as `*.pre-calm.json`. To
+go back, restart without the setting.
+
+The first minutes on the real body, in a lit room: the rule read the room at
+127 to 136 lux and credited the strip with 8 to 17 lux, which adds up to the
+raw reading (136 to 162). Calm stayed at 0, so the strip was untouched. **It
+has not yet been seen in a dark room.** Read it with the `calm` block of
+`/dev/shm/creature/creature_state.json`.
 
 What the rule does:
 
@@ -178,13 +190,11 @@ it reaches 3 in the busy dark against 35 without the rule), and "not harmed"
 uses the `--curious` gate's bar of full arousal on under a tenth of ticks (it
 reaches 5.4 % on seed 3).
 
-To switch it on at the Pi: push, fast-forward, and add `CREATURE_DARK_CALM=1` to
-the eight settings in the start command (it would be the ninth). The collector
-prints a `Dark-room calm:` line at start. Only on Josh's word.
+The collector prints a `Dark-room calm:` line at start.
 
 Not done, in order:
 
-1. The real strip has not been watched under the rule. In the dark most of its
+1. The real strip has not been watched under the rule in the dark. There most of its
    values fall to 0 to 2 of the body's steps, so single pixels may be seen
    switching on and off. The real sensor's readings also come in steps of 0.83
    lux and with the BH1750's lag; the scripted body has both, the lab gate
@@ -978,13 +988,13 @@ Deploying to the Pi. Push `main`, then on the Pi fast-forward its `v06` branch t
 session, start it again. Before each restart the saved state was copied next to
 the database with a name such as `.pre-twospeed.json` on the end.
 
-The start command in force since 7 October, typed in the tmux pane (in
+The start command in force since 9 October (20:07), typed in the tmux pane (in
 `~/Creature/Code/Python`, venv active). Leave any part out and that part is off:
 
     CREATURE_EXPRESSION_MODEL=relative CREATURE_SLOW_MIX=0.25 \
     CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0 CREATURE_SLOW_LEAK=4.13e-7 \
     CREATURE_BATTERY_CEILING=1 CREATURE_COLOUR_MODEL=inner \
-    CREATURE_VOICE_PALETTE=open \
+    CREATURE_VOICE_PALETTE=open CREATURE_DARK_CALM=1 \
     python collector/collector.py tcp://creature-esp.local:7777
 
 To start a fresh twin, stop the collector first, then move
