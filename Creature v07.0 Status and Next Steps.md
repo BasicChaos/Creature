@@ -5,7 +5,8 @@ the memory-horizon work, and the evening of 4 October for build v07.0. It is the
 handoff for whoever picks this up next. The design itself is in
 `Creature Project Design Document Active.md`. This note is the state of things,
 what was found, and what is still open. The findings on the real body further down
-are still those of 2 October.
+are still those of 2 October. The newest section is the one for 8 and 9 October,
+just below the list of where things are.
 
 Build v07.0 is the v06.9 mind on a body with more on it: two air sensors and an
 e-paper readout. Neither is part of the Creature's flow yet. The field, the
@@ -46,6 +47,238 @@ gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
   reconnected by itself; nothing was restarted for that.
 - The speaker is unmuted.
 - Check `git status` for anything not committed.
+
+## The light loop is closed: the loop probe, rerun (9 October, 19:16)
+
+The light half of `tools/loop_probe.py` was run on the real body (sound skipped).
+The collector was down from 19:14:32 for about two and a half minutes and was
+started again with the same eight settings (state loaded from tick 1345515). No
+code changed. The report is next to the database as
+`loop_probe_20261009_191631.json`.
+
+| Frame (channel value) | Lux added, 9 October | Lux added, 3 October |
+|---|---|---|
+| white (200) | 240.0 | 0.9 |
+| red (200) | 62.6 | 0.33 |
+| green (200) | 137.8 | 0.55 |
+| blue (200) | 36.5 | 0.08 |
+| all four (200) | 410.9 | 1.54 |
+| all four (100) | 214.8 | 0.81 |
+
+- The room was at 149 lux with the strip dark, and the sensor's noise was 0.40
+  lux. The strongest frame is 822 times the noise. On 3 October it was 22 times.
+- The sensor sees the strip about 270 times more strongly than on 3 October.
+  Josh: the strip sits at different distances from the sensor at different
+  times, and on 9 October it was about 1 to 2 inches away. So the coupling is not
+  a fixed number. Nothing may assume a distance; the light model has to keep
+  learning it, and these lux figures hold only for this placement.
+- Josh does not want the strip flashy in a dark room. As things stand the
+  curiosity probe works against that: in a quiet room it lifts the white channel
+  by up to 0.35 of the cap in bursts, which at this distance is about 80 lux at
+  the sensor, and the inner colour model's 0.6 does not dim it.
+- It is close to linear: half the value gives 0.52 of the lux.
+- Per unit of channel value: white 1.2 lux, green 0.69, red 0.31, blue 0.18. Green
+  counts nearly four times blue. So the inner colour model's turning hue already
+  reaches the sensor as a change in brightness, at the same strip brightness.
+- At full value the strip adds more light than the whole room (411 against 149
+  lux). The room's light sense is therefore partly a reading of the strip itself.
+  The swing of about 20 lux from tick to tick, noted on 2 October, is the size an
+  ordinary frame would give.
+
+This settles older open item 1 as far as the measurement goes, and makes item 7
+due (the design doc and the dashboard legend still say the light loop is open).
+Item 2, one weight per pixel for the light model, is now the main thing. Not yet
+done: the same probe in a dark room.
+
+## A calm strip in a dark room: built, gated, not switched on (9 October, evening)
+
+Josh does not want the strip flashy in a dark room. `mind/calm_v06.py` (new) is
+a rule for that: the darker the room, the dimmer and slower the strip. The
+collector applies it when started with `CREATURE_DARK_CALM=1`. It is off by
+default. **Nothing was deployed or committed: the Pi runs as before.**
+
+What the rule does:
+
+- It works out the room's own light level. Dark is 3 lux or under, lit is 40 or
+  over, judged on a log scale in between.
+- In a dark room each frame is shown at 0.35 of its brightness, and the strip
+  moves only 0.12 of the way to each new frame per tick. That takes the probe's
+  white bursts, the event flash, the shimmer and the pulse down with it.
+- In a lit room the frame goes out untouched, the very same numbers.
+- Going dark takes hold within about 7 ticks. Coming back takes a little over a
+  minute, then eases in over 20 ticks.
+
+How it knows the room is dark with the strip beside the sensor. It learns, from
+how the lux reading moves as the frame changes from tick to tick, how much the
+sensor sees of the strip (the whole of it, and each quarter), and takes that
+light out. It assumes no distance. It counts the strip's light in the steps the
+body really shows (the firmware's cap of 40 means a value under 7 shows
+nothing). Nothing of it is saved; after a restart it learns again.
+
+`tools/field_lab_v06.py --dark` is the gate: a lit hour, a dark still hour, a
+dark busy hour, the light back on; rule against no rule; the strip at three
+distances (as on 3 October, as on 9 October, and twice as near again). 15/15 on
+seeds 1, 2, 3 and 7. At the distance of 9 October, seed 1, in the body's
+brightness steps summed over the strip:
+
+| | No rule | Rule |
+|---|---|---|
+| Dark and still: strip light | 167.3 | 3.7 |
+| Dark and still: biggest change of the strip in one tick | 100 | 16 |
+| Dark and busy: strip light | 181.6 | 62.5 |
+| Dark and busy: biggest change of the strip in one tick | 148 | 15 |
+| Dark and busy: usual change from tick to tick | 9.05 | 1.77 |
+
+The collector on the scripted body (`tools/scripted_body.py`, which gained
+`--dark-after N`: the room's light goes out after N seconds), with the Pi's
+eight settings, seeds 1, 2, 3 and 7:
+
+- Rule off: everything the Creature did is identical to the committed code
+  (commands, every log table, saved files, last snapshot). Only the twin
+  differs, and it differs between two runs of the committed code as well.
+- Rule on, 15 lit minutes then 30 dark: the lit quarter hour is identical to
+  rule off. In the dark the strip's light is 50 against 189, its biggest change
+  in one tick 10 to 15 against 171 to 177, its usual change 2.0 against 12.1.
+- With the rule on the live snapshot gains a `calm` block (`calm`, `room_lux`,
+  `own_lux`). The dashboard does not show it.
+
+It took five designs, and the failures are worth keeping:
+
+1. The room's level from the lowest reading of the last minute alone. 7 of 14.
+   With the strip close, its own light made a dark room read as lit.
+2. One weight per pixel, each corrected a little every tick. Better, but it let
+   go of the dark for half a minute when the strip woke, because it counted the
+   values sent and not the steps the body shows.
+3. A creature started in a dark room stayed calm, so its strip barely moved, so
+   it learned too slowly. Learning from smaller frame changes fixed that.
+4. That passed the lab gate, with a safety margin that only worked in a narrow
+   band. Then the collector on the scripted body showed it was wrong: in a room
+   whose light drifts up and down, correcting every tick chases the drift. It
+   credited the strip with 41 to 58 lux against a true 9 and went fully calm in
+   a 54 lux room. The lab gate's rooms did not drift like that.
+5. Now it gathers evidence over many ticks and solves for the best fit, with
+   the slow drift taken out first. On the scripted body its guess of the
+   strip's light is off by 1.1 lux on 7. The safety margin (the strip is
+   credited 0.15 over what was learned) is no longer delicate: 0.15 and 0.3
+   both pass; with none, a creature started in the dark at the nearest distance
+   lets go now and then.
+
+The price, which the gate prints and does not judge. In a still dark room with
+the strip close, the Creature without the rule keeps stirring itself with its
+own light: events on 10 to 16 % of ticks, mean arousal about 0.33. With the
+rule that hour is quiet: no events, arousal 0.07, a little more sleep, and the
+links end lower (0.61 to 0.68 against 0.78 to 0.92). That is the same quiet a
+dark room had for the whole of the Creature's life before the strip sat close;
+against a far strip with no rule the links end slightly higher (0.56 to 0.59).
+The light loop stays closed in a lit room.
+
+Two things I changed in the gate after seeing numbers, so they are not hidden:
+one pixel may change by up to 4 of the body's steps in a tick (first set at 2;
+it reaches 3 in the busy dark against 35 without the rule), and "not harmed"
+uses the `--curious` gate's bar of full arousal on under a tenth of ticks (it
+reaches 5.4 % on seed 3).
+
+To switch it on at the Pi: push, fast-forward, and add `CREATURE_DARK_CALM=1` to
+the eight settings in the start command (it would be the ninth). The collector
+prints a `Dark-room calm:` line at start. Only on Josh's word.
+
+Not done, in order:
+
+1. The real strip has not been watched under the rule. In the dark most of its
+   values fall to 0 to 2 of the body's steps, so single pixels may be seen
+   switching on and off. The real sensor's readings also come in steps of 0.83
+   lux and with the BH1750's lag; the scripted body has both, the lab gate
+   neither.
+2. The lab gate has no room with drifting light. It should get one, since that
+   is what caught design 4.
+3. The rule learns its own picture of what the sensor sees. The forward model's
+   light part needs the same thing (older open item 2). They should become one.
+4. The brightness swing as expression (Josh's question that started this) would
+   sit inside this rule: full depth in a lit room, nearly still in a dark one.
+5. The dashboard could show the room's level and how calm the strip is.
+
+## The speaker's own noise, the e-paper, and a collector crash (8 and 9 October)
+
+Where it stands at 09:16 on 9 October: the Pi runs commit `3234e34`. The
+collector was restarted at 09:16 with the same eight settings as before (state
+loaded from tick 1316254, six minutes down). The body runs the firmware flashed
+at about 15:20 on 8 October. The speaker is unmuted. The flashing cable is out
+of the Pi. State from before the restart is next to the database as
+`*.pre-probefix.json`.
+
+**The amp makes loud noise by itself. Open, and the first thing to fix.** Twice
+on 8 October the speaker sounded without the Pi or the firmware asking for it.
+
+- 02:42:28: the body's microphone went from quiet to near the top of its range
+  within one second, stayed there for 2 seconds, then about 48 seconds of ragged
+  loud sound, between half and three times the level of a normal tone. It
+  stopped by itself at 02:43:18. Josh, woken by it, heard random loud noises,
+  quick and messy. He muted the speaker at 02:43:05 and pulled the power and the
+  flashing cable by 02:44:12.
+- 16:54:40: one loud second. Josh heard an alarm-like sound, loud and rising in
+  pitch, and pulled the power at once. The speaker had been muted since
+  15:44:06.
+- Neither was a tone. The Pi logs every `VOX:` it sends: the last one before the
+  first event was at 00:07:57, and before the second at 15:43:52. While the
+  firmware plays a tone it stops sampling, so a tone's second holds 4 to 6
+  readings; every second of both events holds the full 10. The firmware can
+  only play a fixed pitch, not a rising one. The body did not restart either
+  time. So the mind, the open palette and the tone code are ruled out.
+- What the two share: the charger was in, and the flashing cable from the Pi to
+  the ESP's UART socket was in (from 20:55 on 7 October to 02:44, and from 15:14
+  to 18:19 on 8 October). The first night was the first one with that cable
+  left in. The Pi's kernel log has no USB event at either moment and nothing on
+  the Pi had the serial port open, so it was not a command over serial. The
+  cable does give the body a second 5 V feed and a ground path through the Pi's
+  hub. During the first event the cell's voltage dipped 50 mV. At the first
+  event the charger had levelled off at 4.18 V, 92 %, a few minutes before.
+  Whether the cable is the trigger is not shown: two events are not proof.
+- Why the amp can do this: its shutdown pin (SD) is left floating, so it is
+  always on, and it runs straight from the 5 V rail on a breadboard
+  (`Hardware/Creature v06/WIRING v06.md`). Anything on that rail or on its
+  three signal wires comes out of the speaker at full gain.
+- Next: keep the flashing cable out except while flashing, and see whether the
+  noise returns. The fix either way is to wire SD to a free GPIO with a
+  resistor to ground, and have the firmware switch the amp on only while a tone
+  plays. One wire, one resistor, a small firmware change. Not done.
+- Also unexplained: the sound that woke Josh came with no warning in the record,
+  and a hit of the same size at 16:48:03 may have been the amp or a hand on the
+  board.
+
+**The open palette's first evening.** Between 22:00 and midnight on 7 October it
+sent about 20 tones an hour, up to 750 Hz, against about 10 an hour on the
+nights before. After 00:07:57 it sent none until the event at 02:42, with the
+speaker unmuted. Why it went silent is not looked into.
+
+**The e-paper went blotchy.** Text that had not changed faded to grey while
+digits that had just changed were full black. That is the partial refresh: only
+changed pixels get a proper push, and the rest drift toward grey with each pass.
+`PAPER_FULL_EVERY` in the firmware went from 10 to 3, so a full refresh comes
+every 9 minutes, not every 30 (commit `3234e34`). Flashed at about 15:20 on
+8 October, built from a scratch copy on the Pi. The body did not rejoin WiFi
+after the flash, as before; a reset over the serial line and a minute's wait
+brought it back at 15:23. The collector was left running and reconnected by
+itself. Not yet judged on the panel. The photo was taken at a charge of 5 %,
+and a low cell may add to the grey; that is not separated out.
+
+**The collector crashed on its first probe tone under the open palette.** At
+09:09:59 on 9 October: `TypeError: 'NoneType' object is not callable` in `send`.
+The palette commit (`92d3ecc`) made the probe tone call the function
+`voice_command`, while a few lines above the same name was a local variable,
+empty in exactly that case. It took a day and a half to happen because a probe
+tone needs the speaker unmuted, the field silent, and curiosity choosing a
+voice probe. The local is now `field_command` (commit `6b1ce10`). Checked on the
+Mac with a stand-in transport: the probe tone goes out as `VOX:450.0,300,0.40`.
+No probe tone had come up on the Pi when this was written. The collector saved
+its state as it fell, so nothing was lost but the six minutes. Neither
+`field_lab` nor `scripted_body` caught it; a scripted run with the speaker
+unmuted and a forced voice probe would have.
+
+**The battery ran down again overnight.** With the power out since 16:55 on
+8 October the cell reached 3.31 V at 01:58 on 9 October, and the body sent
+nothing until 07:58, when it was charging again. That is where the low-battery
+reflex puts the body to sleep (3.30 V), but whether it slept or simply lost
+WiFi was not checked.
 
 ## The battery gauge, step 1 (6 October)
 
