@@ -48,6 +48,63 @@ gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
 - The speaker is unmuted.
 - Check `git status` for anything not committed.
 
+## The dashboard shows movement (10 October, 17:39)
+
+Dashboard only. Nothing in the mind, the collector or the body changed, so no
+gate was run and the collector was not restarted.
+
+Why: the live field draws each cell's level, and a level hardly changes from
+one tick to the next. On ten minutes of recorded senses (27 September, 14:48,
+run through the real field code) a cell's activation moved by about 0.004 a
+tick against a typical level of 0.13. So the new views draw the change: each
+cell against its own average over the last 5 seconds, 30 seconds or 2 minutes.
+
+What was added:
+
+- **Flow dots on the live field**, with a `Flow: on/off` button above it. On a
+  ring link the dots run from the more active cell to the less active one. That
+  is the net push the field code applies: each cell's activation reaches its
+  neighbour times the link's weight. On a reservoir wire the dots run the way
+  the wire points, blue for a push up and pink for a push down, sized by weight
+  times the value at the source. With no cell chosen only the six strongest
+  reservoir wires show; choosing a cell shows all of its wires. Readout wires
+  are scaled on their own, since their weights are small.
+- **A Movement view** in the menu:
+  - Lean: the field's shape now against its recent average, orange where it has
+    grown and blue where it has shrunk, with a needle to the side the field is
+    weighted toward and a one-minute trail. Pressure, activation and surprise
+    as three rings, or together on one. When every cell is up the needle is
+    short, since there is no side to point to; the orange band all round is
+    what shows that case.
+  - Unrolled ring: one row per cell, time left to right, with the six
+    reservoir cells and the four senses underneath. A slanted streak is a
+    change travelling round the ring.
+  - A slider to go back through the kept history, and a Live button.
+- **Per-cell history.** The database keeps field-wide totals per tick only. The
+  dashboard server now keeps the last hour of each cell's activation, pressure
+  and surprise, the reservoir's state and the four senses, in memory, read from
+  the live snapshot twice a second (`/api/cell_history`). Nothing is written to
+  disk. It starts empty whenever the dashboard service starts.
+- **The public mirror** shows the Movement view for now only: the last four
+  minutes, with no slider and no longer spans. The export asks the dashboard
+  server for those four minutes on every sync pass and writes
+  `cell_history.json` (`export_static.py`). If the server does not answer, the
+  file is empty and the view waits.
+
+Files: `Code/Python/dashboard/server.py`, `index.html`, `export_static.py`.
+
+On the Pi: commit `d8a67f2` went on at 17:39 and the dashboard service was
+restarted for the `server.py` change (its process stopped, systemd brought it
+back). The public-mirror part came in the commit after it and needed no
+restart: the sync loop runs the export fresh on every pass.
+
+Not checked: none of it has been compared against the Creature's behaviour by
+eye over a day, and the colour scale is a first choice. Full colour is the size
+of change that 19 ticks in 20 stayed under over the last fifteen minutes, with
+a floor of 3 % of the quantity's range so a silent field is not blown up to
+full colour. Also fixed in passing: the Learning view's 6 h / 24 h / 7 d
+buttons were meant to be hidden on the public mirror and were not.
+
 ## The light loop is closed: the loop probe, rerun (9 October, 19:16)
 
 The light half of `tools/loop_probe.py` was run on the real body (sound skipped).
@@ -164,6 +221,32 @@ minute down; state from before is `*.pre-rssi.json`). The first readings: -92
 and -93 dBm. That is under the -85 the firmware's own note calls too weak to
 hold a connection, and the same as the -93 to -95 measured on 4 October. To
 read it: `sensors.wifi_rssi` in `/dev/shm/creature/creature_state.json`.
+
+From 09:48 to 11:14 it stayed between -92 and -96 dBm (259 readings, median
+-93), with one 11 second break. It hardly moves, so it is not interference
+coming and going.
+
+Josh's photo of the bench (10 October) settles distance: the body lies about
+half a metre from the Pi on the same table, and the Pi reads -61 dBm. The body
+hears the network about 30 dB worse from the same spot, so the fault is at the
+board. In the photo the ESP sits in the middle of the long breadboard. Its
+antenna is the end of the module away from the USB sockets, and that end points
+into the board: over the breadboard's contact strips, with the speaker a few
+centimetres to one side and the e-paper's bundle of wires running past it. The
+antenna is on the board itself (Josh), so it cannot be moved by itself. Signal
+strength is what the body hears, so this points at the antenna and not at the
+3V3 rail. Not yet tried: moving the speaker and the wire bundle away from that
+end; reseating the ESP at an edge of the breadboard with the antenna end
+hanging over it.
+
+The body dropped again at 11:25:14 for 56 seconds. In the half hour before, the
+signal had slid from about -93 to -94 to -97. Josh moved the body nearer the
+stairs (the repeater's side) and it rejoined; the readings after are -89 and
+-88. So nearer helps by about 6 dB, and it is still under -85.
+
+Also not tried, for the next flash: the firmware joins the first access point
+it finds with the network's name, not the strongest. The body was on the
+repeater (upstairs, round a corner) while the Pi beside it was on the router.
 
 A fix on the body, not built: if the link reads as up but nothing has come
 from the collector for a minute or two, rejoin WiFi; if that keeps failing,
