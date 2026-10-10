@@ -158,6 +158,13 @@ it yet. Nothing else changed: on the scripted body, seeds 1, 2, 3 and 7, a run
 is identical to the code before, and `tools/scripted_body.py --wifi-rssi -70`
 makes the scripted body send the status line.
 
+Deployed at 09:48 on 10 October: the Pi runs commit `922b466`, the collector
+restarted with the same nine settings (state loaded from tick 1370136, under a
+minute down; state from before is `*.pre-rssi.json`). The first readings: -92
+and -93 dBm. That is under the -85 the firmware's own note calls too weak to
+hold a connection, and the same as the -93 to -95 measured on 4 October. To
+read it: `sensors.wifi_rssi` in `/dev/shm/creature/creature_state.json`.
+
 A fix on the body, not built: if the link reads as up but nothing has come
 from the collector for a minute or two, rejoin WiFi; if that keeps failing,
 restart. It needs a flash. With the Pi down for hours, as on the night before,
