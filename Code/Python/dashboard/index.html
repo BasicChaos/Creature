@@ -31,6 +31,9 @@
       --ripple: #ffffff;
       --cell-ink: #f5f8fc;
       --cell-ink-stroke: #0b0e13;
+      /* movement views: a value going up, a value going down */
+      --rise: #f2a65a;
+      --fall: #58b8f0;
       color-scheme: dark;
     }
 
@@ -58,6 +61,8 @@
       --ripple: #1c2430;
       --cell-ink: #101820;
       --cell-ink-stroke: #ffffff;
+      --rise: #c9620a;
+      --fall: #0b78b6;
       color-scheme: light;
     }
 
@@ -252,6 +257,20 @@
     .learn-tip { position: absolute; top: 8px; right: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
     .learn-tip[hidden] { display: none; }
     .learn-foot { color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 10px; }
+
+    /* movement view: lean cards, the unrolled ring, and the moment being shown */
+    .mv-time { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+    .mv-time input { flex: 1; min-width: 0; accent-color: var(--accent); }
+    .mv-clock { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); min-width: 8ch; }
+    .mv-btn { background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+    .mv-btn.on { color: var(--emitter); border-color: var(--emitter); }
+    .mv-lean { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 8px; }
+    .mv-lean.together { grid-template-columns: minmax(0, 420px); }
+    .mv-card canvas { display: block; width: 100%; aspect-ratio: 1 / 1; }
+    .mv-say { color: var(--muted); font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+    .mv-say i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+    #mvRibbon { display: block; width: 100%; margin-top: 8px; cursor: crosshair; }
+    .stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 
     /* Narrow screens: the menu becomes a row of tabs, the field and the chosen
        section stack, and the page scrolls. */
@@ -633,6 +652,7 @@
       <button type="button" data-view="inspector" title="Cell inspector"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.5"/></svg><span class="nav-label">Cell inspector</span></button>
       <button type="button" data-view="raw" title="Raw data"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span class="nav-label">Raw data</span></button>
       <button type="button" data-view="learning" title="Learning"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5l3.5-4 3 2.5 4.5-6.5"/><path d="M10.5 4.5h3v3"/></svg><span class="nav-label">Learning</span></button>
+      <button type="button" data-view="movement" title="Movement"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 8l3-3.5"/><path d="M9 4.3l2.2.1-.1 2.2"/></svg><span class="nav-label">Movement</span></button>
       <button type="button" data-view="legend" title="Legend"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4.5" r="1.5"/><circle cx="4" cy="11.5" r="1.5"/><path d="M8 4.5h5.5M8 11.5h5.5"/></svg><span class="nav-label">Legend</span></button>
       <button type="button" data-view="metabolism" title="Metabolism"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8.5h3l1.5-4 3 8 1.5-4h4"/></svg><span class="nav-label">Metabolism</span></button>
       <div class="theme-seg" id="themeSeg" role="group" aria-label="Colour mode">
@@ -643,7 +663,10 @@
     </nav>
 
     <div class="panel stage">
-      <h2 id="fieldHeading">Live field</h2>
+      <div class="stage-head">
+        <h2 id="fieldHeading">Live field</h2>
+        <button type="button" id="flowBtn" class="mv-btn on" title="Moving dots on the wires: which way each one is pushing right now">Flow: on</button>
+      </div>
       <svg id="field" viewBox="0 0 760 660" xmlns="http://www.w3.org/2000/svg" aria-label="Creature cell field"></svg>
     </div>
 
@@ -711,6 +734,33 @@
       <div class="learn-foot" id="learnTwin" hidden></div>
       <div class="learn-foot" id="learnFoot">Waiting for history…</div>
     </section>
+
+      <section class="view" data-view="movement" hidden>
+        <div class="learn-head">
+          <h2>Movement — which way is the field going?</h2>
+          <div class="seg" id="mvWin" title="Each cell is compared with its own average over this long">
+            <button data-v="5">5 s</button><button data-v="30" class="on">30 s</button><button data-v="120">2 min</button>
+          </div>
+        </div>
+        <div class="mv-time">
+          <input type="range" id="mvScrub" min="0" max="0" value="0" step="1" aria-label="Moment in the kept history">
+          <span id="mvClock" class="mv-clock">--</span>
+          <button type="button" id="mvLive" class="mv-btn on" title="Follow the newest tick">Live</button>
+        </div>
+        <div class="learn-head" style="margin-top:14px">
+          <div class="learn-title">Lean</div>
+          <div class="seg" id="mvMode"><button data-v="separate" class="on">Separate</button><button data-v="together">Together</button></div>
+        </div>
+        <div class="mv-lean" id="mvLean"></div>
+        <div class="learn-head" style="margin-top:14px">
+          <div class="learn-title">Unrolled ring</div>
+          <div class="seg" id="mvQty"><button data-v="p" class="on">Pressure</button><button data-v="a">Activation</button><button data-v="u">Surprise</button></div>
+          <div class="seg" id="mvSpan"><button data-v="240" class="on">4 min</button><button data-v="900">15 min</button><button data-v="3600">1 h</button></div>
+        </div>
+        <canvas id="mvRibbon"></canvas>
+        <div class="learn-foot" id="mvHover">Point at the ribbon to read a value; click it to go to that moment.</div>
+        <div class="learn-foot" id="mvFoot">Waiting for history…</div>
+      </section>
 
       <section class="view" data-view="legend" id="legendPanel" hidden>
         <h2>Legend</h2>
@@ -914,7 +964,7 @@
       fatigue: "--fatigue", line: "--line", accent: "--accent", rel: "--rel",
       linkGhost: "--link-ghost", motion: "--motion", weather: "--weather",
       loop: "--loop", reservoir: "--reservoir", pos: "--pos", neg: "--neg",
-      ripple: "--ripple", bg: "--bg",
+      ripple: "--ripple", bg: "--bg", rise: "--rise", fall: "--fall", text: "--text", muted: "--muted",
     };
     function loadPalette() {
       const css = getComputedStyle(document.documentElement);
@@ -1367,7 +1417,7 @@
     // v06_ring_layout.svg, drawn entirely from the snapshot (ring,
     // sense_anchors, emitter_anchors, connections, reservoir, readout).
     let v06Mode = false;
-    const v06 = { built: false, hasWiring: false, cellEls: {}, resEls: [], linkByKey: {}, readoutLines: [], driveLines: [], recLines: [] };
+    const v06 = { built: false, hasWiring: false, cellEls: {}, resEls: [], linkByKey: {}, readoutLines: [], driveLines: [], recLines: [], flow: [] };
     // Reservoir cells are selected as "R0".."R5"; ring cells stay plain numbers.
     function resIndex(sel) {
       return (typeof sel === "string" && sel[0] === "R") ? Number(sel.slice(1)) : null;
@@ -1412,7 +1462,16 @@
 
       const gReadout = el("g", {}), gDrive = el("g", {}), gRec = el("g", {}), gLinks = el("g", {});
       const gHalo = el("g", {}), gRes = el("g", {}), gCells = el("g", {}), gTags = el("g", {});
-      svg.append(gReadout, gDrive, gRec, gLinks, gHalo, gRes, gCells, gTags);
+      const gFlow = el("g", {});
+      svg.append(gReadout, gDrive, gRec, gLinks, gFlow, gHalo, gRes, gCells, gTags);
+      // Flow: a row of dots laid over each wire. updateFlow() sets how hard the
+      // wire is pushing and flowFrame() slides the dots along it.
+      v06.flow = [];
+      const flowOver = (shape, attrs, rec) => {
+        const e = el(shape, Object.assign({ fill: "none", "stroke-linecap": "round", "stroke-dasharray": "0.1 16", "pointer-events": "none", display: "none" }, attrs));
+        gFlow.appendChild(e);
+        v06.flow.push(Object.assign({ e, off: 0, m: 0, dir: 1, show: false }, rec));
+      };
 
       const res = f.reservoir || {};
       const resSize = res.size || 6;
@@ -1450,6 +1509,7 @@
           const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: w >= 0 ? C.pos : C.neg, "stroke-linecap": "round" });
           gDrive.appendChild(ln);
           v06.driveLines.push({ ln, j, cell: inCells[k], s: Math.abs(w) / inMax });
+          flowOver("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y }, { kind: "drive", j, k, cell: inCells[k] });
         }));
         // Recurrent: w[i][j] runs from cell j into cell i. Sparse and one-way, so
         // each is a curved arrow; a cell that feeds itself gets a small loop.
@@ -1461,6 +1521,7 @@
           if (i === j) {
             const p = resPos(i), dx = p.x - V6.CX, dy = p.y - V6.CY, d = Math.hypot(dx, dy);
             e = el("circle", { cx: p.x + dx / d * (RES_R + 8), cy: p.y + dy / d * (RES_R + 8), r: 12, fill: "none", stroke: col });
+            flowOver("circle", { cx: p.x + dx / d * (RES_R + 8), cy: p.y + dy / d * (RES_R + 8), r: 12 }, { kind: "rec", from: j, to: i });
           } else {
             const a = resPos(j), b = resPos(i);
             const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy), ux = dx / d, uy = dy / d;
@@ -1473,6 +1534,7 @@
               d: `M${x1.toFixed(1)},${y1.toFixed(1)} Q${cx.toFixed(1)},${cy.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`,
               fill: "none", stroke: col, "stroke-linecap": "round", "marker-end": `url(#arrow-${w >= 0 ? "pos" : "neg"})`
             });
+            flowOver("path", { d: e.getAttribute("d") }, { kind: "rec", from: j, to: i });
           }
           gRec.appendChild(e);
           v06.recLines.push({ ln: e, from: j, to: i, s: Math.abs(w) / recMax });
@@ -1488,6 +1550,7 @@
           const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: C.loop, "stroke-width": 1, "stroke-opacity": 0.08, "stroke-dasharray": "5 3" });
           gReadout.appendChild(ln);
           v06.readoutLines.push({ ln, hwKey, j, em });
+          flowOver("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y }, { kind: "read", hwKey, j, em });
         }
       });
 
@@ -1498,6 +1561,7 @@
         const ln = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: C.rel, "stroke-width": 0.8, "stroke-opacity": 0.1, "stroke-linecap": "round" });
         gLinks.appendChild(ln);
         v06.linkByKey[cn.a + "-" + cn.b] = { ln, loop };
+        flowOver("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y }, { kind: "ring", a: cn.a, b: cn.b });
       });
 
       v06.cellEls = {};
@@ -1604,10 +1668,85 @@
         R.body.setAttribute("stroke-opacity", (0.45 + 0.45 * v).toFixed(3));
       });
 
+      updateFlow(f);
       applySelectionV06();
       renderInspector();
       renderCellTable();
     }
+
+    // ---- flow ----
+    // How hard each wire is pushing this tick, and which way. A ring link
+    // carries each cell's activation to its neighbour, times the link's weight,
+    // so its net push runs from the more active cell to the less active one.
+    // A reservoir wire has a direction of its own: weight times the value at
+    // its source. Readout weights are small, so they are scaled on their own.
+    let flowOn = recall("creature.flow") !== "off";
+    function updateFlow(f) {
+      const act = {}, wByKey = {};
+      (f.cells || []).forEach(c => act[c.n] = c.activation || 0);
+      (f.connections || []).forEach(cn => wByKey[cn.a + "-" + cn.b] = cn.weight || 0);
+      const r = f.reservoir || {}, st = r.state || [], inp = r.input || [], ro = f.readout || {};
+      v06.flow.forEach(F => {
+        let push = 0, full = 0.5;
+        if (F.kind === "ring") push = (wByKey[F.a + "-" + F.b] || 0) * ((act[F.a] || 0) - (act[F.b] || 0));
+        else if (F.kind === "drive") push = ((r.w_in && r.w_in[F.j] && r.w_in[F.j][F.k]) || 0) * (inp[F.k] || 0);
+        else if (F.kind === "rec") push = ((r.w && r.w[F.to] && r.w[F.to][F.from]) || 0) * (st[F.from] || 0);
+        else { const ws = ro[F.hwKey] && ro[F.hwKey].weights; push = ws ? (ws[F.j] || 0) * (st[F.j] || 0) : 0; full = 0.1; }
+        F.m = clamp01(Math.sqrt(Math.abs(push) / full));
+        F.dir = F.kind === "ring" && push < 0 ? -1 : 1;
+        F.col = F.kind === "ring" ? C.ripple : (push >= 0 ? C.pos : C.neg);
+      });
+    }
+    // Ring flow always shows. With nothing chosen, only the six strongest
+    // reservoir wires show; choosing a cell shows every wire that touches it.
+    const FLOW_RES_SHOWN = 6;
+    function paintFlow() {
+      const sel = pinned != null ? pinned : hoverId, on = sel != null, rj = resIndex(sel);
+      const ranked = v06.flow.filter(F => F.kind !== "ring").map(F => F.m).sort((x, y) => y - x);
+      const cut = Math.max(0.3, ranked[FLOW_RES_SHOWN - 1] || 0);
+      v06.flow.forEach(F => {
+        let show = flowOn && F.m >= 0.08, strength = 1;
+        if (show && F.kind === "ring") { if (on && F.a !== sel && F.b !== sel) strength = 0.25; }
+        else if (show) {
+          const mine = on && (F.kind === "drive" ? (rj === F.j || sel === F.cell)
+            : F.kind === "rec" ? (rj === F.from || rj === F.to) : (rj === F.j || sel === F.em));
+          if (!mine) { if (on || F.m < cut) show = false; else strength = 0.6; }
+        }
+        F.show = show;
+        if (!show) { F.e.setAttribute("display", "none"); return; }
+        F.e.removeAttribute("display");
+        F.e.setAttribute("stroke", F.col);
+        F.e.setAttribute("stroke-width", (2.5 + 2.5 * F.m).toFixed(2));
+        F.e.setAttribute("stroke-opacity", ((0.3 + 0.7 * F.m) * strength).toFixed(3));
+      });
+    }
+    let flowLast = 0;
+    function flowFrame(now) {
+      requestAnimationFrame(flowFrame);
+      if (!flowOn || document.hidden || !v06.built || now - flowLast < 33) return;
+      const dt = Math.min(0.1, (now - flowLast) / 1000);
+      flowLast = now;
+      v06.flow.forEach(F => {
+        if (!F.show) return;
+        F.off -= F.dir * (10 + 60 * F.m) * dt;
+        F.e.setAttribute("stroke-dashoffset", F.off.toFixed(1));
+      });
+    }
+    // With reduced motion asked for, the dots stay put: they still mark which
+    // wires are pushing, without the direction.
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) requestAnimationFrame(flowFrame);
+    function syncFlowBtn() {
+      const b = document.getElementById("flowBtn");
+      b.classList.toggle("on", flowOn);
+      b.textContent = "Flow: " + (flowOn ? "on" : "off");
+    }
+    document.getElementById("flowBtn").addEventListener("click", () => {
+      flowOn = !flowOn;
+      remember("creature.flow", flowOn ? "on" : "off");
+      syncFlowBtn();
+      paintFlow();
+    });
+    syncFlowBtn();
 
     // Which cells the selected one is wired to, read from the snapshot.
     function v06Related(sel) {
@@ -1676,6 +1815,7 @@
         const [a, b] = key.split("-").map(Number);
         v06.linkByKey[key].ln.setAttribute("opacity", !on || a === sel || b === sel ? 1 : 0.2);
       });
+      paintFlow();
       if (learnDoc && learnDoc.tick_to != null && sel !== learnSel) drawLinksChart();
     }
 
@@ -1853,6 +1993,10 @@
         item(line(C.pos), "Reservoir wiring, positive", "fixed, never learns · faint straight lines: every in-between cell into every reservoir cell · curved arrows: one reservoir cell into another, the arrowhead shows the direction · a small circle beside a reservoir cell: it feeds itself · thicker and less faint = stronger") +
         item(line(C.neg), "Reservoir wiring, negative", "the same wiring with a minus sign: it pushes the receiving cell the other way") +
 
+        head("Moving dots (Flow)") +
+        item(line(C.ripple, "dotted"), "On a ring connection", "the dots run from the more active cell to the less active one · faster and brighter = a bigger difference across a stronger link") +
+        item(line(C.pos, "dotted"), "On a reservoir wire", "the dots run the way the wire points · blue pushes the receiving cell up, pink pushes it down · with no cell chosen only the strongest show; choose a cell to see all of its wires · readout wires are scaled on their own, since their weights are small") +
+
         head("Pointing and clicking") +
         '<div class="legend-sub">Hover a cell to preview it; click to pin it and open the inspector; click it again to let go. The chosen cell gets a thick outline, its own wires become bold, the cells on the other end stay bright, and everything else fades back. The inspector lists every weight with what it is carrying this tick.</div>' +
 
@@ -1862,15 +2006,352 @@
         '<div class="legend-sub">Links live counts the ring connections with a weight above 0.05, out of twelve. States counts cells that are active / resting / dormant / in deep sleep.</div>';
     }
 
+    // ---- movement ----
+    // The live field draws each cell's level, and from one tick to the next a
+    // level barely changes. These views draw the change: each cell against its
+    // own average over the last few seconds. They need per-cell history, which
+    // the database does not keep, so the server holds the last hour in memory
+    // (/api/cell_history) and this page adds each new tick to its own copy.
+    const HIST_MAX = 3600;
+    const hist = [];
+    const MV = { win: 30, mode: "separate", qty: "p", span: 240, cursor: null };   // cursor: a tick, or null for live
+    const MV_Q = {
+      p: { name: "Pressure", max: 2.0 },
+      a: { name: "Activation", max: 1.0 },
+      u: { name: "Surprise", max: 1.5 },
+      res: { name: "Reservoir", max: 1.0 },
+    };
+    const MV_SENSES = ["sound", "light", "motion", "weather"];
+    function histRow(f) {
+      const cells = (f.cells || []).slice().sort((x, y) => x.n - y.n);
+      if (!cells.length || f.tick == null) return null;
+      return {
+        tick: f.tick, at: f.updated_at,
+        a: cells.map(c => c.activation || 0), p: cells.map(c => c.pressure || 0), u: cells.map(c => c.surprise || 0),
+        res: ((f.reservoir || {}).state || []).slice(),
+        s: [f.sound_norm || 0, f.light_norm || 0, f.motion_norm || 0, f.weather_norm || 0],
+      };
+    }
+    function histPush(f) {
+      const r = histRow(f), last = hist[hist.length - 1];
+      if (!r || (last && last.tick === r.tick)) return;
+      hist.push(r);
+      if (hist.length > HIST_MAX) hist.shift();
+    }
+    async function pullCellHistory() {
+      if (STATIC_MODE) return;
+      try {
+        const doc = await (await fetch("/api/cell_history?seconds=" + HIST_MAX + "&ts=" + Date.now())).json();
+        const rows = doc.rows || [], seen = new Set(rows.map(r => r.tick));
+        const mine = hist.filter(r => !seen.has(r.tick));
+        hist.length = 0;
+        rows.concat(mine).slice(-HIST_MAX).forEach(r => hist.push(r));
+        mvScaleCache = {};
+        mvRender();
+      } catch (err) { /* the page's own copy still fills from now on */ }
+    }
+
+    function mvIdx() {
+      if (MV.cursor == null) return hist.length - 1;
+      for (let i = hist.length - 1; i >= 0; i--) if (hist[i].tick === MV.cursor) return i;
+      return 0;
+    }
+    function mvClock(row) { return row && row.at ? String(row.at).slice(11, 19) : "--"; }
+    function hexA(hex, a) {
+      let h = (hex || "#888888").trim().replace("#", "");
+      if (h.length === 3) h = h.split("").map(ch => ch + ch).join("");
+      return `rgba(${parseInt(h.substr(0, 2), 16)},${parseInt(h.substr(2, 2), 16)},${parseInt(h.substr(4, 2), 16)},${a})`;
+    }
+    // Change of every cell against its own trailing average, for rows i0..i1.
+    function mvDeltaRows(k, i0, i1, win) {
+      const n = (hist[i1] && hist[i1][k] || []).length, out = [], sum = new Float64Array(n);
+      const start = Math.max(0, i0 - win);
+      let cnt = 0;
+      for (let j = start; j <= i1; j++) {
+        const v = hist[j][k] || [];
+        if (j >= i0) {
+          const d = new Float32Array(n);
+          if (cnt) for (let i = 0; i < n; i++) d[i] = (v[i] || 0) - sum[i] / cnt;
+          out.push(d);
+        }
+        for (let i = 0; i < n; i++) sum[i] += v[i] || 0;
+        cnt++;
+        if (j - win >= start) { const o = hist[j - win][k] || []; for (let i = 0; i < n; i++) sum[i] -= o[i] || 0; cnt--; }
+      }
+      return out;
+    }
+    function mvBaseline(k, idx) {
+      const n = (hist[idx][k] || []).length, b = new Float64Array(n), s = Math.max(0, idx - MV.win), cnt = idx - s;
+      for (let i = 0; i < n; i++) {
+        if (!cnt) { b[i] = hist[idx][k][i] || 0; continue; }
+        let t = 0;
+        for (let j = s; j < idx; j++) t += (hist[j][k] || [])[i] || 0;
+        b[i] = t / cnt;
+      }
+      return b;
+    }
+    // One scale per quantity and window: the size of change that 19 in 20 of
+    // the last fifteen minutes stayed under. It has a floor, so a silent field
+    // does not have its noise blown up to full colour.
+    let mvScaleCache = {};
+    function mvScale(k) {
+      const key = k + ":" + MV.win, c = mvScaleCache[key];
+      const newest = hist[hist.length - 1].tick;
+      if (c && newest >= c.tick && newest - c.tick < 10) return c.v;
+      const i1 = hist.length - 1, i0 = Math.max(0, i1 - 899), mags = [];
+      mvDeltaRows(k, i0, i1, MV.win).forEach(d => d.forEach(x => mags.push(Math.abs(x))));
+      mags.sort((x, y) => x - y);
+      const v = Math.max(0.03 * MV_Q[k].max, mags.length ? mags[Math.floor(0.95 * (mags.length - 1))] : 0);
+      mvScaleCache[key] = { v, tick: newest };
+      return v;
+    }
+
+    function mvFit(c, cssH) {
+      const dpr = window.devicePixelRatio || 1, w = c.clientWidth;
+      if (!w) return null;
+      if (cssH) c.style.height = cssH + "px";
+      const h = cssH || w;
+      if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+      const x = c.getContext("2d");
+      x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      x.clearRect(0, 0, w, h);
+      return { x, w, h };
+    }
+    function mvArrow(x, x0, y0, x1, y1, col, w) {
+      const a = Math.atan2(y1 - y0, x1 - x0), h = 4 + w * 1.6;
+      x.strokeStyle = col; x.fillStyle = col; x.lineWidth = w; x.lineCap = "round";
+      x.beginPath(); x.moveTo(x0, y0); x.lineTo(x1 - Math.cos(a) * h * 0.6, y1 - Math.sin(a) * h * 0.6); x.stroke();
+      x.beginPath(); x.moveTo(x1, y1);
+      x.lineTo(x1 - Math.cos(a - 0.5) * h, y1 - Math.sin(a - 0.5) * h);
+      x.lineTo(x1 - Math.cos(a + 0.5) * h, y1 - Math.sin(a + 0.5) * h);
+      x.closePath(); x.fill();
+    }
+    function mvRingNames() {
+      return (latest && latest.ring) || ["speaker", "", "sound", "", "motion", "", "led", "", "light", "", "weather", ""];
+    }
+    // Same way round as the live field: C0 at the top, numbers running anticlockwise.
+    const mvAng = i => (-90 - i * 30) * Math.PI / 180;
+    function mvCentroid(v) {
+      let sx = 0, sy = 0, s = 0;
+      for (let i = 0; i < v.length; i++) { const a = v[i] || 0; sx += a * Math.cos(mvAng(i)); sy += a * Math.sin(mvAng(i)); s += a; }
+      return s > 1e-9 ? [sx / s, sy / s] : [0, 0];
+    }
+    // The lean drawing. One layer with `band` is the full study: shape now,
+    // dashed average, orange where it has grown and blue where it has shrunk,
+    // and a needle to the side the field is weighted toward with a one-minute
+    // trail. Several layers without the band are outlines and needles only.
+    function mvLeanDraw(canvas, layers, idx, band) {
+      const fit = mvFit(canvas);
+      if (!fit) return [];
+      const x = fit.x, sc = fit.w / 300, CC = 150, R = 100, names = mvRingNames(), out = [];
+      x.save(); x.scale(sc, sc);
+      const pt = (i, r) => [CC + Math.cos(mvAng(i)) * r, CC + Math.sin(mvAng(i)) * r];
+      x.beginPath(); x.arc(CC, CC, R, 0, Math.PI * 2); x.strokeStyle = hexA(C.linkGhost, 0.5); x.lineWidth = 1; x.stroke();
+      x.font = "10px -apple-system, system-ui, sans-serif"; x.textBaseline = "middle";
+      for (let i = 0; i < 12; i++) {
+        const p = pt(i, R);
+        x.beginPath(); x.moveTo(CC, CC); x.lineTo(p[0], p[1]); x.strokeStyle = hexA(C.linkGhost, 0.3); x.stroke();
+        if (i % 2) continue;
+        const l = pt(i, R + 16), cx = Math.cos(mvAng(i));
+        x.textAlign = Math.abs(cx) < 0.2 ? "center" : (cx > 0 ? "left" : "right");
+        x.fillStyle = hexA(C.muted, 1); x.fillText(String(names[i] || "C" + i).toUpperCase(), l[0], l[1]);
+      }
+      const row = hist[idx];
+      layers.forEach(L => {
+        const mx = MV_Q[L.k].max, rad = v => 10 + (R - 10) * clamp01((v || 0) / mx);
+        const now = row[L.k], base = mvBaseline(L.k, idx), scale = mvScale(L.k);
+        const poly = fn => { x.beginPath(); for (let i = 0; i < 12; i++) { const p = pt(i, rad(fn(i))); i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1]); } x.closePath(); };
+        let swell = 0;
+        for (let i = 0; i < 12; i++) swell += ((now[i] || 0) - base[i]) / 12;
+        if (band) {
+          poly(i => now[i]); x.fillStyle = hexA(L.color, 0.12); x.fill();
+          for (let i = 0; i < 12; i++) {
+            const j = (i + 1) % 12, d = ((now[i] - base[i]) + (now[j] - base[j])) / 2, m = clamp01(Math.abs(d) / scale);
+            const a0 = pt(i, rad(now[i])), a1 = pt(j, rad(now[j])), b1 = pt(j, rad(base[j])), b0 = pt(i, rad(base[i]));
+            x.beginPath(); x.moveTo(a0[0], a0[1]); x.lineTo(a1[0], a1[1]); x.lineTo(b1[0], b1[1]); x.lineTo(b0[0], b0[1]); x.closePath();
+            x.fillStyle = hexA(d > 0 ? C.rise : C.fall, 0.15 + 0.6 * m); x.fill();
+          }
+          poly(i => base[i]); x.setLineDash([4, 4]); x.strokeStyle = hexA(C.muted, 1); x.lineWidth = 1; x.stroke(); x.setLineDash([]);
+        }
+        poly(i => now[i]); x.strokeStyle = hexA(L.color, 0.95); x.lineWidth = 1.5; x.stroke();
+        const G = 1.8, tip = c => { const m = Math.hypot(c[0], c[1]) * G, q = m > 1 ? 1 / m : 1; return [CC + c[0] * G * q * R, CC + c[1] * G * q * R]; };
+        const needle = band ? C.rise : L.color, TR = 60;
+        x.lineCap = "round";
+        for (let s = TR; s >= 1; s--) {
+          if (idx - s < 0) continue;
+          const a = tip(mvCentroid(hist[idx - s][L.k])), b = tip(mvCentroid(hist[idx - s + 1][L.k]));
+          x.beginPath(); x.moveTo(a[0], a[1]); x.lineTo(b[0], b[1]); x.strokeStyle = hexA(needle, 0.85 * (1 - s / TR)); x.lineWidth = band ? 2 : 1.5; x.stroke();
+        }
+        const c = mvCentroid(now), t = tip(c);
+        if (Math.hypot(t[0] - CC, t[1] - CC) > 6) mvArrow(x, CC, CC, t[0], t[1], hexA(needle, 1), band ? 3 : 2.5);
+        let a = -Math.atan2(c[1], c[0]) - Math.PI / 2;
+        a = ((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+        const near = Math.round(a / (Math.PI / 6)) % 12;
+        out.push({ k: L.k, color: L.color, near, strength: Math.hypot(c[0], c[1]), swell });
+      });
+      x.beginPath(); x.arc(CC, CC, 2.5, 0, Math.PI * 2); x.fillStyle = hexA(C.text, 1); x.fill();
+      x.restore();
+      return out;
+    }
+    function mvSay(r) {
+      const name = String(mvRingNames()[r.near] || "").replace(/_x_/g, " × ");
+      return `toward C${r.near} ${name} · strength ${r.strength.toFixed(2)} · whole field ${r.swell >= 0 ? "+" : "−"}${Math.abs(r.swell).toFixed(3)}`;
+    }
+    let mvLeanBuilt = null;
+    function mvLeanRender(idx) {
+      const box = document.getElementById("mvLean"), keys = ["p", "a", "u"];
+      if (mvLeanBuilt !== MV.mode) {
+        box.classList.toggle("together", MV.mode === "together");
+        box.innerHTML = MV.mode === "together"
+          ? '<div class="learn-card mv-card"><canvas id="mvLeanAll"></canvas><div class="mv-say" id="mvSayAll"></div></div>'
+          : keys.map(k => `<div class="learn-card mv-card"><div class="learn-title">${MV_Q[k].name}</div><canvas id="mvLean_${k}"></canvas><div class="mv-say" id="mvSay_${k}"></div></div>`).join("");
+        mvLeanBuilt = MV.mode;
+      }
+      if (MV.mode === "together") {
+        // Three outlines on one ring, each on its own scale. Neutral, blue and orange keep them apart.
+        const cols = { p: C.rel, a: C.accent, u: C.loop };
+        const res = mvLeanDraw(document.getElementById("mvLeanAll"), keys.map(k => ({ k, color: cols[k] })), idx, false);
+        document.getElementById("mvSayAll").innerHTML = res.map(r => `<div><i style="background:${r.color}"></i>${MV_Q[r.k].name}: ${mvSay(r)}</div>`).join("");
+      } else {
+        keys.forEach(k => {
+          const res = mvLeanDraw(document.getElementById("mvLean_" + k), [{ k, color: C.rel }], idx, true);
+          document.getElementById("mvSay_" + k).textContent = res.length ? mvSay(res[0]) : "";
+        });
+      }
+    }
+
+    // The ring cut open and laid flat: one row per cell, time left to right.
+    // Under it the six reservoir cells and the four senses. A slanted streak is
+    // a change travelling round the ring; a vertical one is the whole field at once.
+    const MV_ROW = 13, MV_RES_ROW = 9, MV_SENSE_ROW = 8, MV_GUT = 78;
+    let mvRibbonGeo = null;
+    function mvRibbonRender(idx) {
+      const cv = document.getElementById("mvRibbon");
+      const yRes = 12 * MV_ROW + 6, ySense = yRes + 6 * MV_RES_ROW + 6, H = ySense + 4 * MV_SENSE_ROW + 18;
+      const fit = mvFit(cv, H);
+      if (!fit) return;
+      const x = fit.x, pw = fit.w - MV_GUT - 2, names = mvRingNames();
+      // The ribbon ends at the newest tick unless the moment on show is older than it reaches.
+      const end = idx >= hist.length - MV.span ? hist.length - 1 : Math.min(hist.length - 1, idx + Math.floor(MV.span / 2));
+      const first = end - MV.span + 1, i0 = Math.max(0, first);
+      const ncol = Math.max(1, Math.min(MV.span, Math.floor(pw))), cw = pw / ncol;
+      const dq = mvDeltaRows(MV.qty, i0, end, MV.win), dr = mvDeltaRows("res", i0, end, MV.win);
+      const sq = mvScale(MV.qty), sr = mvScale("res");
+      x.font = "10px -apple-system, system-ui, sans-serif"; x.textBaseline = "middle"; x.textAlign = "right";
+      for (let i = 0; i < 12; i++) {
+        const anchor = i % 2 === 0;
+        x.fillStyle = hexA(anchor ? C.text : C.muted, 1);
+        x.fillText(anchor ? "C" + i + " " + (names[i] || "") : "C" + i, MV_GUT - 6, i * MV_ROW + MV_ROW / 2);
+      }
+      x.fillStyle = hexA(C.muted, 1);
+      for (let j = 0; j < 6; j++) x.fillText("R" + j, MV_GUT - 6, yRes + j * MV_RES_ROW + MV_RES_ROW / 2);
+      MV_SENSES.forEach((s, j) => x.fillText(s, MV_GUT - 6, ySense + j * MV_SENSE_ROW + MV_SENSE_ROW / 2));
+      x.fillStyle = hexA(C.bg, 1);
+      x.fillRect(MV_GUT, 0, pw, 12 * MV_ROW); x.fillRect(MV_GUT, yRes, pw, 6 * MV_RES_ROW); x.fillRect(MV_GUT, ySense, pw, 4 * MV_SENSE_ROW);
+      const colRows = c => [first + Math.floor(c * MV.span / ncol), first + Math.floor((c + 1) * MV.span / ncol) - 1];
+      const paint = (rows, n, scale, y0, rh, j0, j1, px) => {
+        for (let i = 0; i < n; i++) {
+          let best = 0;
+          for (let j = j0; j <= j1; j++) { const d = rows[j - i0][i]; if (Math.abs(d) > Math.abs(best)) best = d; }
+          const m = Math.pow(clamp01(Math.abs(best) / scale), 0.7);
+          if (m < 0.05) continue;
+          x.fillStyle = hexA(best > 0 ? C.rise : C.fall, m); x.fillRect(px, y0 + i * rh + 1, cw + 0.5, rh - 2);
+        }
+      };
+      for (let c = 0; c < ncol; c++) {
+        let [j0, j1] = colRows(c);
+        if (j1 < i0) continue;
+        j0 = Math.max(j0, i0); j1 = Math.max(j1, j0);
+        const px = MV_GUT + c * cw;
+        paint(dq, 12, sq, 0, MV_ROW, j0, j1, px);
+        if (dr.length && dr[0].length) paint(dr, Math.min(6, dr[0].length), sr, yRes, MV_RES_ROW, j0, j1, px);
+        MV_SENSES.forEach((s, k) => {
+          let v = 0;
+          for (let j = j0; j <= j1; j++) v = Math.max(v, hist[j].s[k] || 0);
+          if (v < 0.02) return;
+          x.fillStyle = hexA(C[s], clamp01(v)); x.fillRect(px, ySense + k * MV_SENSE_ROW + 1, cw + 0.5, MV_SENSE_ROW - 2);
+        });
+      }
+      // The moment on show.
+      const cx = MV_GUT + (idx - first + 0.5) * pw / MV.span;
+      if (MV.cursor != null && cx >= MV_GUT && cx <= MV_GUT + pw) { x.fillStyle = hexA(C.text, 0.9); x.fillRect(cx - 0.75, 0, 1.5, ySense + 4 * MV_SENSE_ROW); }
+      x.fillStyle = hexA(C.muted, 1); x.textBaseline = "alphabetic";
+      const leftX = MV_GUT + (i0 - first) * pw / MV.span;
+      if (leftX < MV_GUT + pw - 110) { x.textAlign = "left"; x.fillText(mvClock(hist[i0]), leftX, H - 4); }
+      x.textAlign = "right"; x.fillText(mvClock(hist[end]), MV_GUT + pw, H - 4);
+      mvRibbonGeo = { first, i0, end, pw, yRes, ySense };
+    }
+    function mvRibbonAt(e) {
+      const g = mvRibbonGeo;
+      if (!g) return null;
+      const r = document.getElementById("mvRibbon").getBoundingClientRect(), mx = e.clientX - r.left - MV_GUT, my = e.clientY - r.top;
+      const j = g.first + Math.floor(mx / g.pw * MV.span);
+      if (mx < 0 || mx > g.pw || j < g.i0 || j > g.end) return null;
+      let k = null, i = -1;
+      if (my < 12 * MV_ROW) { k = MV.qty; i = Math.floor(my / MV_ROW); }
+      else if (my >= g.yRes && my < g.yRes + 6 * MV_RES_ROW) { k = "res"; i = Math.floor((my - g.yRes) / MV_RES_ROW); }
+      return { j, k, i };
+    }
+    const MV_HOVER_REST = "Point at the ribbon to read a value; click it to go to that moment.";
+    document.getElementById("mvRibbon").addEventListener("mousemove", e => {
+      const h = mvRibbonAt(e), out = document.getElementById("mvHover");
+      if (!h || h.k == null || !hist[h.j] || (hist[h.j][h.k] || [])[h.i] == null) { out.textContent = h ? mvClock(hist[h.j]) + " · click to go to this moment" : MV_HOVER_REST; return; }
+      const v = hist[h.j][h.k][h.i], d = mvDeltaRows(h.k, h.j, h.j, MV.win)[0][h.i];
+      const name = h.k === "res" ? "R" + h.i : "C" + h.i + " " + String(mvRingNames()[h.i] || "").replace(/_x_/g, " × ");
+      out.textContent = `${name} at ${mvClock(hist[h.j])}: ${MV_Q[h.k].name.toLowerCase()} ${v.toFixed(3)}, ${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(3)} against its last ${MV.win} s`;
+    });
+    document.getElementById("mvRibbon").addEventListener("mouseleave", () => { document.getElementById("mvHover").textContent = MV_HOVER_REST; });
+    document.getElementById("mvRibbon").addEventListener("click", e => {
+      const h = mvRibbonAt(e);
+      if (!h) return;
+      MV.cursor = h.j >= hist.length - 1 ? null : hist[h.j].tick;
+      mvRender();
+    });
+
+    function mvRender() {
+      const view = document.querySelector('#viewArea .view[data-view="movement"]');
+      if (!view || view.hidden) return;
+      const foot = document.getElementById("mvFoot"), scrub = document.getElementById("mvScrub");
+      if (hist.length < 2) { foot.textContent = "Waiting for history…"; return; }
+      const idx = mvIdx();
+      scrub.max = hist.length - 1;
+      if (document.activeElement !== scrub) scrub.value = idx;
+      document.getElementById("mvClock").textContent = mvClock(hist[idx]);
+      document.getElementById("mvLive").classList.toggle("on", MV.cursor == null);
+      mvLeanRender(idx);
+      mvRibbonRender(idx);
+      const mins = hist.length / 60;
+      foot.textContent = `History kept: ${mins < 1 ? hist.length + " s" : mins.toFixed(0) + " min"} of the last hour, held in the dashboard server's memory, so it starts again when the server does. ` +
+        "Orange is a value above its own recent average, blue below. Full colour is the size of change that 19 ticks in 20 stayed under over the last fifteen minutes.";
+    }
+    function mvSeg(id, key, parse) {
+      document.getElementById(id).addEventListener("click", e => {
+        const b = e.target.closest("button[data-v]");
+        if (!b) return;
+        MV[key] = parse ? parse(b.dataset.v) : b.dataset.v;
+        document.querySelectorAll("#" + id + " button").forEach(o => o.classList.toggle("on", o === b));
+        mvRender();
+      });
+    }
+    mvSeg("mvWin", "win", Number); mvSeg("mvMode", "mode"); mvSeg("mvQty", "qty"); mvSeg("mvSpan", "span", Number);
+    document.getElementById("mvScrub").addEventListener("input", e => {
+      const i = Number(e.target.value);
+      MV.cursor = i >= hist.length - 1 ? null : hist[i].tick;
+      mvRender();
+    });
+    document.getElementById("mvLive").addEventListener("click", () => { MV.cursor = null; mvRender(); });
+    new ResizeObserver(() => mvRender()).observe(document.getElementById("viewArea"));
+
     // ---- menu ----
     // One section is open beside the field at a time. The choice and the
     // collapsed state are remembered per browser.
-    const VIEWS = ["inspector", "raw", "learning", "legend", "metabolism"];
+    const VIEWS = ["inspector", "raw", "learning", "movement", "legend", "metabolism"].filter(v => !(STATIC_MODE && v === "movement"));
     function showView(name) {
       if (!VIEWS.includes(name)) name = "inspector";
       document.querySelectorAll("#viewArea .view").forEach(v => { v.hidden = v.dataset.view !== name; });
       document.querySelectorAll("#sideNav button[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === name));
       remember("creature.view", name);
+      if (name === "movement") mvRender();
     }
     function setNavCollapsed(collapsed) {
       document.getElementById("app").classList.toggle("nav-collapsed", collapsed);
@@ -1896,6 +2377,7 @@
       if (v06Mode && latest) { buildV06(latest); renderV06(latest, true); }
       else if (latest) renderInspector();
       if (learnDoc && learnDoc.tick_to != null) renderLearning();
+      mvRender();
     }
     function setThemeMode(mode) {
       themeMode = mode;
@@ -2085,7 +2567,7 @@
         renderMetabolism(f);
         renderLoop(f);
         renderTwin(f);
-        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built || v06.hasWiring !== snapshotHasWiring(f)) buildV06(f); renderV06(f); }
+        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built || v06.hasWiring !== snapshotHasWiring(f)) buildV06(f); renderV06(f); histPush(f); mvRender(); }
         else { v06Mode = false; render(f); }
       } catch (err) {
         document.getElementById("dot").className = "dot stale";
@@ -2246,6 +2728,7 @@
     setInterval(pullSpeaker, 10000);
     setInterval(pullSensors, POLL_MS);
     setInterval(pullField, POLL_MS);
+    pullCellHistory();
     setInterval(pullHealth, 60000);
   </script>
 </body>

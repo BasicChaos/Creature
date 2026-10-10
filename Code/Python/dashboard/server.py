@@ -18,7 +18,9 @@ import mimetypes
 import os
 import sqlite3
 import sys
+import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -180,6 +182,52 @@ def read_field_history(seconds):
         return [dict(row) for row in rows]
     except sqlite3.Error:
         return []
+
+
+# Per-cell history for the dashboard's movement views. The database keeps only
+# field-wide totals per tick, so the server keeps the last hour of each cell's
+# values here, in memory, read from the live snapshot. It starts empty whenever
+# the server starts, and nothing is written to disk.
+CELL_HISTORY_SECONDS = 3600
+_cell_history = deque(maxlen=CELL_HISTORY_SECONDS)
+_cell_history_lock = threading.Lock()
+
+
+def cell_history_row(state):
+    """One compact row from a snapshot, or None if it has no cells."""
+    cells = state.get("cells") or []
+    if not cells or state.get("tick") is None:
+        return None
+    ordered = sorted(cells, key=lambda c: c.get("n", 0))
+    return {
+        "tick": state["tick"],
+        "at": state.get("updated_at"),
+        "a": [c.get("activation", 0.0) for c in ordered],
+        "p": [c.get("pressure", 0.0) for c in ordered],
+        "u": [c.get("surprise", 0.0) for c in ordered],
+        "res": (state.get("reservoir") or {}).get("state") or [],
+        "s": [state.get(k) or 0.0 for k in ("sound_norm", "light_norm", "motion_norm", "weather_norm")],
+    }
+
+
+def sample_cell_history():
+    """Runs for the life of the server: one row per new tick."""
+    last_tick = None
+    while True:
+        row = cell_history_row(read_state())
+        if row and row["tick"] != last_tick:
+            last_tick = row["tick"]
+            with _cell_history_lock:
+                _cell_history.append(row)
+        time.sleep(0.5)
+
+
+def read_cell_history(seconds):
+    """The newest `seconds` rows (one row is one tick), oldest first."""
+    seconds = max(1, min(CELL_HISTORY_SECONDS, int(seconds)))
+    with _cell_history_lock:
+        rows = list(_cell_history)
+    return {"kept_seconds": CELL_HISTORY_SECONDS, "rows": rows[-seconds:]}
 
 
 # The air history is a row every 20 seconds, so its answer keeps for a while.
@@ -432,6 +480,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(read_field_history(seconds))
             return
 
+        if path == "/api/cell_history":
+            query = parse_qs(parsed.query)
+            try:
+                seconds = int(query.get("seconds", [str(CELL_HISTORY_SECONDS)])[0])
+            except ValueError:
+                seconds = CELL_HISTORY_SECONDS
+            self._send_json(read_cell_history(seconds))
+            return
+
         if path == "/api/learning":
             query = parse_qs(parsed.query)
             self._send_json(read_learning_cached(query.get("window", [LEARNING_DEFAULT])[0]))
@@ -504,4 +561,5 @@ if __name__ == "__main__":
     print(f"Creature dashboard serving on http://{HOST}:{PORT}")
     print(f"Database: {DB_PATH}")
     print(f"Live state file: {STATE_JSON_PATH}")
+    threading.Thread(target=sample_cell_history, daemon=True).start()
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
