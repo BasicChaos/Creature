@@ -175,7 +175,53 @@ value was 73 to 85 and the biggest change 27 to 107, the same as the night
 before. So on the real body the rule did what the gate said. Two limits: the
 log holds each frame's channel means, not its pixels, so it cannot show single
 pixels switching on and off; and the two nights were not the same room at the
-same hours. What the field did in that quiet (events, sleep) is not looked at.
+same hours.
+
+What the field did in that dark evening (20:10 to 00:53), from the log tables:
+
+- It did not go quiet. Events on 11 to 17 % of ticks all evening, against 14 to
+  16 % in the lit hour before. The room was not still: the sound sense was above
+  zero on 14 to 31 % of ticks until midnight, and on 6 to 10 % after.
+- Of 159 events, 105 were led by the sound cell (2) and none by the light cell
+  (8) or the LED-and-light loop cell (7). In the lit hour before, the light
+  cell led 42 of 84. In the dark of the night before, with no rule, the loop
+  cell led 10 of 91.
+- The light sense read exactly zero from 20:30 on, and felt light was zero on
+  every tick. With no rule the night before, felt light was above zero on 16 to
+  69 % of dark ticks (small: 0.017 at most on average). So in the dark the
+  light loop is silent under the rule. That is the price the gate printed.
+- One sleep, at 00:42, 29 ticks, for low stimulation, 4 links pruned. The night
+  before had one like it at 22:55.
+- The links held: mean weight 1.173 at the start and 1.181 at the end (it
+  dipped to 1.094 on the way). The night before they fell from 1.120 to 1.063.
+- Energy stayed at 5.8, tones ran at about 25 an hour until midnight and 17
+  after. Curiosity proposed 13 light probes after 00:30 as things got quieter;
+  none showed on the strip.
+
+So the gate's price (a still dark room becomes a silent hour) was not tested:
+there was sound in the room all evening. A still, dark, empty room under the
+rule has not been seen yet. The two nights also differ in energy (about 2 on
+8 October, 5.8 on 9 October) and the speaker made no tones on the 8th.
+
+The body went off the network at 08:23:29 on 10 October (no ping from the Mac
+or the Pi; the collector prints `Reconnect failed`). Its battery read 4.12 V and
+91.5 % on the last sample. It came back by itself: ticks stopped from 08:23:32
+to 08:27:54 (262 seconds) and again from 08:28:26 to 08:29:47 (81 seconds), and
+the collector reconnected each time with nothing restarted. The first break is
+the same length as the one at 23:53 the evening before (261 seconds), which
+suggests that one was the body too.
+
+The router's log explains this morning's: the repeater, which the body is
+joined to, narrowed its 2.4 GHz channel at 08:22:49 and again at 08:23:24
+("Wi-Fi transmission quality increased by reduced channel bandwidth"), five
+seconds before the body went. Josh had changed the repeater's settings at
+08:14. So the repeater dropped the body, not the other way round. What is the
+body's own is how long it takes to get back: about four and a half minutes,
+both times. Its firmware gives up a join after 30 seconds and starts again
+(`WIFI_RETRY_INTERVAL_MS`, `WiFi.disconnect()` then `WiFi.begin()`); with its
+weak signal a join may need longer than that, so it may be cutting its own
+attempts short. That is a guess until the serial output is watched during a
+drop. The router's log shows nothing at 23:53 the evening before.
 
 ## A calm strip in a dark room: switched on at the Pi (9 October, 20:07)
 
