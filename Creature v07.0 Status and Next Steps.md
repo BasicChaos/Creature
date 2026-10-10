@@ -153,8 +153,29 @@ To be ready for the next time (each needs Josh, `sudo` asks for a password):
 4. A stronger power supply for the Pi.
 
 The last snapshot before the silence, the first seen from a dark room: calm
-1.0, the room read at 0.0 lux, the strip credited with 12.1 lux. Not yet looked
-at: what the strip did through that dark evening (it is in `loop_log`).
+1.0, the room read at 0.0 lux, the strip credited with 12.1 lux.
+
+What the strip did in that first dark evening, from `loop_log` (the sum of the
+four channels' mean values in each frame sent, in ten-minute steps). The room
+went dark at about 20:10, three minutes after the rule was switched on, and
+stayed dark to the silence at 00:53. Beside it, the dark part of the night
+before (23:10 to 00:50 on 8 to 9 October), which had no rule:
+
+| In the dark | 8 to 9 October, no rule | 9 to 10 October, rule |
+|---|---|---|
+| Strip value, usual | 46 to 70 | 15 to 27 |
+| Strip value, highest | 68 to 174 | 30 to 56 |
+| Change from tick to tick, usual | 1.1 to 2.2 | 0.25 to 0.6 |
+| Change from tick to tick, biggest | 10 to 47 | 2.0 to 3.5 |
+| White channel, highest mean | up to 22 | 0 (3 once, near the end) |
+| Raw lux at the sensor | 13 to 24 | 2.7 to 8.9 |
+
+In the lit evening before the dark (19:20 to 20:00 on 9 October) the usual
+value was 73 to 85 and the biggest change 27 to 107, the same as the night
+before. So on the real body the rule did what the gate said. Two limits: the
+log holds each frame's channel means, not its pixels, so it cannot show single
+pixels switching on and off; and the two nights were not the same room at the
+same hours. What the field did in that quiet (events, sleep) is not looked at.
 
 ## A calm strip in a dark room: switched on at the Pi (9 October, 20:07)
 
