@@ -90,6 +90,72 @@ due (the design doc and the dashboard legend still say the light loop is open).
 Item 2, one weight per pixel for the light model, is now the main thing. Not yet
 done: the same probe in a dark room.
 
+## The Pi lost its WiFi overnight (10 October, 00:53 to 07:52)
+
+The collector's last tick was logged at 00:53:18 on 10 October (tick 1364851),
+and the public mirror's last sync was at 00:53:09. From then the Pi answered
+neither ping nor ssh from the Mac, while the body still answered pings. Josh's
+dashboard page said "server unreachable" (that is the page's own message when
+it cannot fetch from the Pi). He rebooted the Pi at about 07:47. The collector
+was started again at 07:52 in a new tmux session with the same nine settings
+(state loaded from tick 1364800, saved at 00:52; about 50 ticks and seven hours
+were lost).
+
+What is known:
+
+- The Pi did not crash or lose power. A systemd timer (`apt-daily-upgrade`) ran
+  on it at 06:41, in the middle of the silence. It was running with no network.
+- It did not get its WiFi back in seven hours, though the connection is set to
+  reconnect by itself. That looks more like the WiFi chip or its driver hanging
+  than like a signal that came and went.
+- The Pi's WiFi link is weak: -77 dBm on the 5 GHz band (channel 44), sending
+  at 12 Mbit/s, measured after the reboot. It is a Pi 3 B+ on WiFi only; the
+  ethernet socket is unused.
+- There were shorter breaks in the ticks before it: 2 minutes at 18:47 on
+  9 October, 4 minutes at 23:53 and 10 minutes at 23:57. Whether those were the
+  Pi's link or the body's is not known. The one at 18:47 was before the
+  dark-room rule was switched on (20:07).
+- The Pi reported under-voltage 18 seconds into the new boot
+  (`throttled=0x50000`, `Undervoltage detected!` in the kernel log). Its power
+  supply is marginal, at least while booting, with the SSD on its USB.
+- The body's battery was fine (4.11 V, 90.7 %) up to the last reading.
+
+What is not known: why the WiFi dropped at 00:53 and why it stayed down. The Pi
+keeps its system log in memory only (`Storage=volatile`, the Raspberry Pi OS
+default), so that night's log went with the reboot. The router's event log may
+show something at 00:53.
+
+The router's event log (FRITZ!Box 7590) has nothing between 21:03 on 9 October
+and 07:58 on 10 October, so the router did not drop the Pi; the Pi went quiet
+on its own side. A scan from the Pi on 10 October: the 2.4 GHz band reads 65 of
+100 (channel 5, with a second access point at 59), the 5 GHz band it was using
+reads 42. The body is 192.168.178.91 and the Pi 192.168.178.87.
+
+Nothing points at the dark-room rule: it does not touch the network, and the
+Pi itself kept running.
+
+To be ready for the next time (each needs Josh, `sudo` asks for a password):
+
+1. Keep the system log on disk, so the evidence survives a reboot. **Done by
+   Josh on 10 October** (`/etc/systemd/journald.conf.d/50-persistent.conf`,
+   `Storage=persistent`, at most 200 MB). After a silence, read the hours
+   before it with `journalctl -b -1`.
+2. Move the Pi onto an ethernet cable, or onto the 2.4 GHz band, which reaches
+   further. **Done by Josh on 10 October, about 08:10**: the Pi's connection is
+   set to the 2.4 GHz band (`802-11-wireless.band bg`). It reads -62 dBm and
+   72 Mbit/s there, against -77 dBm and 12 Mbit/s on 5 GHz. The collector lost
+   the body for a few seconds at the switch and reconnected by itself. To undo:
+   `sudo nmcli connection modify 'netplan-wlan0-FRITZ!Box 7590 ST2'
+   802-11-wireless.band ''`, then bring the connection up again.
+3. A small watchdog that restarts the network when the router stops answering.
+   It must not reboot the Pi: the collector is started by hand and would not
+   come back.
+4. A stronger power supply for the Pi.
+
+The last snapshot before the silence, the first seen from a dark room: calm
+1.0, the room read at 0.0 lux, the strip credited with 12.1 lux. Not yet looked
+at: what the strip did through that dark evening (it is in `loop_log`).
+
 ## A calm strip in a dark room: switched on at the Pi (9 October, 20:07)
 
 Josh does not want the strip flashy in a dark room. `mind/calm_v06.py` (new) is
