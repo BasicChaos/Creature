@@ -268,6 +268,22 @@ def parse_line(line):
     return data
 
 
+def parse_wifi_rssi(line):
+    """The body's WiFi signal strength in dBm from its status line, which it
+    sends every two seconds, or None: not a status line, or the body is not
+    joined. Around -60 is good; under -85 is too weak to hold a connection."""
+    if not line or '"wifi_rssi"' not in line:
+        return None
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("system") != "status":
+        return None
+    value = data.get("wifi_rssi")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def parse_vox_line(line):
     """The body's report of what it heard while a tone played, or None. Sent
     once after each VOX tone: {"vox": {"freq", "ms", "vol", "heard", "level",
@@ -542,6 +558,8 @@ def setup_database(db_path):
         battery_v REAL, battery_pct REAL, battery_rate REAL
     )
     """)
+    # The body's WiFi signal strength, in the same rows (10 October 2026).
+    ensure_columns(cur, "power_log", [("wifi_rssi", "REAL")])
 
     # What the body heard of its own tone (v06.8 firmware), at the tone's pitch.
     ensure_columns(cur, "loop_log", [
@@ -1053,11 +1071,11 @@ def log_air(cur, logged_at, tick, raw, voc_index, nox_index):
           raw["voc_raw"], raw["nox_raw"], voc_index, nox_index))
 
 
-def log_power(cur, logged_at, tick, raw):
+def log_power(cur, logged_at, tick, raw, wifi_rssi=None):
     cur.execute("""
-    INSERT INTO power_log (tick, logged_at, battery_v, battery_pct, battery_rate)
-    VALUES (?, ?, ?, ?, ?)
-    """, (tick, logged_at, raw["battery_v"], raw["battery_pct"], raw["battery_rate"]))
+    INSERT INTO power_log (tick, logged_at, battery_v, battery_pct, battery_rate, wifi_rssi)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (tick, logged_at, raw["battery_v"], raw["battery_pct"], raw["battery_rate"], wifi_rssi))
 
 
 def apply_retention_policy(cur):
@@ -1158,6 +1176,10 @@ def main():
                   "voc_raw": None, "nox_raw": None,
                   **{key: None for key in BATTERY_KEYS}}
     last_sample_at = None
+    # The body's WiFi signal strength (dBm) and when it was last reported. For
+    # the dashboard and the log only. The field does not read it.
+    wifi_rssi = None
+    wifi_rssi_at = None
 
     # Stop cleanly on Ctrl-C (SIGINT) and `systemctl stop` (SIGTERM).
     stop = {"requested": False}
@@ -1248,6 +1270,10 @@ def main():
         now = monotonic()
 
         sample = parse_line(line)
+        if sample is None:
+            rssi = parse_wifi_rssi(line)
+            if rssi is not None:
+                wifi_rssi, wifi_rssi_at = rssi, now
         if sample is None and forward is not None:
             vox_report = parse_vox_line(line)
             if vox_report is not None:
@@ -1360,6 +1386,9 @@ def main():
 
         if calm is not None:
             calm.step()
+
+        # An old signal reading says nothing about the link now.
+        wifi_rssi_now = wifi_rssi if wifi_rssi_at is not None and now - wifi_rssi_at <= 10.0 else None
 
         emitter_values = state.get("emitter_activations") or {}
         led_activation = emitter_values.get("led", field.emitter_activation)
@@ -1491,6 +1520,7 @@ def main():
                 **{k: (round(v, 3) if v is not None else None) for k, v in latest_raw.items()},
                 "voc_index": latest_voc_index,
                 "nox_index": latest_nox_index,
+                "wifi_rssi": wifi_rssi_now,
                 "sample_age_s": round(now - last_sample_at, 2) if last_sample_at is not None else None,
             },
             "weather_raw": {"temp_c": round(weather_temp_c, 2), "pressure_hpa": round(weather_pressure_hpa, 1)},
@@ -1546,8 +1576,9 @@ def main():
         if air_fresh and tick % AIR_LOG_EVERY_TICKS == 0 and (
                 latest_raw["co2_ppm"] is not None or latest_raw["voc_raw"] is not None):
             log_air(cur, logged_at, tick, latest_raw, latest_voc_index, latest_nox_index)
-        if air_fresh and tick % POWER_LOG_EVERY_TICKS == 0 and latest_raw["battery_pct"] is not None:
-            log_power(cur, logged_at, tick, latest_raw)
+        if air_fresh and tick % POWER_LOG_EVERY_TICKS == 0 and (
+                latest_raw["battery_pct"] is not None or wifi_rssi_now is not None):
+            log_power(cur, logged_at, tick, latest_raw, wifi_rssi_now)
         if tick % RETENTION_EVERY_TICKS == 0:
             apply_retention_policy(cur)
         if tick % COMMIT_EVERY_TICKS == 0 or state.get("sleep_summary"):

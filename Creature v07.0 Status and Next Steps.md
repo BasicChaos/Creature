@@ -90,6 +90,79 @@ due (the design doc and the dashboard legend still say the light loop is open).
 Item 2, one weight per pixel for the light model, is now the main thing. Not yet
 done: the same probe in a dark room.
 
+## The body sat on a dead WiFi link until reset (10 October, 09:07 to 09:29)
+
+The body went silent at 09:07:44 and stayed away for 22 minutes, until Josh
+pressed reset. No ping from the Mac or the Pi in that time. The Pi and the
+collector were fine and the collector reconnected by itself at 09:29:43.
+
+What Josh saw before the reset:
+
+- The repeater still listed the body (`esp32s3-85A690`, 192.168.178.91) as
+  connected on 2.4 GHz, at the weakest signal step and 5 down / 14 up Mbit/s.
+  Earlier that morning it had 26 / 70.
+- The board's small light was blinking fast. That light follows the USB serial
+  line: the firmware sends its 10 Hz samples there only while no collector is
+  connected over WiFi. So the firmware was running normally and knew it had no
+  collector.
+
+Reading (not proven; the serial output was not watched): the body and the
+repeater both believed they were connected, and nothing was getting through. The
+firmware only rejoins WiFi when it sees the link as down (`WiFi.status() !=
+WL_CONNECTED`), so it never tried. A reset makes it join afresh, which is why
+that worked.
+
+It is not the dark-room rule or anything on the Pi: the body could not be
+pinged from the Mac either. Breaks like this are not new (the tick log has some
+on every day of the week before), but 10 October had more, after changes to the
+repeater's and the router's settings at 08:14 and 08:35 and the repeater
+narrowing its 2.4 GHz channel at 08:23.
+
+The Pi's move to the 2.4 GHz band was at 08:13:21, ten minutes before the
+body's first break of the morning (08:23:32) and nine and a half before the
+repeater narrowed its channel. It cannot have started the trouble: the breaks
+at 23:53 and 23:57 the evening before, and those of the week before, came
+first. Whether it made the morning worse is open. Since the move, the Pi, the
+repeater's link to the router and the body all share the same 2.4 GHz channel.
+
+Josh: this was not a problem before. The tick log agrees, and puts the change
+at the v07.0 rebuild of 4 October, not at anything done on 9 or 10 October.
+Breaks of 20 seconds to an hour, per day (planned restarts and flashes are in
+these counts too):
+
+| Days | Breaks a day | Minutes lost a day |
+|---|---|---|
+| 20 September to 3 October (12 days of running) | 0 to 2, once 5 | 0 to 14, once 63 |
+| 4 to 9 October | 2 to 12 | 6 to 92 |
+| 10 October, first 2.2 hours | 3 | 28 |
+
+That is the day the air sensors and the e-paper went on, and the day the
+body's WiFi was first measured as very weak (-89 to -95 dBm, see "Build v07.0"
+below: the antenna lying flat over the breadboard, or the 3V3 rail feeding more
+parts). It was never followed up. On 10 October the repeater showed the body at
+its weakest signal step. So the weak link since the rebuild is the root, and
+the router's re-tuning and the dead link are what a weak link does. The log
+only covers June and from 20 September; June, on the earlier body, had breaks
+of its own.
+
+Next for this, in order: log the body's `wifi_rssi`, then move the antenna
+clear of the breadboard and the panel and watch the number, then check the 3V3
+rail.
+
+The first is done (10 October). The collector now reads `wifi_rssi` from the
+body's status line, which comes every two seconds. It is in the live snapshot
+as `sensors.wifi_rssi` (dBm; empty when the last reading is over 10 seconds
+old) and in a new `wifi_rssi` column of `power_log`, a row every 20 ticks.
+Around -60 is good; under -85 is too weak to hold. The dashboard does not show
+it yet. Nothing else changed: on the scripted body, seeds 1, 2, 3 and 7, a run
+is identical to the code before, and `tools/scripted_body.py --wifi-rssi -70`
+makes the scripted body send the status line.
+
+A fix on the body, not built: if the link reads as up but nothing has come
+from the collector for a minute or two, rejoin WiFi; if that keeps failing,
+restart. It needs a flash. With the Pi down for hours, as on the night before,
+it would rejoin WiFi every couple of minutes, which is harmless.
+
 ## The Pi lost its WiFi overnight (10 October, 00:53 to 07:52)
 
 The collector's last tick was logged at 00:53:18 on 10 October (tick 1364851),
@@ -141,7 +214,8 @@ To be ready for the next time (each needs Josh, `sudo` asks for a password):
    `Storage=persistent`, at most 200 MB). After a silence, read the hours
    before it with `journalctl -b -1`.
 2. Move the Pi onto an ethernet cable, or onto the 2.4 GHz band, which reaches
-   further. **Done by Josh on 10 October, about 08:10**: the Pi's connection is
+   further. **Done by Josh on 10 October at 08:13:21** (the Pi's log has it;
+   it was back on the network six seconds later): the Pi's connection is
    set to the 2.4 GHz band (`802-11-wireless.band bg`). It reads -62 dBm and
    72 Mbit/s there, against -77 dBm and 12 Mbit/s on 5 GHz. The collector lost
    the body for a few seconds at the switch and reconnected by itself. To undo:

@@ -56,13 +56,15 @@ class ScriptedBody:
 
     description = "scripted body"
 
-    def __init__(self, seconds, seed, loud_every, dark_after=0):
+    def __init__(self, seconds, seed, loud_every, dark_after=0, wifi_rssi=None):
         self.rng = random.Random(seed + 1000)
         self.start = 1000.0
         self.now = self.start               # the pretend clock, in seconds
         self.end = self.start + seconds
         self.loud_every = loud_every
         self.dark_after = dark_after        # the room's light goes out at this second (0: never)
+        self.wifi_rssi = wifi_rssi          # the signal strength its status line reports (None: no status line)
+        self.status_at = self.start + 2.0
         self.frames = [(0.0, [0.0] * 4)]    # (time, channel means) of the last frames shown
         self.blocked_until = 0.0            # a tone blocks the real body's loop
         self.spike = 0.0
@@ -73,6 +75,11 @@ class ScriptedBody:
     def readline(self):
         if self.stopped:
             return ""
+        if self.wifi_rssi is not None and self.now >= self.status_at:
+            # The real body's status line, every two seconds. It does not move
+            # the clock, so the samples come as they would without it.
+            self.status_at += 2.0
+            return json.dumps({"system": "status", "wifi_rssi": self.wifi_rssi - int(self.now) % 3})
         self.now += SAMPLE_SECONDS
         if self.now >= self.end:
             # Stop the collector the way Ctrl-C does, so it saves and closes.
@@ -164,7 +171,7 @@ def run(args):
     from collector import collector
     from mind.curiosity_v06 import Curiosity
 
-    body = ScriptedBody(args.seconds, args.seed, args.loud_every, args.dark_after)
+    body = ScriptedBody(args.seconds, args.seed, args.loud_every, args.dark_after, args.wifi_rssi)
     collector.monotonic = lambda: body.now
     collector.open_esp_transport = lambda target: body
     collector.Curiosity = lambda: Curiosity(seed=args.seed + 7)
@@ -271,6 +278,9 @@ def main():
     p.add_argument("--dark-after", type=int, default=0,
                    help="the room's light goes out after this many seconds (0 = never), "
                         "for the dark-room rule (CREATURE_DARK_CALM=1)")
+    p.add_argument("--wifi-rssi", type=int, default=None,
+                   help="send the body's status line every two seconds with about this "
+                        "signal strength in dBm (default: no status line)")
     p.add_argument("--out", help="save everything the run did as JSON")
     p.add_argument("--twin-check", action="store_true",
                    help="run with CREATURE_TWIN=0 and =1 and compare everything the Creature did")
