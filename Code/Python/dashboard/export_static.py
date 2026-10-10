@@ -1,8 +1,10 @@
 import json
+import os
 import shutil
 import sqlite3
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 PROJECT_PYTHON_ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +132,22 @@ def read_health():
         pass
     return info
 
+# Per-cell history for the public Movement view. It exists only in the
+# dashboard server's memory, so it is asked for there. Four minutes is what the
+# public view shows; the full hour stays on the local dashboard.
+CELL_HISTORY_EXPORT_SECONDS = 240
+
+
+def read_cell_history():
+    port = os.environ.get("CREATURE_DASHBOARD_PORT", "8080")
+    url = f"http://127.0.0.1:{port}/api/cell_history?seconds={CELL_HISTORY_EXPORT_SECONDS}"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as reply:
+            return json.load(reply)
+    except (OSError, ValueError):
+        return {"rows": []}
+
+
 def write_json(filename, payload):
     with open(EXPORT_DIR / filename, "w") as f:
         json.dump(payload, f)
@@ -145,6 +163,7 @@ write_json("history.json", read_history())
 write_json("events.json", read_events())
 write_json("sleep_summaries.json", read_sleep_summaries())
 write_json("health.json", read_health())
+write_json("cell_history.json", read_cell_history())
 # The learning history barely changes minute to minute and costs a database
 # read, while this export runs every few seconds: refresh it only now and then.
 LEARNING_REFRESH_SECONDS = 300

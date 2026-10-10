@@ -264,6 +264,7 @@
     .mv-clock { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); min-width: 8ch; }
     .mv-btn { background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
     .mv-btn.on { color: var(--emitter); border-color: var(--emitter); }
+    .mv-btn[hidden], .seg[hidden] { display: none; }
     .mv-lean { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 8px; }
     .mv-lean.together { grid-template-columns: minmax(0, 420px); }
     .mv-card canvas { display: block; width: 100%; aspect-ratio: 1 / 1; }
@@ -2033,17 +2034,21 @@
       };
     }
     function histPush(f) {
+      // The public mirror takes its history whole from each sync instead.
+      if (STATIC_MODE) return;
       const r = histRow(f), last = hist[hist.length - 1];
       if (!r || (last && last.tick === r.tick)) return;
       hist.push(r);
       if (hist.length > HIST_MAX) hist.shift();
     }
+    // Local: asked once, at page load; after that the page adds each tick it
+    // sees. Public mirror: the export carries the last four minutes, and the
+    // page takes that whole on every pass. It shows now only, with no rewind.
     async function pullCellHistory() {
-      if (STATIC_MODE) return;
       try {
-        const doc = await (await fetch("/api/cell_history?seconds=" + HIST_MAX + "&ts=" + Date.now())).json();
+        const doc = await (await fetch(dataUrl("cell_history.json", API + "/api/cell_history?seconds=" + HIST_MAX))).json();
         const rows = doc.rows || [], seen = new Set(rows.map(r => r.tick));
-        const mine = hist.filter(r => !seen.has(r.tick));
+        const mine = STATIC_MODE ? [] : hist.filter(r => !seen.has(r.tick));
         hist.length = 0;
         rows.concat(mine).slice(-HIST_MAX).forEach(r => hist.push(r));
         mvScaleCache = {};
@@ -2292,10 +2297,10 @@
       else if (my >= g.yRes && my < g.yRes + 6 * MV_RES_ROW) { k = "res"; i = Math.floor((my - g.yRes) / MV_RES_ROW); }
       return { j, k, i };
     }
-    const MV_HOVER_REST = "Point at the ribbon to read a value; click it to go to that moment.";
+    const MV_HOVER_REST = STATIC_MODE ? "Point at the ribbon to read a value." : "Point at the ribbon to read a value; click it to go to that moment.";
     document.getElementById("mvRibbon").addEventListener("mousemove", e => {
       const h = mvRibbonAt(e), out = document.getElementById("mvHover");
-      if (!h || h.k == null || !hist[h.j] || (hist[h.j][h.k] || [])[h.i] == null) { out.textContent = h ? mvClock(hist[h.j]) + " · click to go to this moment" : MV_HOVER_REST; return; }
+      if (!h || h.k == null || !hist[h.j] || (hist[h.j][h.k] || [])[h.i] == null) { out.textContent = h && !STATIC_MODE ? mvClock(hist[h.j]) + " · click to go to this moment" : MV_HOVER_REST; return; }
       const v = hist[h.j][h.k][h.i], d = mvDeltaRows(h.k, h.j, h.j, MV.win)[0][h.i];
       const name = h.k === "res" ? "R" + h.i : "C" + h.i + " " + String(mvRingNames()[h.i] || "").replace(/_x_/g, " × ");
       out.textContent = `${name} at ${mvClock(hist[h.j])}: ${MV_Q[h.k].name.toLowerCase()} ${v.toFixed(3)}, ${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(3)} against its last ${MV.win} s`;
@@ -2303,7 +2308,7 @@
     document.getElementById("mvRibbon").addEventListener("mouseleave", () => { document.getElementById("mvHover").textContent = MV_HOVER_REST; });
     document.getElementById("mvRibbon").addEventListener("click", e => {
       const h = mvRibbonAt(e);
-      if (!h) return;
+      if (!h || STATIC_MODE) return;
       MV.cursor = h.j >= hist.length - 1 ? null : hist[h.j].tick;
       mvRender();
     });
@@ -2321,8 +2326,10 @@
       mvLeanRender(idx);
       mvRibbonRender(idx);
       const mins = hist.length / 60;
+      const colours = "Orange is a value above its own recent average, blue below. Full colour is the size of change that 19 ticks in 20 stayed under over the time shown.";
+      if (STATIC_MODE) { foot.textContent = "The last four minutes, one row a second, refreshed every 13 seconds or so. " + colours; return; }
       foot.textContent = `History kept: ${mins < 1 ? hist.length + " s" : mins.toFixed(0) + " min"} of the last hour, held in the dashboard server's memory, so it starts again when the server does. ` +
-        "Orange is a value above its own recent average, blue below. Full colour is the size of change that 19 ticks in 20 stayed under over the last fifteen minutes.";
+        colours.replace("the time shown", "the last fifteen minutes");
     }
     function mvSeg(id, key, parse) {
       document.getElementById(id).addEventListener("click", e => {
@@ -2341,11 +2348,18 @@
     });
     document.getElementById("mvLive").addEventListener("click", () => { MV.cursor = null; mvRender(); });
     new ResizeObserver(() => mvRender()).observe(document.getElementById("viewArea"));
+    if (STATIC_MODE) {
+      document.getElementById("mvScrub").hidden = true;
+      document.getElementById("mvLive").hidden = true;
+      document.getElementById("mvSpan").hidden = true;
+      document.getElementById("mvRibbon").style.cursor = "default";
+      document.getElementById("mvHover").textContent = MV_HOVER_REST;
+    }
 
     // ---- menu ----
     // One section is open beside the field at a time. The choice and the
     // collapsed state are remembered per browser.
-    const VIEWS = ["inspector", "raw", "learning", "movement", "legend", "metabolism"].filter(v => !(STATIC_MODE && v === "movement"));
+    const VIEWS = ["inspector", "raw", "learning", "movement", "legend", "metabolism"];
     function showView(name) {
       if (!VIEWS.includes(name)) name = "inspector";
       document.querySelectorAll("#viewArea .view").forEach(v => { v.hidden = v.dataset.view !== name; });
@@ -2729,6 +2743,7 @@
     setInterval(pullSensors, POLL_MS);
     setInterval(pullField, POLL_MS);
     pullCellHistory();
+    if (STATIC_MODE) setInterval(pullCellHistory, 13000);
     setInterval(pullHealth, 60000);
   </script>
 </body>
