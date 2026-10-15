@@ -382,6 +382,24 @@ Any change to the energy economy has to keep this brake. A narrower change,
 which frees one anchor from paying for a level it has already learned to
 predict, is untried.
 
+A third variant gives the anchor a different sense:
+
+- **The air as weather**: `mind/air_change.py`, env `CREATURE_AIR_WEATHER=1`
+  (off). The collector feeds "weather" as how far the air stands from its own
+  hour-long average, CO2 first, with the VOC index, the air temperature and
+  the humidity.
+  - Gate: `--air`, on 151 recorded hours of senses and air. It fails with 4
+    of 7 checks.
+  - C10 answers every recorded fresh-air event, against 77 % on the
+    temperature.
+  - The weather links learn while awake, and the voice is unchanged.
+  - C10 is still starved and still under pressure (0.28), because a lived-in
+    room's CO2 is rarely still.
+  - The value eases toward each 20-second reading over about 20 ticks
+    (`AIR_RAMP_TICKS`). Stepped, about 8 steps an hour each restarted the
+    low-stimulation sleep's 160-tick count, and the field slept 6 times
+    against 9. Eased, 8 against 9.
+
 ## Learning and forgetting
 
 Two changes accumulate in the trainable connection weights.

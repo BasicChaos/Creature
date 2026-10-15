@@ -66,6 +66,7 @@ from mind import calm_v06
 from mind.calm_v06 import DarkCalm
 # The newborn twin the collector runs beside the real field.
 from mind.twin_v06 import Twin
+from mind.air_change import AirChange
 # The expression gate closes the light loop through the collector's normalizer.
 from mind.normalize import RollingNormalizer
 # Expression-memory primitives live in the runtime module; field_lab imports them
@@ -4007,6 +4008,209 @@ def energy_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# The air as the weather anchor's sense (15 October 2026)
+# ---------------------------------------------------------------------------
+#
+# mind/air_change.py turns CO2, the VOC index, the air temperature and the
+# humidity into how far the air stands from its own hour-long average, and the
+# collector feeds that as "weather" with CREATURE_AIR_WEATHER=1.
+#
+# Control (the BME280's temperature level, as the Pi runs) against variant (the
+# air's change), on the creature's own recorded senses and air from 4 to 15
+# October 2026, starting from the saved field of 2 October. The air was read
+# every 20 ticks; between readings the last one stands, as in the collector.
+# The voice is read by the relative rule the Pi runs.
+
+AIR_SENSES = "data/replay/senses_2026-10-04_to_2026-10-15.csv"
+AIR_READINGS = "data/replay/air_2026-10-04_to_2026-10-15.csv"
+AIR_STATE = "data/replay/field_state_2026-10-02.json"
+AIR_EVENT_SPAN = 600          # ticks: a fresh-air event is judged over ten minutes
+
+
+def _air_rows(senses_path, air_path, hours=None):
+    """Recorded ticks with the air reading in force at each: a list of
+    (senses, air) pairs."""
+    air = []
+    with open(air_path) as src:
+        for line in src:
+            p = line.strip().split(",")
+            if len(p) < 7:
+                continue
+
+            def num(x):
+                try:
+                    return float(x)
+                except ValueError:
+                    return None
+            try:
+                tick = int(p[0])
+            except ValueError:
+                continue
+            air.append((tick, {"co2_ppm": num(p[2]), "air_temp_c": num(p[3]),
+                               "humidity_pct": num(p[4]), "voc_index": num(p[5])}))
+    rows, k, now = [], 0, {}
+    with open(senses_path) as src:
+        for line in src:
+            p = line.strip().split(",")
+            if len(p) < 6:
+                continue
+            try:
+                tick = int(p[0])
+                senses = {"sound": float(p[2] or 0.0), "light": float(p[3] or 0.0),
+                          "motion": float(p[4] or 0.0), "weather": float(p[5] or 0.0)}
+            except ValueError:
+                continue
+            while k < len(air) and air[k][0] <= tick:
+                now = air[k][1]
+                k += 1
+            rows.append((senses, now))
+            if hours and len(rows) >= hours * 3600:
+                break
+    return rows
+
+
+def _air_events(rows):
+    """Fresh air in the recording: over ten minutes CO2 down 90 ppm or more,
+    with the air temperature and the VOC index down too. At most one an hour."""
+    events, last = [], -10 ** 9
+    for i in range(AIR_EVENT_SPAN, len(rows)):
+        a, b = rows[i - AIR_EVENT_SPAN][1], rows[i][1]
+        try:
+            fresh = (b["co2_ppm"] - a["co2_ppm"] <= -90
+                     and b["air_temp_c"] < a["air_temp_c"]
+                     and b["voc_index"] < a["voc_index"])
+        except (KeyError, TypeError):
+            continue
+        if fresh and i - last > 3600:
+            events.append(i)
+            last = i
+    return events
+
+
+def _air_run(rows, seed, state_path, use_air):
+    random.seed(seed)
+    field = cf.build_field()
+    if state_path:
+        cf.load_field(field, state_path)
+    air = AirChange()
+    decoder = ExpressionDecoderV06(knobs={"VOICE_MODEL": "relative"})
+    anchor = cf.SENSE_ANCHOR["weather"]
+    out = {"weather": [], "pressure": [], "activation": [], "energy": [], "tones": [],
+           "sleeps": 0, "events": 0, "awake_growth": {k: 0 for k in field.weights}}
+    last_tone = -FORWARD_VOICE_GAP
+    asleep = False
+    for t, (senses, readings) in enumerate(rows):
+        values = dict(senses)
+        if use_air:
+            values["weather"] = air.step(readings)
+        before = dict(field.connection_usage) if field.sleep_mode != "sleep" else None
+        state = field.step(values)
+        if before is not None and field.sleep_mode != "sleep":
+            for k in field.weights:
+                out["awake_growth"][k] += field.connection_usage[k] - before[k]
+        cell = field.cells[anchor]
+        out["weather"].append(values["weather"])
+        out["pressure"].append(cell.pressure)
+        out["activation"].append(cell.activation)
+        out["energy"].append(cell.energy)
+        out["events"] += len(field.last_events)
+        now = field.sleep_mode == "sleep"
+        if now and not asleep:
+            out["sleeps"] += 1
+        asleep = now
+        signal = decoder.read(state)
+        speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
+        if voice_params_from_signal(signal, speaker) and t - last_tone >= FORWARD_VOICE_GAP:
+            out["tones"].append(t)
+            last_tone = t
+    out["weights"] = dict(field.weights)
+    return out
+
+
+def air_probe(args):
+    """The air gate: fed the air's change, the weather anchor hears fresh air,
+    a steady room costs it nothing, it has energy, its links learn awake, and
+    the healthy links, sleep and the voice hold."""
+    apply_overrides(args.set)
+    senses = args.replay or AIR_SENSES
+    state = args.state or AIR_STATE
+    rows = _air_rows(senses, AIR_READINGS, args.history_hours if args.history_hours != 24 else None)
+    events = _air_events(rows)
+    hours = len(rows) / 3600.0
+    print(f"field {cf.FIELD_VERSION} | THE AIR AS WEATHER | seed={args.seed}, {len(rows)} recorded "
+          f"ticks ({hours:.0f} h) from {state}, {len(events)} fresh-air events")
+    control = _air_run(rows, args.seed, state, False)
+    variant = _air_run(rows, args.seed, state, True)
+    anchor = cf.SENSE_ANCHOR["weather"]
+
+    def heard(run_):
+        usual = statistics.median(run_["activation"])
+        hits = 0
+        for i in events:
+            peak = max(run_["activation"][max(0, i - AIR_EVENT_SPAN):i + AIR_EVENT_SPAN])
+            hits += peak >= 2.0 * max(usual, 1e-3)
+        return hits / len(events) if events else 0.0, usual
+
+    def med(run_, key):
+        return statistics.median(run_[key])
+
+    print("\n                                    control (temperature)   variant (air)")
+    print(f"  weather input, median / p99         {med(control, 'weather'):.3f} / "
+          f"{sorted(control['weather'])[len(rows) * 99 // 100]:.3f}"
+          f"          {med(variant, 'weather'):.3f} / {sorted(variant['weather'])[len(rows) * 99 // 100]:.3f}")
+    for key in ("pressure", "activation", "energy"):
+        print(f"  C{anchor} {key:10s} median              {med(control, key):.3f}"
+              f"                  {med(variant, key):.3f}")
+    hc, uc = heard(control)
+    hv, uv = heard(variant)
+    print(f"  fresh-air events heard              {hc * 100:3.0f}%                   {hv * 100:3.0f}%")
+    print(f"  sleeps, events                      {control['sleeps']}, {control['events']}"
+          f"               {variant['sleeps']}, {variant['events']}")
+    tc, tv = len(control["tones"]) / hours, len(variant["tones"]) / hours
+    print(f"  tones an hour                       {tc:.1f}                   {tv:.1f}")
+    print("\n  link        awake growth ticks            weight at the end")
+    for key in sorted(control["weights"]):
+        print(f"  C{key[0]}-C{key[1]:<3}    {control['awake_growth'][key]:8d} -> "
+              f"{variant['awake_growth'][key]:<8d}            "
+              f"{control['weights'][key]:.3f} -> {variant['weights'][key]:.3f}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    check("it hears fresh air", hv >= 0.75,
+          f"C{anchor}'s activation reaches twice its usual ({uv:.3f}) within ten minutes of "
+          f"{hv * 100:.0f}% of the {len(events)} fresh-air events (control {hc * 100:.0f}%); 75% or more")
+    check("a steady room costs it nothing", med(variant, "pressure") <= 0.1,
+          f"C{anchor}'s median pressure is {med(variant, 'pressure'):.3f} "
+          f"(control {med(control, 'pressure'):.3f}); 0.1 or less")
+    check("the weather anchor has energy", med(variant, "energy") >= 0.05,
+          f"C{anchor}'s median energy is {med(variant, 'energy'):.3f} "
+          f"(control {med(control, 'energy'):.3f}); 0.05 or more")
+    v_learn = sum(variant["awake_growth"][k] for k in ((9, 10), (10, 11)))
+    c_learn = sum(control["awake_growth"][k] for k in ((9, 10), (10, 11)))
+    check("the weather side learns awake", v_learn >= 100,
+          f"C9-C10 and C10-C11 grew on {v_learn} waking ticks (control {c_learn}); 100 or more")
+    healthy = [k for k, w in control["weights"].items() if w >= 0.5]
+    gap = max((abs(control["weights"][k] - variant["weights"][k]) for k in healthy), default=0.0)
+    check("the healthy links hold", gap <= 0.25,
+          f"the largest gap on the {len(healthy)} links at 0.5 or more in the control is "
+          f"{gap:.3f}; 0.25 or less")
+    n_c, n_v = control["sleeps"], variant["sleeps"]
+    check("sleep holds", abs(n_v - n_c) <= max(2, n_c // 5),
+          f"{n_v} sleeps against {n_c}")
+    check("the voice holds", tc > 0 and abs(tv - tc) <= 0.25 * tc,
+          f"{tv:.1f} tones an hour against {tc:.1f}, within a quarter")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -4099,6 +4303,9 @@ def main():
                         "blue-to-orange blend")
     p.add_argument("--weather", action="store_true",
                    help="the weather gate: weather fed as change against as a level")
+    p.add_argument("--air", action="store_true",
+                   help="the air gate: the air's change as weather against the temperature level, "
+                        "on recorded senses and air (--history-hours cuts it short)")
     p.add_argument("--energy", action="store_true",
                    help="the energy gate: cells charged for surprise against for pressure")
     p.add_argument("--twin", action="store_true",
@@ -4151,6 +4358,9 @@ def main():
         sys.exit(0 if ok else 1)
     if args.battery:
         ok = battery_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.air:
+        ok = air_probe(args)
         sys.exit(0 if ok else 1)
     if args.energy:
         ok = energy_probe(args)

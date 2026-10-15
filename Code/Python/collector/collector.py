@@ -64,6 +64,7 @@ from mind.calm_v06 import DarkCalm
 from mind.twin_v06 import Twin
 from mind.normalize import RollingNormalizer
 from mind.gas_index import GasIndex
+from mind.air_change import AIR_WEATHER, AirChange
 
 # --- Serial ---
 BAUD = 115200
@@ -1160,6 +1161,7 @@ def main():
         print("No recent gas index baseline. Starting a fresh one.")
     latest_voc_index = None
     latest_nox_index = None
+    air_change = AirChange() if AIR_WEATHER else None
     run_ticks = 0     # ticks since this start, for the e-paper's first text
 
     light_norm = RollingNormalizer(LIGHT_WINDOW_SECONDS, LIGHT_EMA_ALPHA, LIGHT_MIN_RANGE)
@@ -1168,8 +1170,8 @@ def main():
     latest_temp_c = 0.0
     latest_pressure_hpa = 0.0
     # Raw readings for the sensor API: None until first seen, never a fake 0.
-    # The air readings (CO2, humidity, VOC, NOx) are only passed through to the
-    # dashboard here. The field does not read them.
+    # The air readings (CO2, humidity, VOC, NOx) are passed through to the
+    # dashboard. The field reads them only with CREATURE_AIR_WEATHER=1.
     latest_raw = {"light_lux": None, "sound_rms": None, "motion": None,
                   "temp_c": None, "pressure_hpa": None,
                   "co2_ppm": None, "air_temp_c": None, "humidity_pct": None,
@@ -1241,6 +1243,10 @@ def main():
               f"whole at {high[0]:.2f} V, {low[1]:.0%} at {low[0]:.2f} V and under")
     else:
         print("Battery: logged only, the field does not read it")
+    if AIR_WEATHER:
+        print("Weather: the air's change (CO2 first, with VOC, air temperature and humidity)")
+    else:
+        print("Weather: the BME280's temperature")
     print(f"Cell log cadence: every {CELL_LOG_EVERY_TICKS} ticks; "
           f"weight log cadence: every {WEIGHT_LOG_EVERY_TICKS} ticks; "
           f"commit cadence: every {COMMIT_EVERY_TICKS} ticks.")
@@ -1347,6 +1353,14 @@ def main():
             (weather_temp_c - WEATHER_TEMP_MIN) / max(0.1, WEATHER_TEMP_MAX - WEATHER_TEMP_MIN),
             0.0, 1.0,
         )
+        if air_change is not None:
+            # The air in place of the temperature level (mind/air_change.py).
+            weather_value = air_change.step({
+                "co2_ppm": latest_raw["co2_ppm"],
+                "voc_index": latest_voc_index,
+                "air_temp_c": latest_raw["air_temp_c"],
+                "humidity_pct": latest_raw["humidity_pct"],
+            })
 
         # The loop record, first half. The window that just ended holds what the
         # sensors returned while the previous frame was on the body: compare it

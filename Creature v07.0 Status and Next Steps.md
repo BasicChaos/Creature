@@ -135,6 +135,60 @@ What is left, if the weather side is to be woken:
   gate.
 - Or leave it to the loop, as the design says.
 
+**Variant 3: the air as weather** (`mind/air_change.py`, env
+`CREATURE_AIR_WEATHER=1`, off). Built the same day, after looking at the air.
+
+- **What the recorded air shows.** On 6.3 days of `air_log` (4 to 15 October),
+  joined with the senses, the clearest thing is fresh air:
+  - 20 times, CO2 fell 90 to 380 ppm in ten minutes, with the air temperature
+    (0.1 to 1.2 °C) and the VOC index falling too. A window or a door.
+  - Humidity and VOC rose sharply a few times, probably showers or cooking.
+  - None of the air moves with sound, light or motion over ten minutes
+    (correlations within ±0.06). The motion sense is the body's own IMU, not
+    people in the room.
+- **The variant.** The collector feeds the field "weather" as how far the air
+  stands from its own hour-long average: CO2 0.5 (250 ppm is a large move),
+  VOC index 0.2 (150), air temperature 0.2 (1 °C), humidity 0.1 (6 %).
+- **The gate** is `--air`: the recorded 151 hours (`data/replay/senses_2026-10-04_to_2026-10-15.csv`
+  and `air_…csv`, exported from the Pi, gitignored), from the saved field of
+  2 October, control (the temperature level) against variant.
+- **Result.** It fails on seeds 1, 2, 3 and 7 (3, 4, 4 and 4 of 7 checks). The
+  seeds hardly differ, because the recording drives the field.
+- **What passed:**
+  - It hears fresh air. C10's activation doubled within ten minutes of every
+    one of the 31 fresh-air events, against 77 % for the control.
+  - The weather side learns while awake: C9-C10 and C10-C11 grew on about
+    300,000 waking ticks against none.
+  - The voice holds: 20.1 tones an hour against 20.3.
+- **What failed:**
+  - The air's median input is 0.13, not near 0, because CO2 climbs while
+    someone is in the room. C10's median pressure halved (0.56 to 0.28) but
+    did not reach the 0.1 bar.
+  - C10 is still starved: median energy 0.002.
+  - 6 sleeps against 9.
+  - The healthy links moved up to 0.252 against a bar of 0.25, on seed 1
+    only. C0-C1 grew from 0.57 to 0.82.
+- **The lost sleeps.** The low-stimulation sleep needs 160 ticks in a row with
+  no sense moving 0.015 or more in one tick (the reason for every sleep on the
+  recording). The air is read every 20 ticks, so the value moved in steps, and
+  about 8 an hour were that large (CO2 moving 8 ppm between readings), against
+  39 ticks in the whole 151 hours for the temperature. Each one restarted the
+  count. The three missed sleeps had quiet runs of 159, 107 and 103 ticks.
+- **The fix, no threshold changed.** The value now eases toward each reading
+  over about 20 ticks (`AIR_RAMP_TICKS`). That leaves about one large move an
+  hour, at real air events.
+- **Rerun.** It fails with 4 of 7 checks on seeds 1, 2, 3 and 7.
+  - Sleep now holds: 8 against 9.
+  - Fresh air (100 %), learning while awake and the voice (20.0 to 20.1
+    tones an hour against 20.2 to 20.3) still pass.
+  - Still failing: C10's pressure (0.28), its energy (0.002 to 0.003), and
+    the healthy links. These now miss on every seed, by a hair (0.255 to
+    0.260 against 0.25). The link that moves is C0-C1, 0.57 to 0.83: the
+    speaker side waking. Whether that counts as damage is Josh's call.
+
+Of the three, this is the only one that gives C10 something real to answer,
+without touching the voice.
+
 ## The dashboard shows movement (10 October, 17:39)
 
 Dashboard only. Nothing in the mind, the collector or the body changed, so no
