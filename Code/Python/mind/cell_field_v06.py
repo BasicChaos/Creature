@@ -200,6 +200,16 @@ ACTIVATION_COST = 0.032
 RIPPLE_COST = 0.010
 LEARNING_COST = 0.004
 EMITTER_COST = 0.014
+# What a cell pays for, each tick it updates (15 October 2026; off by default).
+#   "pressure"  the field as it was: the cost follows the cell's raw pressure.
+#               A cell under steady pressure above about 0.3 costs more than its
+#               refill brings, sits at zero energy for good, and cannot learn.
+#               On the live body that was C0 and C6 to C11, with the reserve
+#               nearly full.
+#   "surprise"  the cost follows what the predictive cell does work on: how far
+#               its pressure stands from its prediction. A steady drive the cell
+#               has learned costs little; a change still costs.
+UPDATE_COST_ON = os.environ.get("CREATURE_UPDATE_COST_ON", "pressure")
 LOW_ENERGY_THRESHOLD = 0.14
 DEEP_SLEEP_ENERGY_THRESHOLD = 0.06
 WAKE_ENERGY_THRESHOLD = 0.20
@@ -294,6 +304,24 @@ BATTERY_CEILING_CURVE = ((3.45, 0.25), (3.60, 0.43), (3.80, 1.0))
 BATTERY_SMOOTH_TICKS = 120      # the voltage is averaged over about this long
 BATTERY_VALID_VOLTS = (2.0, 4.6)  # outside this the gauge gave no reading
 BATTERY_HOLD_TICKS = 600        # with no reading, the last voltage stands this long
+
+# --- weather as change (15 October 2026; off by default) -------------------
+# The weather sense is the room's temperature as a level (10 to 35 C onto
+# 0 to 1). A level presses on the weather anchor every tick, and a cell pays
+# for its pressure each tick it updates. On the live body the anchor's update
+# cost (about 0.021) is more than its refill (about 0.011), so its energy sits
+# at zero, and with no energy its links cannot learn: C9-C10 and C10-C11 sat
+# at the floor, grown only by sleep replay.
+#
+# "change" feeds the field how far the temperature stands from its own slow
+# average instead, so a steady room costs the anchor nothing and a real change
+# (a window opened, the sun on the room) presses on it. The average is not
+# saved: after a restart it starts again from the first reading.
+#
+# "level" is the field as it was.
+WEATHER_INPUT = os.environ.get("CREATURE_WEATHER_INPUT", "level")
+WEATHER_CHANGE_TICKS = 3600     # the slow average follows over about an hour
+WEATHER_CHANGE_GAIN = 8.0       # 1 C from the average (0.04 of the range) presses 0.32
 
 # --- sleep and replay ------------------------------------------------------
 LOW_STIMULATION_TICKS = 160
@@ -512,6 +540,7 @@ class CellField:
         self.sense_weight = {s: {} for s in SENSES}
         self.tick_count = 0
         self.last_sense = {s: 0.0 for s in SENSES}
+        self.weather_average = None    # the slow average, for WEATHER_INPUT = "change"
 
         self.energy_reserve = GLOBAL_ENERGY_INIT
         self.energy_ceiling_share = 1.0     # set each tick from the battery's voltage
@@ -1105,6 +1134,12 @@ class CellField:
             values.update({k: v for k, v in senses.items() if k in values})
         if kw:
             values.update({k: v for k, v in kw.items() if k in values})
+        if WEATHER_INPUT == "change":
+            level = values["weather"]
+            if self.weather_average is None:
+                self.weather_average = level
+            values["weather"] = clamp(WEATHER_CHANGE_GAIN * abs(level - self.weather_average), 0.0, 1.0)
+            self.weather_average += (level - self.weather_average) / WEATHER_CHANGE_TICKS
 
         feel = {n: 0.0 for n in LOOP_CELLS}
         if loop and LOOP_FEEL_GAIN > 0.0:
@@ -1215,9 +1250,12 @@ class CellField:
             cell.age += 1
 
             if self._should_update_cell(n, pressure[n], next_ripple[n]):
+                charged = pressure[n]
+                if UPDATE_COST_ON == "surprise" and CELL_MODEL == "predictive":
+                    charged = abs(pressure[n] - cell.prediction)
                 cost = (
                     BASE_UPDATE_COST
-                    + ACTIVATION_COST * pressure[n]
+                    + ACTIVATION_COST * charged
                     + RIPPLE_COST * abs(next_ripple[n])
                 )
                 energy_scale = self._spend_cell_energy(cell, cost)

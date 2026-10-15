@@ -3710,6 +3710,303 @@ def dark_probe(args):
     return ok
 
 
+# ---------------------------------------------------------------------------
+# Weather as change, not as a level (15 October 2026)
+# ---------------------------------------------------------------------------
+#
+# On the live body the weather anchor (C10) sits at zero energy: the room's
+# temperature presses on it every tick, its update cost outruns its refill, and
+# with no energy its links never learn. cell_field_v06.WEATHER_INPUT = "change"
+# feeds the field how far the temperature stands from its own hour-long average.
+#
+# Control ("level") against variant ("change"), same seed, same room. The fast
+# senses are the 'day' scenario. The weather is what the body really reads: a
+# slow swing of about half a degree that follows the sun, in the BME280's 0.0004
+# steps (0.01 C), with a window opened in the afternoon of the fifth day (3 C
+# down in ten minutes, held twenty, back over an hour). Then a still night, and
+# its last hour the temperature does not move at all.
+
+WEATHER_DAY = 7200                 # one lab day, as in scenario_inputs
+WEATHER_DAYS = 6
+WEATHER_WINDOW_AT = 4 * WEATHER_DAY + 2400
+WEATHER_WINDOW = (600, 1200, 3600, 0.12)   # down, held, back, how far
+WEATHER_NIGHT = 14400              # the still night
+WEATHER_FLAT = 3600                # its last hour, the temperature held
+
+
+def _weather_level(t, rng):
+    phase = (t % WEATHER_DAY) / WEATHER_DAY
+    # the room warms behind the sun, by about half a degree either way
+    level = 0.50 + 0.02 * math.sin((phase - 0.08) * 2 * math.pi)
+    down, held, back, depth = WEATHER_WINDOW
+    s = t - WEATHER_WINDOW_AT
+    if 0 <= s < down:
+        level -= depth * s / down
+    elif down <= s < down + held:
+        level -= depth
+    elif down + held <= s < down + held + back:
+        level -= depth * (1.0 - (s - down - held) / back)
+    level += rng.uniform(-0.0004, 0.0004)
+    return round(level / 0.0004) * 0.0004
+
+
+def _weather_script(seed):
+    """Yield (phase, senses) for the whole life."""
+    day_ticks = WEATHER_DAYS * WEATHER_DAY
+    rng = random.Random(seed + 31)
+    fast = scenario_inputs("day", day_ticks, random.Random(seed + 1))
+    for t, values in enumerate(fast):
+        values = dict(values)
+        values["weather"] = _weather_level(t, rng)
+        yield "day", values
+    held = None
+    for k in range(WEATHER_NIGHT):
+        t = day_ticks + k
+        level = _weather_level(t, rng)
+        if k >= WEATHER_NIGHT - WEATHER_FLAT:
+            held = level if held is None else held
+            level = held
+        yield ("flat" if held is not None else "night"), {
+            "sound": 0.0, "light": 0.0, "motion": 0.0, "weather": level}
+
+
+def _weather_run(seed, model):
+    was = cf.WEATHER_INPUT
+    cf.WEATHER_INPUT = model
+    try:
+        random.seed(seed)
+        field = cf.build_field()
+        anchor = cf.SENSE_ANCHOR["weather"]
+        out = {"phase": [], "energy": [], "pressure": [], "activation": [],
+               "events": [], "sleeps": [], "usage": {}, "weights": {}}
+        asleep = False
+        start_usage = None
+        for t, (phase, values) in enumerate(_weather_script(seed), 1):
+            field.step(values)
+            cell = field.cells[anchor]
+            out["phase"].append(phase)
+            out["energy"].append(cell.energy)
+            out["pressure"].append(cell.pressure)
+            out["activation"].append(cell.activation)
+            out["events"].append(len(field.last_events))
+            now = field.sleep_mode == "sleep"
+            if now and not asleep:
+                out["sleeps"].append((t, phase))
+            asleep = now
+            if t == WEATHER_DAY:
+                start_usage = dict(field.connection_usage)
+            if t == WEATHER_DAYS * WEATHER_DAY:
+                out["usage"] = {k: field.connection_usage[k] - start_usage[k] for k in field.weights}
+                out["weights"] = dict(field.weights)
+        out["final_weights"] = dict(field.weights)
+        return out
+    finally:
+        cf.WEATHER_INPUT = was
+
+
+def weather_probe(args):
+    """The weather gate: fed as change, the weather anchor keeps energy, a steady
+    room costs it nothing, a real change presses on it, the weather side of the
+    ring learns, and the rest of the field and the night are as they were."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | WEATHER AS CHANGE | seed={args.seed}, "
+          f"average over {cf.WEATHER_CHANGE_TICKS} ticks, gain {cf.WEATHER_CHANGE_GAIN}")
+    control = _weather_run(args.seed, "level")
+    variant = _weather_run(args.seed, "change")
+    anchor = cf.SENSE_ANCHOR["weather"]
+    weather_side = {k for k in control["weights"] if set(k) & {9, 10, 11}}
+
+    def where(run_, key, phases, a=0, b=None):
+        return [v for v, p in zip(run_[key][a:b], run_["phase"][a:b]) if p in phases]
+
+    def med(run_, key, phases, a=0, b=None):
+        vals = where(run_, key, phases, a, b)
+        return statistics.median(vals) if vals else 0.0
+
+    settled = 3 * WEATHER_DAY     # the last three days, once the field has settled
+    win_a = WEATHER_WINDOW_AT
+    win_b = WEATHER_WINDOW_AT + sum(WEATHER_WINDOW[:3])
+
+    def window(run_):
+        before = statistics.median(run_["activation"][win_a - WEATHER_DAY // 2:win_a])
+        peak = max(run_["activation"][win_a:win_b])
+        return before, peak
+
+    print("\n                                  control (level)   variant (change)")
+    print(f"  C{anchor} energy, days 4-6, median     {med(control, 'energy', {'day'}, settled):8.3f}"
+          f"          {med(variant, 'energy', {'day'}, settled):8.3f}")
+    print(f"  C{anchor} pressure, days 4-6, median   {med(control, 'pressure', {'day'}, settled):8.3f}"
+          f"          {med(variant, 'pressure', {'day'}, settled):8.3f}")
+    print(f"  C{anchor} pressure, flat hour, median  {med(control, 'pressure', {'flat'}):8.3f}"
+          f"          {med(variant, 'pressure', {'flat'}):8.3f}")
+    cb, cp = window(control)
+    vb, vp = window(variant)
+    print(f"  C{anchor} activation, window opened    {cb:.3f} -> {cp:.3f}"
+          f"     {vb:.3f} -> {vp:.3f}  (median before -> peak)")
+    print(f"  sleeps in the day / the night        {sum(1 for _, p in control['sleeps'] if p == 'day'):3d} / "
+          f"{sum(1 for _, p in control['sleeps'] if p != 'day'):<3d}"
+          f"          {sum(1 for _, p in variant['sleeps'] if p == 'day'):3d} / "
+          f"{sum(1 for _, p in variant['sleeps'] if p != 'day'):<3d}")
+    c_ev = sum(where(control, "events", {"night", "flat"}))
+    v_ev = sum(where(variant, "events", {"night", "flat"}))
+    print(f"  events in the still night            {c_ev:8d}          {v_ev:8d}")
+    print("\n  link        growth ticks, days 2-6        weight at the end of day 6")
+    for key in sorted(control["weights"]):
+        mark = " *" if key in weather_side else ""
+        print(f"  C{key[0]}-C{key[1]:<3}    {control['usage'][key]:8d} -> {variant['usage'][key]:<8d}"
+              f"            {control['weights'][key]:.3f} -> {variant['weights'][key]:.3f}{mark}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    v_energy = med(variant, "energy", {"day"}, settled)
+    check("the weather anchor has energy", v_energy >= 0.2,
+          f"C{anchor}'s median energy over days 4-6 is {v_energy:.3f} "
+          f"(control {med(control, 'energy', {'day'}, settled):.3f}); 0.2 or more")
+    v_flat = med(variant, "pressure", {"flat"})
+    check("a steady room costs nothing", v_flat <= 0.05,
+          f"C{anchor}'s median pressure over the flat hour is {v_flat:.3f} "
+          f"(control {med(control, 'pressure', {'flat'}):.3f}); 0.05 or less")
+    check("a real change is felt", vp >= 3.0 * max(vb, 1e-3),
+          f"the window opened lifts C{anchor}'s activation from {vb:.3f} to {vp:.3f}, "
+          f"{vp / max(vb, 1e-3):.1f} times; 3 or more")
+    c_learn = sum(control["usage"][k] for k in ((9, 10), (10, 11)))
+    v_learn = sum(variant["usage"][k] for k in ((9, 10), (10, 11)))
+    check("the weather side can learn", v_learn >= 100 and v_learn >= 5 * max(1, c_learn),
+          f"C9-C10 and C10-C11 grew on {v_learn} ticks against {c_learn}; "
+          f"100 or more and five times the control")
+    rest = [k for k in control["weights"] if k not in weather_side]
+    gap = max(abs(control["weights"][k] - variant["weights"][k]) for k in rest)
+    check("the rest of the ring holds", gap <= 0.15,
+          f"the largest weight gap on the {len(rest)} links away from C9-C11 is {gap:.3f}; 0.15 or less")
+    v_night = sum(1 for _, p in variant["sleeps"] if p != "day")
+    check("the still night still sleeps, and quietly", v_night >= 1 and v_ev <= c_ev,
+          f"{v_night} sleeps in the night (control "
+          f"{sum(1 for _, p in control['sleeps'] if p != 'day')}), {v_ev} events against {c_ev}")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# What a cell pays for: pressure or surprise (15 October 2026)
+# ---------------------------------------------------------------------------
+#
+# A cell's update cost follows its raw pressure, and above a pressure of about
+# 0.3 that cost outruns its refill. On the live body C0 and C6 to C11 sat at
+# zero energy with the shared reserve nearly full, and a cell with no energy
+# cannot learn. cell_field_v06.UPDATE_COST_ON = "surprise" charges the cell for
+# how far its pressure stands from its prediction instead.
+#
+# Control ("pressure") against variant ("surprise"), same seed, on the same
+# life as the weather gate: six lab days with the room's real kind of weather
+# and a window opened, then a still night.
+
+def _energy_run(seed, cost_on):
+    was = cf.UPDATE_COST_ON
+    cf.UPDATE_COST_ON = cost_on
+    try:
+        random.seed(seed)
+        field = cf.build_field()
+        out = {"phase": [], "energy": {n: [] for n in field.cells},
+               "fatigue": [], "reserve": [], "sleeps": [], "usage": {}, "weights": {}}
+        asleep = False
+        start_usage = None
+        for t, (phase, values) in enumerate(_weather_script(seed), 1):
+            field.step(values)
+            out["phase"].append(phase)
+            for n, cell in field.cells.items():
+                out["energy"][n].append(cell.energy)
+            out["fatigue"].append(statistics.mean(c.fatigue for c in field.cells.values()))
+            out["reserve"].append(field.energy_reserve)
+            now = field.sleep_mode == "sleep"
+            if now and not asleep:
+                out["sleeps"].append((t, phase))
+            asleep = now
+            if t == WEATHER_DAY:
+                start_usage = dict(field.connection_usage)
+            if t == WEATHER_DAYS * WEATHER_DAY:
+                out["usage"] = {k: field.connection_usage[k] - start_usage[k] for k in field.weights}
+                out["weights"] = dict(field.weights)
+        return out
+    finally:
+        cf.UPDATE_COST_ON = was
+
+
+def energy_probe(args):
+    """The energy gate: charged for surprise, no cell starves, the weather side
+    learns awake, links do not run to the ceiling, the links that were healthy
+    stay as they were, and sleep, fatigue and the reserve hold."""
+    apply_overrides(args.set)
+    print(f"field {cf.FIELD_VERSION} | WHAT A CELL PAYS FOR | seed={args.seed}, "
+          f"weather input {cf.WEATHER_INPUT}")
+    control = _energy_run(args.seed, "pressure")
+    variant = _energy_run(args.seed, "surprise")
+    settled = 3 * WEATHER_DAY
+    day_end = WEATHER_DAYS * WEATHER_DAY
+
+    def med_energy(run_, n):
+        return statistics.median(run_["energy"][n][settled:day_end])
+
+    print("\n  cell   median energy, days 4-6")
+    print("         control -> variant")
+    for n in sorted(control["energy"]):
+        print(f"  C{n:<4}  {med_energy(control, n):.3f} -> {med_energy(variant, n):.3f}")
+    print("\n  link        growth ticks, days 2-6        weight at the end of day 6")
+    for key in sorted(control["weights"]):
+        print(f"  C{key[0]}-C{key[1]:<3}    {control['usage'][key]:8d} -> {variant['usage'][key]:<8d}"
+              f"            {control['weights'][key]:.3f} -> {variant['weights'][key]:.3f}")
+
+    print("\n--- GATE RESULT ---")
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+
+    starved_c = [n for n in control["energy"] if med_energy(control, n) < 0.05]
+    starved_v = [n for n in variant["energy"] if med_energy(variant, n) < 0.05]
+    check("no cell starves", not starved_v,
+          f"cells with a median energy under 0.05 over days 4-6: "
+          f"{', '.join(f'C{n}' for n in starved_v) or 'none'} "
+          f"(control {', '.join(f'C{n}' for n in starved_c) or 'none'})")
+    v_learn = sum(variant["usage"][k] for k in ((9, 10), (10, 11)))
+    c_learn = sum(control["usage"][k] for k in ((9, 10), (10, 11)))
+    check("the weather side learns awake", v_learn >= 100,
+          f"C9-C10 and C10-C11 grew on {v_learn} ticks of days 2-6 (control {c_learn}); 100 or more")
+    ceiling = 0.9 * cf.W_MAX
+    top_c = sum(1 for w in control["weights"].values() if w >= ceiling)
+    top_v = sum(1 for w in variant["weights"].values() if w >= ceiling)
+    mean_c = statistics.mean(control["weights"].values())
+    mean_v = statistics.mean(variant["weights"].values())
+    check("links do not run to the ceiling", top_v <= top_c and mean_v <= mean_c + 0.25,
+          f"{top_v} links at {ceiling:.1f} or more (control {top_c}); mean weight "
+          f"{mean_v:.3f} against {mean_c:.3f}, at most 0.25 more")
+    healthy = [k for k, w in control["weights"].items() if w >= 0.5]
+    gap = max((abs(control["weights"][k] - variant["weights"][k]) for k in healthy), default=0.0)
+    check("the healthy links stay as they were", gap <= 0.25,
+          f"the largest gap on the {len(healthy)} links at 0.5 or more in the control is {gap:.3f}; "
+          f"0.25 or less")
+    n_c, n_v = len(control["sleeps"]), len(variant["sleeps"])
+    f_c = statistics.mean(control["fatigue"][settled:])
+    f_v = statistics.mean(variant["fatigue"][settled:])
+    check("sleep and fatigue hold", abs(n_v - n_c) <= max(2, n_c // 5) and f_v <= f_c + 0.1,
+          f"{n_v} sleeps against {n_c}; mean fatigue {f_v:.3f} against {f_c:.3f}, at most 0.1 more")
+    low_v = min(variant["reserve"])
+    check("the reserve holds", low_v > cf.LOW_RESERVE_SLEEP_THRESHOLD,
+          f"the reserve's lowest is {low_v:.2f} (control {min(control['reserve']):.2f}); "
+          f"sleep from a low reserve at {cf.LOW_RESERVE_SLEEP_THRESHOLD}")
+
+    ok = all(checks)
+    print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
+    return ok
+
+
 def compare(current, baseline):
     print(f"\ncompare vs {baseline.get('source')} "
           f"(v{baseline.get('field_version')}, seed {baseline.get('seed')}, "
@@ -3800,6 +4097,10 @@ def main():
     p.add_argument("--colour", action="store_true",
                    help="the colour gate: the strip's hue from the reservoir against the "
                         "blue-to-orange blend")
+    p.add_argument("--weather", action="store_true",
+                   help="the weather gate: weather fed as change against as a level")
+    p.add_argument("--energy", action="store_true",
+                   help="the energy gate: cells charged for surprise against for pressure")
     p.add_argument("--twin", action="store_true",
                    help="run the twin gate (the Creature is the same with the "
                         "newborn twin beside it, in the field and in the collector)")
@@ -3850,6 +4151,12 @@ def main():
         sys.exit(0 if ok else 1)
     if args.battery:
         ok = battery_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.energy:
+        ok = energy_probe(args)
+        sys.exit(0 if ok else 1)
+    if args.weather:
+        ok = weather_probe(args)
         sys.exit(0 if ok else 1)
     if args.dark:
         ok = dark_probe(args)

@@ -338,6 +338,50 @@ the collector's own loop on the scripted body the dimmer strip is sensed, so the
 field's life differs a little: after 30 minutes the largest link gap was 0.010
 and there were up to 6 % fewer events, with no sleeps.
 
+### Starvation is the brake on learning (two variants built, off)
+
+A cell pays `BASE_UPDATE_COST + ACTIVATION_COST × pressure` (0.0025 + 0.032 ×
+pressure) each tick it updates. Its refill is at most `ACTIVE_CELL_REFILL ×
+(0.55 + 0.45 × relevance)`. Above a steady pressure of about 0.27 to 0.37,
+depending on relevance, the cost outruns the refill and the cell sits at zero
+energy, however full the shared reserve is. Hebbian growth needs a little
+energy from both cells, so links grow only where coactivity wins a share of the
+refill. In the lab 10 of the 12 cells sit near zero energy. On the live body on
+15 October 2026 C0 and C6 to C11 did, with the reserve at 5.79 of 6.0.
+
+That is what keeps the ring differentiated. It is also why the weather anchor
+(C10) never connects. Its input is a temperature level, so it is under steady
+pressure (about 0.58) and starved every tick. Its links C9-C10 and C10-C11 grow
+only in sleep replay.
+
+Two variants were built on 15 October 2026 to wake it. Both fail their gates
+on seeds 1, 2, 3 and 7, and both are off by default:
+
+- **Weather as change**: `WEATHER_INPUT = "change"` (env
+  `CREATURE_WEATHER_INPUT`, default `"level"`). The weather sense becomes
+  `WEATHER_CHANGE_GAIN` (8) times how far the level stands from its own
+  average over `WEATHER_CHANGE_TICKS` (3600). The average is not saved.
+  - Gate: `--weather`. It fails with 3 or 4 of 6 checks.
+  - A steady room stops costing C10 (pressure 0.56 to 0.02), and the weather
+    links learn while awake.
+  - C10 still starves in the daytime, now from its new neighbours.
+  - The waking spreads over the speaker side of the ring (C0-C1 0.06 to
+    1.18).
+  - The voice gate is unchanged. The express gate's standing failure with the
+    strip close to the sensor gets worse.
+- **Cells pay for surprise**: `UPDATE_COST_ON = "surprise"` (env
+  `CREATURE_UPDATE_COST_ON`, default `"pressure"`). The update cost follows
+  `|pressure - prediction|`.
+  - Gate: `--energy`. It fails with 3 of 6 checks.
+  - No cell starves, but every link runs to `W_MAX` and mean fatigue goes from
+    about 0.03 to 0.51. The ring becomes a uniform wash.
+  - The voice gate falls to 4/6: 24 % of bursts answered against 97 %.
+  - The express gate falls to 7/9.
+
+Any change to the energy economy has to keep this brake. A narrower change,
+which frees one anchor from paying for a level it has already learned to
+predict, is untried.
+
 ## Learning and forgetting
 
 Two changes accumulate in the trainable connection weights.
@@ -1004,7 +1048,10 @@ the Creature evolve without rewriting hardware.
   300 Hz came back much weaker (about 3,700 against 1,100), so the small speaker
   is far louder at the top of its range than the bottom.
 - The light-and-weather side stays weak by design, because slow steady signals
-  produce no surprise. Only the loop keeps that side alive.
+  produce no surprise. Only the loop keeps that side alive. The weather anchor
+  is also starved of energy by its steady level, so its links grow only in
+  sleep. Two attempts to wake it failed their gates (see "Starvation is the
+  brake on learning").
 - Bias and novelty steering are not wired to the body, so the live Creature records
   its autobiography but is not yet steered by it.
 - The battery reaches the Creature only as dimmer light, and only when

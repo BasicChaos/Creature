@@ -5,8 +5,8 @@ the memory-horizon work, and the evening of 4 October for build v07.0. It is the
 handoff for whoever picks this up next. The design itself is in
 `Creature Project Design Document Active.md`. This note is the state of things,
 what was found, and what is still open. The findings on the real body further down
-are still those of 2 October. The newest section is the one for 8 and 9 October,
-just below the list of where things are.
+are still those of 2 October. The newest section is the one for 15 October (why
+the weather cell never connects), just below the list of where things are.
 
 Build v07.0 is the v06.9 mind on a body with more on it: two air sensors and an
 e-paper readout. Neither is part of the Creature's flow yet. The field, the
@@ -47,6 +47,93 @@ gates and the file names (`cell_field_v06.py` and the rest) are unchanged.
   reconnected by itself; nothing was restarted for that.
 - The speaker is unmuted.
 - Check `git status` for anything not committed.
+
+## Why the weather cell never connects: two variants, both failed (15 October)
+
+Lab only. Both are settings in the code, off by default, with their own gates.
+Nothing changed at the Pi and the collector was not restarted. With both off,
+the field is as it was (a default run gives the same output as before).
+
+**What the live field showed.** At tick about 1,496,940 the weather anchor (C10)
+had 0.000 energy, and its links C9-C10 and C10-C11 sat at the floor (0.020).
+Both were last grown at tick 1,428,913, which is the last sleep: they only grow
+in sleep replay. C0, C6, C7, C9 and C11 were at zero energy too, and the shared
+reserve was nearly full (5.79 of 6.0). So the field was not short of energy.
+Each cell was.
+
+**Why.** A cell pays `0.0025 + 0.032 × pressure` each tick it updates, and its
+refill is at most `0.016 × (0.55 + 0.45 × relevance)`. Above a pressure of
+about 0.27 (relevance 0.35) to 0.37 (relevance 0.75) the cost outruns the
+refill and the cell sits at zero. Hebbian growth needs a little energy from
+both cells, so a starved cell's links do not grow. The weather is fed as a
+temperature level (10 to 35 °C onto 0 to 1). A room at 23 °C presses on C10 at
+about 0.58 every tick, so C10 costs about 0.021 a tick against a refill of
+about 0.011.
+
+**Variant 1: weather as change** (`WEATHER_INPUT = "change"`, env
+`CREATURE_WEATHER_INPUT`). The field gets how far the temperature stands from
+its own hour-long average, times 8. The gate is `--weather`: six lab days of
+the 'day' scenario with weather of the room's real kind (half a degree either
+way, following the sun, in the BME280's 0.01 °C steps), a window opened on
+day 5 (3 °C down in ten minutes), then a still night ending in an hour of flat
+temperature.
+
+- It fails on seeds 1, 2, 3 and 7 (3, 4, 3 and 3 of 6 checks).
+- What worked: in a steady room C10's pressure fell from 0.56 to 0.02. C9-C10
+  and C10-C11 grew on about 18,000 ticks against none. The night slept as
+  often (34 against 34).
+- What failed:
+  - C10's energy stayed at zero in the daytime. Once its links were alive,
+    its neighbours pressed on it at about 0.29.
+  - The change spread well past C9 to C11: C0-C1 went from 0.06 to 1.18 and
+    C7-C8 from 0.06 to 0.27.
+  - The opened window lifted C10 only 3.0 times on seed 1.
+  - The still night had a few more events on seeds 2 and 7.
+- On the outputs (the relative rule):
+  - The voice gate still passes 6/6 on every seed, with the same number of
+    tones.
+  - The express gate stays at 8/9, but its standing failure ("still settles
+    with twice the strip on the sensor") gets worse: tempo at its maximum
+    42 to 45 % of the time against 27 to 31 %. A seen day has fewer tones
+    (80 to 100 against 105 to 117).
+  - On the recorded week (`data/replay/`) it is hardly different: 20.8 tones
+    an hour against 20.1, and a pitch spread of 4.8 semitones against 3.9.
+  - The lab scenarios swing the weather about 4.5 °C every two hours, much
+    faster than a room, so the voice and express gates overstate it.
+
+**Variant 2: cells pay for surprise** (`UPDATE_COST_ON = "surprise"`, env
+`CREATURE_UPDATE_COST_ON`). The update cost follows `|pressure - prediction|`
+instead of pressure. The gate is `--energy`, on the same life as `--weather`.
+
+- It fails on seeds 1, 2, 3 and 7 (3 of 6 on each).
+- Starvation was gone: every cell's median energy was 0.84 to 0.99, against 10
+  of 12 cells near zero in the control. The weather side learned while awake.
+- The ring saturated:
+  - Every one of the twelve links ended at the ceiling (2.0), against a mean
+    of about 0.52.
+  - Mean fatigue went from about 0.03 to about 0.51.
+- The outputs broke:
+  - The voice gate fell to 4/6. The relative rule answered 24 % of the bursts
+    against 97 %, and spoke at arousal 0.75 against an average of 0.71, so it
+    no longer speaks at moments that stand out.
+  - The express gate fell to 7/9, because it no longer settles after dark.
+  - On the recorded week: 17.2 tones an hour against 20.1, and mean arousal
+    0.66 against 0.47.
+
+**What this means.** Starvation is not a fault in one cell. It is how the field
+brakes learning: in the lab 10 of 12 cells sit near zero energy, and a link
+grows only where the coactivity is strong enough to win a share of the refill.
+Take the brake away and every link runs to the ceiling, which is the uniform
+wash the predictive cell was built to avoid. The dark weather side on the
+dashboard is the honest picture of that economy. The design doc already says
+"The light-and-weather side stays weak by design".
+
+What is left, if the weather side is to be woken:
+
+- A change narrow enough to free C10 alone, for example an anchor not paying
+  for a sense level its own prediction has already learned. It needs its own
+  gate.
+- Or leave it to the loop, as the design says.
 
 ## The dashboard shows movement (10 October, 17:39)
 
