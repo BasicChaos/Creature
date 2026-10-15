@@ -399,6 +399,22 @@ A third variant gives the anchor a different sense:
     (`AIR_RAMP_TICKS`). Stepped, about 8 steps an hour each restarted the
     low-stimulation sleep's 160-tick count, and the field slept 6 times
     against 9. Eased, 8 against 9.
+  - `AIR_GAIN` (env `CREATURE_AIR_GAIN`, default 1.0) scales the value. At
+    0.5 and 0.25 the gate passes 5 of 7: C10 has energy (0.37, 0.98) and
+    its links grow to 0.4 to 0.8. But C0-C1 grows more, the gentler the air
+    (0.57 in the control; 0.83, 0.97, 1.06). Freeing C10 frees the whole
+    speaker side of the ring, so the weather cannot be linked in without
+    that link growing.
+  - Josh accepted that growth on 15 October 2026. Two checks were then
+    revised to measure what they were meant to protect: a healthy link may
+    not lose more than 0.25 or newly reach 0.9 of `W_MAX`, and the 0.1 bar
+    applies to the air input's median, not to C10's pressure. A strip-light
+    check was added. By a rule set before the runs (the strongest air that
+    passes every check), `AIR_GAIN` is 0.5: 8 of 8 on seeds 1, 2, 3 and 7.
+    C10 has energy (0.37), C9-C10 and C10-C11 reach 0.42 and 0.46, and the
+    voice and the strip are unchanged.
+  - It is still off. A holdout run on air recorded after the choice comes
+    before switching it on.
 
 ## Learning and forgetting
 

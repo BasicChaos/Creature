@@ -4020,7 +4020,25 @@ def energy_probe(args):
 # air's change), on the creature's own recorded senses and air from 4 to 15
 # October 2026, starting from the saved field of 2 October. The air was read
 # every 20 ticks; between readings the last one stands, as in the collector.
-# The voice is read by the relative rule the Pi runs.
+# The voice and the strip are read by the decoder as the Pi runs it (relative
+# expression and voice, inner colour, open palette; the dark-room calm is not
+# in this gate).
+#
+# Two checks were revised on 15 October 2026, at Josh's call, after the first
+# runs and before the gain was chosen (the old results are in the status doc):
+#   * "the healthy links hold" protected links at 0.5 or more in the control
+#     from moving more than 0.25 either way. Freeing C10 frees the whole speaker
+#     side, so C0-C1 grows whatever the air's gain. Growth is not damage: now a
+#     healthy link may not lose more than 0.25, or reach 0.9 of W_MAX unless
+#     it was there already.
+#   * "a steady room costs it nothing" asked C10's pressure to be 0.1 or less.
+#     That pressure includes its neighbours' drive, which grows as its links
+#     do. It now asks the same of the air input itself, the tax at its source.
+#     Whether C10 can afford to learn is the energy check.
+# A strip-light check was added at the same time.
+
+AIR_DECODER = {"VOICE_MODEL": "relative", "EXPRESSION_MODEL": "relative",
+               "COLOUR_MODEL": "inner", "VOICE_PALETTE": "open"}
 
 AIR_SENSES = "data/replay/senses_2026-10-04_to_2026-10-15.csv"
 AIR_READINGS = "data/replay/air_2026-10-04_to_2026-10-15.csv"
@@ -4088,15 +4106,16 @@ def _air_events(rows):
     return events
 
 
-def _air_run(rows, seed, state_path, use_air):
+def _air_run(rows, seed, state_path, use_air, gain=None):
     random.seed(seed)
     field = cf.build_field()
     if state_path:
         cf.load_field(field, state_path)
-    air = AirChange()
-    decoder = ExpressionDecoderV06(knobs={"VOICE_MODEL": "relative"})
+    air = AirChange(gain=gain)
+    decoder = ExpressionDecoderV06(knobs=dict(AIR_DECODER))
     anchor = cf.SENSE_ANCHOR["weather"]
     out = {"weather": [], "pressure": [], "activation": [], "energy": [], "tones": [],
+           "light": [],
            "sleeps": 0, "events": 0, "awake_growth": {k: 0 for k in field.weights}}
     last_tone = -FORWARD_VOICE_GAP
     asleep = False
@@ -4120,6 +4139,8 @@ def _air_run(rows, seed, state_path, use_air):
             out["sleeps"] += 1
         asleep = now
         signal = decoder.read(state)
+        out["light"].append(sum(sum(px) for px in signal["pixels"])
+                            / (255.0 * 4 * len(signal["pixels"])))
         speaker = (state.get("emitter_activations") or {}).get("speaker", 0.0)
         if voice_params_from_signal(signal, speaker) and t - last_tone >= FORWARD_VOICE_GAP:
             out["tones"].append(t)
@@ -4139,9 +4160,10 @@ def air_probe(args):
     events = _air_events(rows)
     hours = len(rows) / 3600.0
     print(f"field {cf.FIELD_VERSION} | THE AIR AS WEATHER | seed={args.seed}, {len(rows)} recorded "
-          f"ticks ({hours:.0f} h) from {state}, {len(events)} fresh-air events")
+          f"ticks ({hours:.0f} h) from {state}, {len(events)} fresh-air events, air gain "
+          f"{AirChange(gain=args.air_gain).gain:g}")
     control = _air_run(rows, args.seed, state, False)
-    variant = _air_run(rows, args.seed, state, True)
+    variant = _air_run(rows, args.seed, state, True, args.air_gain)
     anchor = cf.SENSE_ANCHOR["weather"]
 
     def heard(run_):
@@ -4169,6 +4191,8 @@ def air_probe(args):
           f"               {variant['sleeps']}, {variant['events']}")
     tc, tv = len(control["tones"]) / hours, len(variant["tones"]) / hours
     print(f"  tones an hour                       {tc:.1f}                   {tv:.1f}")
+    lc, lv = statistics.mean(control["light"]), statistics.mean(variant["light"])
+    print(f"  strip light, mean                   {lc:.3f}                  {lv:.3f}")
     print("\n  link        awake growth ticks            weight at the end")
     for key in sorted(control["weights"]):
         print(f"  C{key[0]}-C{key[1]:<3}    {control['awake_growth'][key]:8d} -> "
@@ -4185,9 +4209,10 @@ def air_probe(args):
     check("it hears fresh air", hv >= 0.75,
           f"C{anchor}'s activation reaches twice its usual ({uv:.3f}) within ten minutes of "
           f"{hv * 100:.0f}% of the {len(events)} fresh-air events (control {hc * 100:.0f}%); 75% or more")
-    check("a steady room costs it nothing", med(variant, "pressure") <= 0.1,
-          f"C{anchor}'s median pressure is {med(variant, 'pressure'):.3f} "
-          f"(control {med(control, 'pressure'):.3f}); 0.1 or less")
+    check("a steady room costs it nothing", med(variant, "weather") <= 0.1,
+          f"the weather input's median is {med(variant, 'weather'):.3f} "
+          f"(control {med(control, 'weather'):.3f}); 0.1 or less. C{anchor}'s median pressure, "
+          f"neighbours included, is {med(variant, 'pressure'):.3f} (control {med(control, 'pressure'):.3f})")
     check("the weather anchor has energy", med(variant, "energy") >= 0.05,
           f"C{anchor}'s median energy is {med(variant, 'energy'):.3f} "
           f"(control {med(control, 'energy'):.3f}); 0.05 or more")
@@ -4196,15 +4221,22 @@ def air_probe(args):
     check("the weather side learns awake", v_learn >= 100,
           f"C9-C10 and C10-C11 grew on {v_learn} waking ticks (control {c_learn}); 100 or more")
     healthy = [k for k, w in control["weights"].items() if w >= 0.5]
-    gap = max((abs(control["weights"][k] - variant["weights"][k]) for k in healthy), default=0.0)
-    check("the healthy links hold", gap <= 0.25,
-          f"the largest gap on the {len(healthy)} links at 0.5 or more in the control is "
-          f"{gap:.3f}; 0.25 or less")
+    loss = max((control["weights"][k] - variant["weights"][k] for k in healthy), default=0.0)
+    top = 0.9 * cf.W_MAX
+    ran_up = [k for k in healthy if variant["weights"][k] >= top > control["weights"][k]]
+    grown = max(healthy, key=lambda k: variant["weights"][k] - control["weights"][k], default=None)
+    check("the healthy links hold", loss <= 0.25 and not ran_up,
+          f"of the {len(healthy)} links at 0.5 or more in the control, the largest loss is "
+          f"{max(0.0, loss):.3f} (0.25 or less) and {len(ran_up)} newly reached {top:.1f}; the most "
+          + (f"grown is C{grown[0]}-C{grown[1]}, {control['weights'][grown]:.3f} -> "
+             f"{variant['weights'][grown]:.3f}" if grown else "grown: none"))
     n_c, n_v = control["sleeps"], variant["sleeps"]
     check("sleep holds", abs(n_v - n_c) <= max(2, n_c // 5),
           f"{n_v} sleeps against {n_c}")
     check("the voice holds", tc > 0 and abs(tv - tc) <= 0.25 * tc,
           f"{tv:.1f} tones an hour against {tc:.1f}, within a quarter")
+    check("the strip holds", lc > 0 and abs(lv - lc) <= 0.25 * lc,
+          f"mean strip light {lv:.3f} against {lc:.3f}, within a quarter")
 
     ok = all(checks)
     print(f"\n  {'GATE PASS' if ok else 'GATE FAIL'} ({sum(checks)}/{len(checks)} checks)")
@@ -4306,6 +4338,8 @@ def main():
     p.add_argument("--air", action="store_true",
                    help="the air gate: the air's change as weather against the temperature level, "
                         "on recorded senses and air (--history-hours cuts it short)")
+    p.add_argument("--air-gain", type=float, default=None,
+                   help="for --air: scale the air's value (default AIR_GAIN, 0.5)")
     p.add_argument("--energy", action="store_true",
                    help="the energy gate: cells charged for surprise against for pressure")
     p.add_argument("--twin", action="store_true",

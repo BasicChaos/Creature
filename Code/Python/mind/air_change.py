@@ -19,9 +19,9 @@ move for that reading, and the four are mixed:
   air temp      0.2   1.0 C
   humidity      0.1   6 % RH
 
-On the recorded air it reads 0.13 at the median and 0.80 at the 99th
-percentile: a lived-in room is rarely still, since CO2 climbs while someone is
-in it. A reading the body has not sent (None, or the VOC index's first 45
+Before AIR_GAIN, on the recorded air it read 0.13 at the median and 0.80 at
+the 99th percentile: a lived-in room is rarely still, since CO2 climbs while
+someone is in it. At the gain of 0.5, 0.065 and 0.40. A reading the body has not sent (None, or the VOC index's first 45
 seconds) adds nothing.
 
 The body reads the air every 20 seconds, so the value would move in steps.
@@ -47,6 +47,13 @@ AIR_WEATHER = os.environ.get("CREATURE_AIR_WEATHER", "0") == "1"
 
 AIR_CHANGE_TICKS = 3600      # the slow averages follow over about an hour
 AIR_RAMP_TICKS = 20          # the value eases toward each reading over about this long
+# The whole value is scaled by this (CREATURE_AIR_GAIN, or --air-gain in the
+# gate). A gentler air leaves C10 more energy and grows its links further, and
+# the speaker's link C0-C1 grows more with it, not less: 0.83 at 1.0, 0.97 at
+# 0.5, 1.06 at 0.25, against 0.57 on the temperature. 0.5 by the rule agreed on
+# 15 October 2026 before the runs: the strongest air that passes every check
+# of the --air gate (1.0 fails two, 0.5 and 0.25 pass all eight).
+AIR_GAIN = float(os.environ.get("CREATURE_AIR_GAIN", "0.5"))
 # (key, weight, a large move)
 AIR_PARTS = (
     ("co2_ppm", 0.5, 250.0),
@@ -57,8 +64,9 @@ AIR_PARTS = (
 
 
 class AirChange:
-    def __init__(self, ticks=AIR_CHANGE_TICKS, parts=AIR_PARTS, ramp=AIR_RAMP_TICKS):
+    def __init__(self, ticks=AIR_CHANGE_TICKS, parts=AIR_PARTS, ramp=AIR_RAMP_TICKS, gain=None):
         self.ticks = ticks
+        self.gain = AIR_GAIN if gain is None else gain
         self.parts = parts
         self.ramp = max(1, ramp)
         self.average = {key: None for key, _, _ in parts}
@@ -78,5 +86,5 @@ class AirChange:
             moved = abs(reading - self.average[key]) / scale
             value += weight * min(1.0, moved)
             self.average[key] += (reading - self.average[key]) / self.ticks
-        self.last += (min(1.0, value) - self.last) / self.ramp
+        self.last += (min(1.0, self.gain * value) - self.last) / self.ramp
         return self.last

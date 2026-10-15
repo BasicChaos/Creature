@@ -186,8 +186,75 @@ What is left, if the weather side is to be woken:
     0.260 against 0.25). The link that moves is C0-C1, 0.57 to 0.83: the
     speaker side waking. Whether that counts as damage is Josh's call.
 
+- **A gentler air** (`AIR_GAIN`, env `CREATURE_AIR_GAIN`, `--air-gain` in
+  the gate, default 1.0). The guess was that C0-C1 grew because the air
+  pressed on C11 next to the speaker, so a weaker air would spill less. The
+  guess was wrong.
+
+  | Air gain | Checks passed | C10 energy | C10 pressure | C9-C10 / C10-C11 | C0-C1 (control 0.57) |
+  |---|---|---|---|---|---|
+  | 1.0 | 4/7 | 0.003 | 0.28 | 0.17 / 0.13 | 0.83 |
+  | 0.5 | 5/7 | 0.37 | 0.19 | 0.42 / 0.46 | 0.97 |
+  | 0.25 | 5/7 | 0.98 | 0.14 | 0.56 / 0.78 | 1.06 |
+
+  The same on seeds 1, 2, 3 and 7. Sleep (8 against 9), the voice (20.1 to
+  20.2 tones an hour against 20.2 to 20.3) and fresh air (97 to 100 %) hold
+  at both. The gentler the air, the more C0-C1 grows, because it is not spill
+  from the air. The temperature level starved C10 and, through it, C11 and
+  C0. Anything that frees C10 frees that whole side, and C0-C1 grows with it.
+
 Of the three, this is the only one that gives C10 something real to answer,
-without touching the voice.
+without touching the voice. But linking the weather in and keeping C0-C1
+where it is are the same question asked two ways. With the healthy-links
+check as it stands, no air gain can pass. The other failing check, C10's
+pressure at 0.1 or less, is a bar set on 15 October before any of this was
+known.
+
+**The gate revised, at Josh's call (15 October, evening).** Josh decided that
+C0-C1 growing is an acceptable cost of linking the weather in. Before the rerun
+we agreed what each check is for, and changed only checks whose measurement was
+wrong. The results above are the old gate's and stay as they are.
+
+- **"The healthy links hold"** was meant to catch damage. A healthy link (0.5
+  or more in the control) may now not lose more than 0.25, or newly reach 0.9
+  of `W_MAX` (1.8, the line the `--energy` gate already used). Growing is
+  allowed.
+- **"A steady room costs it nothing"** keeps its bar of 0.1, now on the air
+  input's median instead of C10's pressure. That pressure includes its
+  neighbours' drive, which grows as its links do. Whether C10 can afford to
+  learn is the energy check. This new measure happens to fail gain 1.0
+  (0.13) and pass 0.5 and 0.25.
+- **"The strip holds"** was added: mean strip light within a quarter of the
+  control's. The gate's decoder now runs as the Pi does (relative
+  expression, inner colour, open palette). The dark-room calm is not in the
+  gate.
+- **The gain rule**, agreed before the runs: the strongest air that passes
+  every check.
+
+| Air gain | Seeds 1, 2, 3, 7 | Air input median | C10 energy | C9-C10 / C10-C11 | C0-C1 (0.57) | Tones an hour (20.2 to 20.3) | Strip light (0.073) |
+|---|---|---|---|---|---|---|---|
+| 1.0 | 6/8 on each | 0.130 (fails) | 0.002 to 0.003 (fails) | 0.17 / 0.13 | 0.83 | 20.1 | 0.074 |
+| 0.5 | **8/8 on each** | 0.065 | 0.37 | 0.42 / 0.46 | 0.97 | 20.1 to 20.2 | 0.074 |
+| 0.25 | 8/8 on each | 0.032 | 0.98 | 0.56 / 0.78 | 1.06 | 20.1 to 20.2 | 0.074 |
+
+By the rule, the gain is **0.5**, now the default of `AIR_GAIN`. The air as
+weather is still off (`CREATURE_AIR_WEATHER` unset).
+
+**The collector with the air on.** Run against `tools/fake_body.py` for 240
+ticks in a scratch folder (`CREATURE_AIR_WEATHER=1`, gain 0.5): no errors, the
+start line reads "Weather: the air's change …", the weather input followed the
+fake air (0 to 0.18), and C10 had energy (0.76).
+
+**Not yet done:**
+
+- A holdout. The gain was chosen on the same 151 hours it was tested on. Before
+  switching it on, run `--air` on a few days of air recorded after 15 October,
+  which played no part in the choice. That needs a fresh export of
+  `field_tick_log` and `air_log` from the Pi.
+- To switch it on: push, fast-forward the Pi, and add
+  `CREATURE_AIR_WEATHER=1` to the collector's start command (the gain
+  defaults to 0.5). The dashboard's weather number will then be the air's
+  change, not the temperature.
 
 ## The dashboard shows movement (10 October, 17:39)
 
