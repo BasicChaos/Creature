@@ -654,6 +654,7 @@
       <button type="button" data-view="raw" title="Raw data"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span class="nav-label">Raw data</span></button>
       <button type="button" data-view="learning" title="Learning"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5l3.5-4 3 2.5 4.5-6.5"/><path d="M10.5 4.5h3v3"/></svg><span class="nav-label">Learning</span></button>
       <button type="button" data-view="movement" title="Movement"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 8l3-3.5"/><path d="M9 4.3l2.2.1-.1 2.2"/></svg><span class="nav-label">Movement</span></button>
+      <button type="button" data-view="attractor" title="Attractor"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 8c-2.5-3.5-6-2.5-5.5 0S6 11 8 8s5.5-4.5 5.5-2-3 5.5-5.5 2"/></svg><span class="nav-label">Attractor</span></button>
       <button type="button" data-view="legend" title="Legend"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4.5" r="1.5"/><circle cx="4" cy="11.5" r="1.5"/><path d="M8 4.5h5.5M8 11.5h5.5"/></svg><span class="nav-label">Legend</span></button>
       <button type="button" data-view="metabolism" title="Metabolism"><svg class="nav-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8.5h3l1.5-4 3 8 1.5-4h4"/></svg><span class="nav-label">Metabolism</span></button>
       <div class="theme-seg" id="themeSeg" role="group" aria-label="Colour mode">
@@ -763,6 +764,25 @@
         <div class="learn-foot" id="mvFoot">Waiting for history…</div>
       </section>
 
+      <section class="view" data-view="attractor" hidden>
+        <div class="learn-head">
+          <h2>Attractor — the field's path through its own states</h2>
+          <div class="seg" id="atWay" title="What the two axes are">
+            <button data-v="delay" class="on">Delay</button><button data-v="pair">Pair</button>
+          </div>
+        </div>
+        <div class="learn-head" style="margin-top:10px">
+          <div class="seg" id="atQ" title="The quantity plotted (Delay)"><button data-v="p" class="on">Pressure</button><button data-v="a">Activation</button><button data-v="u">Surprise</button></div>
+          <div class="seg" id="atTau" title="How far back the second axis looks (Delay)"><button data-v="1">1 s</button><button data-v="5" class="on">5 s</button><button data-v="20">20 s</button></div>
+          <div class="seg" id="atPair" title="The two quantities on the axes (Pair)" hidden><button data-v="a,u" class="on">Activation × Surprise</button><button data-v="p,a">Pressure × Activation</button><button data-v="p,u">Pressure × Surprise</button></div>
+          <select id="atCell" class="mv-btn" aria-label="Whose values"></select>
+          <div class="seg" id="atSpan"><button data-v="240">4 min</button><button data-v="900" class="on">15 min</button><button data-v="3600">1 h</button></div>
+        </div>
+        <canvas id="atCanvas" style="display:block;width:100%;margin-top:10px"></canvas>
+        <div class="learn-foot" id="atAxes"></div>
+        <div class="learn-foot" id="atFoot">Waiting for history…</div>
+      </section>
+
       <section class="view" data-view="legend" id="legendPanel" hidden>
         <h2>Legend</h2>
         <div class="legend-item"><span class="swatch" style="background:var(--sound)"></span> Sound anchor <span
@@ -796,8 +816,8 @@
     <img class="hardware-photo" src="creature-v07.0.jpg" alt="Creature v07.0 hardware on a breadboard: the ESP32, sensors, LED strip, speaker, battery and the e-paper readout" />
     <p class="about-intro">
       Creature is a small homemade life form built from sensors, an ESP32 chip, and a Raspberry Pi.
-      It senses sound, light, motion, and weather, and expresses itself through an RGB LED strip and
-      a speaker.
+      It senses sound, light, motion, and the air in the room, and expresses itself through an RGB LED
+      strip and a speaker.
     </p>
     <p class="about-intro">
       Inside it, twelve software cells sit in a ring. Each one watches a mix of those senses. Instead
@@ -815,7 +835,10 @@
     <dl class="glossary">
       <dt>Sound / Light / Motion / Weather</dt>
       <dd>How much is happening right now for each sense, from 0 (nothing) to 1 (a lot). These are
-        scaled values, not raw sensor numbers.</dd>
+        scaled values, not raw sensor numbers. Weather is the air: how much the CO2, the VOC
+        index, the air temperature and the humidity have moved from their own last hour, CO2
+        counting most. A steady room reads near 0, an opened window jumps. (Before 15 October 2026
+        it was the room's temperature as a level.)</dd>
       <dt>Energy</dt>
       <dd>How much working energy Creature has in reserve, out of a maximum of 6. Activity drains
         it, rest refills it.</dd>
@@ -976,7 +999,7 @@
       sound: { color: C.sound, label: "Sound anchor", hw: "INMP441" },
       light: { color: C.light, label: "Light anchor", hw: "BH1750" },
       motion: { color: C.motion, label: "Motion anchor", hw: "MPU-6050" },
-      weather: { color: C.weather, label: "Weather anchor", hw: "BME280" },
+      weather: { color: C.weather, label: "Weather anchor", hw: "BME280" },   // hw follows the snapshot: see weatherHw()
       emitter: { color: C.emitter, label: "Emitter anchor", hw: "NeoPixel" },
       free: { color: C.free, label: "Free cell", hw: null },
     };
@@ -998,6 +1021,13 @@
       return { x: MARGIN + col * SPACING, y: MARGIN + row * SPACING, row, col };
     }
     function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+    // Since 15 October 2026 the weather anchor can be fed the air's change
+    // (CO2 first, with VOC, air temperature and humidity) instead of the
+    // BME280's temperature. The collector says which in `weather_source`;
+    // older snapshots do not, and those were the temperature.
+    let weatherSnap = null;   // the snapshot the labels were last built from
+    function weatherIsAir(f) { f = f || weatherSnap; return !!(f && f.weather_source === "air"); }
+    function weatherHw(f) { return weatherIsAir(f) ? "SCD41 + SGP41 air" : "BME280"; }
     function el(tag, attrs) {
       const e = document.createElementNS(NS, tag);
       for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -1092,7 +1122,7 @@
         const t1 = el("text", { x: p.x, y: p.y + BASE_R + 21, "text-anchor": "middle", class: "hwlabel", fill: ROLE[role].color });
         t1.textContent = role.toUpperCase();
         const t2 = el("text", { x: p.x, y: p.y + BASE_R + 33, "text-anchor": "middle", class: "hwsub" });
-        t2.textContent = ROLE[role].hw;
+        t2.textContent = role === "weather" ? weatherHw(latest || weatherSnap) : ROLE[role].hw;
         gTags.append(t1, t2);
       });
 
@@ -1452,6 +1482,7 @@
     }
 
     function buildV06(f) {
+      weatherSnap = f;
       [...svg.childNodes].forEach(n => { if (n.tagName !== "defs") svg.removeChild(n); });
       svg.setAttribute("viewBox", "55 20 650 620");
       svg.classList.add("v06");
@@ -1591,7 +1622,7 @@
           const t1 = el("text", { x: lp.x, y: lp.y, "text-anchor": "middle", class: "hwlabel", fill: col });
           t1.textContent = (c.label || "").replace("emitter_", "").toUpperCase();
           const t2 = el("text", { x: lp.x, y: lp.y + 13, "text-anchor": "middle", class: "hwsub" });
-          let hwName = ROLE[role].hw;
+          let hwName = role === "weather" ? weatherHw(f) : ROLE[role].hw;
           if (c.hardware_id === "emitter_speaker") hwName = "MAX98357A";
           else if (c.hardware_id === "emitter_led") hwName = "SK6812 16px";
           t2.textContent = hwName;
@@ -1968,7 +1999,9 @@
         item(dot(C.sound), "Sound", "C2 · INMP441 microphone") +
         item(dot(C.motion), "Motion", "C4 · MPU-6050") +
         item(dot(C.light), "Light", "C8 · BH1750") +
-        item(dot(C.weather), "Weather", "C10 · BME280") +
+        item(dot(C.weather), "Weather", weatherIsAir()
+          ? "C10 · the air: how far CO2 (SCD41), the VOC index (SGP41), the air temperature and the humidity stand from their own last hour, CO2 counting most. A window opened shows as a jump"
+          : "C10 · BME280 temperature") +
         item(dot(C.free), "In-between cell", "the odd cells C1, C3 … C11, each sitting between two anchors and mixing them · C1 speaker × sound · C3 sound × motion · C5 motion × LED · C7 LED × light · C9 light × weather · C11 weather × speaker · C1 and C7 are the loop cells: they feel the creature's own voice and own light coming back") +
         item(dot(C.reservoir), "Reservoir cell", "R0–R5, the inner six · a fixed pool of mixed signals the emitters read from") +
         '<div class="legend-sub">Size: emitters are the largest circles, sense anchors the middle size, in-between cells smaller, reservoir cells the smallest. The coloured word and part name beside a cell mark the hardware it is tied to.</div>' +
@@ -2356,16 +2389,135 @@
       document.getElementById("mvHover").textContent = MV_HOVER_REST;
     }
 
+    // ---- attractor ----
+    // A phase portrait, after the plots in Gleick's Chaos: each tick is one
+    // dot at the field's state, and over time the dots trace the region the
+    // field keeps returning to. Two ways to choose the axes:
+    //   Delay  one quantity now against the same quantity a few seconds ago
+    //          (Packard and Shaw's method, the dripping faucet: a single
+    //          measured series unfolds the shape of the whole system).
+    //   Pair   two quantities of the same cells against each other.
+    // Colour is age only: old dots faint, new ones bright, the newest ringed.
+    // Drawn from the same kept history as Movement (an hour at most).
+    const AT = { way: "delay", q: "p", tau: 5, pair: ["a", "u"], cell: "field", span: 900 };
+    function atValue(row, q, cell) {
+      const v = row[q] || [];
+      if (cell === "field") return v.length ? v.reduce((t, x) => t + x, 0) / v.length : 0;
+      return v[cell] || 0;
+    }
+    function atPoints() {
+      const end = hist.length - 1, start = Math.max(0, end - AT.span + 1), pts = [];
+      for (let i = start; i <= end; i++) {
+        if (AT.way === "delay") {
+          if (i - AT.tau < 0) continue;
+          pts.push([atValue(hist[i], AT.q, AT.cell), atValue(hist[i - AT.tau], AT.q, AT.cell)]);
+        } else {
+          pts.push([atValue(hist[i], AT.pair[0], AT.cell), atValue(hist[i], AT.pair[1], AT.cell)]);
+        }
+      }
+      return pts;
+    }
+    function atRange(vals) {
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      if (hi - lo < 0.02) { const m = (hi + lo) / 2; lo = m - 0.01; hi = m + 0.01; }
+      const pad = (hi - lo) * 0.06;
+      return [lo - pad, hi + pad];
+    }
+    function atCellOptions() {
+      const sel = document.getElementById("atCell"), names = mvRingNames();
+      const want = ["field"].concat([...Array(12).keys()]);
+      if (sel.options.length === want.length) {
+        for (let i = 1; i < want.length; i++) sel.options[i].textContent = "C" + (i - 1) + (names[i - 1] ? " " + names[i - 1] : "");
+        return;
+      }
+      sel.innerHTML = want.map(c => c === "field"
+        ? '<option value="field">Whole field (mean)</option>'
+        : `<option value="${c}">C${c}${names[c] ? " " + names[c] : ""}</option>`).join("");
+      sel.value = String(AT.cell);
+    }
+    function atRender() {
+      const view = document.querySelector('#viewArea .view[data-view="attractor"]');
+      if (!view || view.hidden) return;
+      atCellOptions();
+      document.getElementById("atQ").hidden = document.getElementById("atTau").hidden = AT.way !== "delay";
+      document.getElementById("atPair").hidden = AT.way !== "pair";
+      const foot = document.getElementById("atFoot"), axes = document.getElementById("atAxes");
+      const canvas = document.getElementById("atCanvas");
+      const side = Math.min(canvas.clientWidth || 0, 560);
+      const fit = mvFit(canvas, side || 320);
+      if (!fit) return;
+      const pts = atPoints();
+      if (pts.length < 3) { foot.textContent = "Waiting for history…"; axes.textContent = ""; return; }
+      const { x, w, h } = fit, m = 28;
+      const [x0, x1] = atRange(pts.map(p => p[0])), [y0, y1] = atRange(pts.map(p => p[1]));
+      const px = v => m + (v - x0) / (x1 - x0) * (w - 2 * m), py = v => h - m - (v - y0) / (y1 - y0) * (h - 2 * m);
+      x.strokeStyle = hexA(C.linkGhost, 0.6); x.lineWidth = 1;
+      x.strokeRect(m, m, w - 2 * m, h - 2 * m);
+      if (AT.way === "delay") {   // the diagonal: where now equals then, a still field
+        x.setLineDash([3, 4]); x.beginPath();
+        const a = Math.max(x0, y0), b = Math.min(x1, y1);
+        if (b > a) { x.moveTo(px(a), py(a)); x.lineTo(px(b), py(b)); x.stroke(); }
+        x.setLineDash([]);
+      }
+      const n = pts.length;
+      pts.forEach((p, i) => {
+        const age = i / (n - 1);
+        x.fillStyle = hexA(C.emitter, 0.08 + 0.72 * age * age);
+        x.beginPath(); x.arc(px(p[0]), py(p[1]), 1.6, 0, Math.PI * 2); x.fill();
+      });
+      x.strokeStyle = hexA(C.emitter, 0.55); x.lineWidth = 1; x.beginPath();   // the last 30 s, joined
+      pts.slice(-30).forEach((p, i) => i ? x.lineTo(px(p[0]), py(p[1])) : x.moveTo(px(p[0]), py(p[1])));
+      x.stroke();
+      const last = pts[n - 1];
+      x.fillStyle = C.emitter; x.beginPath(); x.arc(px(last[0]), py(last[1]), 4, 0, Math.PI * 2); x.fill();
+      x.strokeStyle = C.text; x.lineWidth = 1.2; x.beginPath(); x.arc(px(last[0]), py(last[1]), 7, 0, Math.PI * 2); x.stroke();
+      x.fillStyle = C.muted || C.text; x.font = "11px system-ui, sans-serif";
+      x.textAlign = "left"; x.fillText(x0.toFixed(3), m, h - 10);
+      x.textAlign = "right"; x.fillText(x1.toFixed(3), w - m, h - 10);
+      x.save(); x.translate(12, h - m); x.rotate(-Math.PI / 2); x.textAlign = "left"; x.fillText(y0.toFixed(3), 0, 0);
+      x.textAlign = "right"; x.fillText(y1.toFixed(3), h - 2 * m, 0); x.restore();
+      const who = AT.cell === "field" ? "the whole field's mean" : "C" + AT.cell + "'s";
+      const nm = q => MV_Q[q].name.toLowerCase();
+      axes.textContent = AT.way === "delay"
+        ? `Across: ${who} ${nm(AT.q)} now. Up: the same ${AT.tau} s earlier. The dashed line is where now equals then: a field standing still sits on it.`
+        : `Across: ${who} ${nm(AT.pair[0])}. Up: ${who} ${nm(AT.pair[1])}.`;
+      const mins = n / 60;
+      foot.textContent = `${n} dots, one a tick, the last ${mins < 1 ? n + " s" : mins.toFixed(0) + " min"}; old dots fade, the ringed one is now and the line is its last 30 seconds. ` +
+        "If the dots keep returning to one shape without repeating a path, that shape is the field's attractor. Whether it is a strange one is not established." +
+        (STATIC_MODE ? " The public mirror carries the last four minutes." : " The history is held in the dashboard server's memory and starts again when the server does.");
+    }
+    function atSeg(id, apply) {
+      document.getElementById(id).addEventListener("click", e => {
+        const b = e.target.closest("button[data-v]");
+        if (!b) return;
+        apply(b.dataset.v);
+        document.querySelectorAll("#" + id + " button").forEach(o => o.classList.toggle("on", o === b));
+        atRender();
+      });
+    }
+    atSeg("atWay", v => { AT.way = v; });
+    atSeg("atQ", v => { AT.q = v; });
+    atSeg("atTau", v => { AT.tau = Number(v); });
+    atSeg("atPair", v => { AT.pair = v.split(","); });
+    atSeg("atSpan", v => { AT.span = Number(v); });
+    document.getElementById("atCell").addEventListener("change", e => {
+      AT.cell = e.target.value === "field" ? "field" : Number(e.target.value);
+      atRender();
+    });
+    new ResizeObserver(() => atRender()).observe(document.getElementById("viewArea"));
+    if (STATIC_MODE) document.getElementById("atSpan").hidden = true;
+
     // ---- menu ----
     // One section is open beside the field at a time. The choice and the
     // collapsed state are remembered per browser.
-    const VIEWS = ["inspector", "raw", "learning", "movement", "legend", "metabolism"];
+    const VIEWS = ["inspector", "raw", "learning", "movement", "attractor", "legend", "metabolism"];
     function showView(name) {
       if (!VIEWS.includes(name)) name = "inspector";
       document.querySelectorAll("#viewArea .view").forEach(v => { v.hidden = v.dataset.view !== name; });
       document.querySelectorAll("#sideNav button[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === name));
       remember("creature.view", name);
       if (name === "movement") mvRender();
+      if (name === "attractor") atRender();
     }
     function setNavCollapsed(collapsed) {
       document.getElementById("app").classList.toggle("nav-collapsed", collapsed);
@@ -2392,6 +2544,7 @@
       else if (latest) renderInspector();
       if (learnDoc && learnDoc.tick_to != null) renderLearning();
       mvRender();
+      atRender();
     }
     function setThemeMode(mode) {
       themeMode = mode;
@@ -2581,7 +2734,7 @@
         renderMetabolism(f);
         renderLoop(f);
         renderTwin(f);
-        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built || v06.hasWiring !== snapshotHasWiring(f)) buildV06(f); renderV06(f); histPush(f); mvRender(); }
+        if (isV06Snapshot(f)) { v06Mode = true; if (!v06.built || v06.hasWiring !== snapshotHasWiring(f) || weatherIsAir(f) !== weatherIsAir(weatherSnap)) buildV06(f); renderV06(f); histPush(f); mvRender(); atRender(); }
         else { v06Mode = false; render(f); }
       } catch (err) {
         document.getElementById("dot").className = "dot stale";

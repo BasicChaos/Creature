@@ -1530,6 +1530,7 @@ def main():
             "motion_norm": round(motion_value, 4),
             "motion_linear": round(motion_linear, 4),
             "weather_norm": round(weather_value, 4),
+            "weather_source": "air" if air_change is not None else "temperature",
             "sensors": {
                 **{k: (round(v, 3) if v is not None else None) for k, v in latest_raw.items()},
                 "voc_index": latest_voc_index,
