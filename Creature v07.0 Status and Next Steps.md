@@ -251,10 +251,25 @@ fake air (0 to 0.18), and C10 had energy (0.76).
   switching it on, run `--air` on a few days of air recorded after 15 October,
   which played no part in the choice. That needs a fresh export of
   `field_tick_log` and `air_log` from the Pi.
-- To switch it on: push, fast-forward the Pi, and add
-  `CREATURE_AIR_WEATHER=1` to the collector's start command (the gain
-  defaults to 0.5). The dashboard's weather number will then be the air's
-  change, not the temperature.
+- **Switched on at the Pi, 15 October 18:33, at Josh's call, without
+  waiting for the holdout.**
+  - The Pi was fast-forwarded to `a363b3d` and the collector restarted with
+    the nine settings plus `CREATURE_AIR_WEATHER=1` (the gain defaults to
+    0.5). State from before the restart is in
+    `creature_field_state_v06.pre-air.json`, next to the database.
+  - A short check first, on the 2.7 hours recorded after the gate's export
+    (`data/replay/*holdout*`), too short to settle anything:
+    - The voice (20.1 tones an hour against 19.4), the strip, the one
+      fresh-air event and link growth all held.
+    - The air input's median was 0.145, above the 0.1 bar, while CO2 climbed
+      from 734 to 1090 ppm that evening, and C10 was still starved.
+  - Ninety seconds after the start, the weather input read 0.049, and C10's
+    links were still at the floor.
+  - The dashboard's weather number is now the air's change, not the
+    temperature.
+  - To turn it off, restart without `CREATURE_AIR_WEATHER=1`.
+  - Still to do: run `--air` on a few days recorded from now, and check that
+    C9-C10 and C10-C11 grow on the live field.
 
 ## The dashboard shows movement (10 October, 17:39)
 
@@ -1493,13 +1508,13 @@ Deploying to the Pi. Push `main`, then on the Pi fast-forward its `v06` branch t
 session, start it again. Before each restart the saved state was copied next to
 the database with a name such as `.pre-twospeed.json` on the end.
 
-The start command in force since 9 October (20:07), typed in the tmux pane (in
+The start command in force since 15 October (18:33), typed in the tmux pane (in
 `~/Creature/Code/Python`, venv active). Leave any part out and that part is off:
 
     CREATURE_EXPRESSION_MODEL=relative CREATURE_SLOW_MIX=0.25 \
     CREATURE_SOFT_CEILING=1 CREATURE_CEILING_KNEE=1.0 CREATURE_SLOW_LEAK=4.13e-7 \
     CREATURE_BATTERY_CEILING=1 CREATURE_COLOUR_MODEL=inner \
-    CREATURE_VOICE_PALETTE=open CREATURE_DARK_CALM=1 \
+    CREATURE_VOICE_PALETTE=open CREATURE_DARK_CALM=1 CREATURE_AIR_WEATHER=1 \
     python collector/collector.py tcp://creature-esp.local:7777
 
 To start a fresh twin, stop the collector first, then move
